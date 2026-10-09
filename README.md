@@ -9,7 +9,7 @@ App web instalable para crear, personalizar, firmar y exportar contratos. Funcio
   - Importar/exportar en Excel (.xlsx, hojas Partes, Apoderados y Accionistas). Plantilla vacía en `catalogo/catalogo-partes-plantilla.xlsx` o desde Catálogo → Exportar Excel con el catálogo vacío.
 - **Dropbox (trabajo en equipo)**: cada usuario conecta su cuenta desde Ajustes (OAuth con PKCE, sin servidor). Todo vive en una carpeta compartida:
   - `catalogo-partes.xlsx` — el catálogo; se puede abrir y editar a mano en Excel (las filas nuevas reciben su ID en la siguiente sincronización).
-  - `expedientes/<parte>/` — documentos de las partes; desde la pestaña **Anexos** del contrato se suben o se eligen y se listan al final del PDF.
+  - `EXPEDIENTES CORPORATIVOS RM/<empresa>/` — documentos de las partes (subcarpeta configurable en `js/config.js`). Si la parte no tiene carpeta asignada, la app reconoce la existente por nombre (p. ej. "MERCASA DEL BAJIO" ↔ "Mercasa del Bajío, S.A. de C.V."). Desde la pestaña **Anexos** del contrato se suben o se eligen y se listan al final del PDF.
   - `datos-app/contratos/*.json` y `datos-app/plantillas/*.json` — datos de la app (no editar a mano).
   - Sincroniza al abrir, cada minuto, al volver a la ventana y unos segundos después de cada cambio. Se sube con control de versión (rev): si dos personas editan el mismo contrato a la vez, se conserva la versión de Dropbox y la otra queda como "copia en conflicto". El indicador ☁ (arriba a la derecha) muestra el estado; al tocarlo sincroniza.
   - Configuración: App key y carpeta en `js/config.js` (o en Ajustes). Pasos para crear la app de Dropbox en Ajustes → Dropbox → "Cómo obtener la App key". La Redirect URI a registrar es la dirección exacta donde se publica la app.

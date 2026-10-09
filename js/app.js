@@ -252,7 +252,7 @@ function renderHome() {
       <section class="empty">
         <div class="empty-art">${icon('doc')}</div>
         <h2>Crea tu primer contrato</h2>
-        <p>Elige una plantilla, completa las variables y exporta un PDF listo para firmar. Todo se guarda solo en este dispositivo.</p>
+        <p>Elige una plantilla, completa las variables y exporta un PDF listo para firmar. ${dbx.isConnected() ? 'Se comparte con tu equipo a través de Dropbox.' : 'Todo se guarda en este dispositivo hasta que conectes Dropbox en Ajustes.'}</p>
         <a href="#/plantillas" class="btn primary lg">${icon('plus')} Elegir plantilla</a>
       </section>`}
     <a href="#/plantillas" class="fab show-sm" aria-label="Nuevo contrato">${icon('plus')}</a>
@@ -1855,9 +1855,32 @@ async function browseDropbox({ start, mode = 'files', title, shortcuts = [] }) {
 
 const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`);
 
-/** Carpeta del expediente de una parte (la del catálogo o una nueva dentro de /expedientes). */
+// Carpetas que ya existen en la raíz de expedientes (se leen al abrir Anexos)
+let expedienteFolders = [];
+const folderKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+async function loadExpedienteFolders() {
+  try {
+    expedienteFolders = (await dbx.listFolder(sync.expedientesRoot())).filter((e) => e['.tag'] === 'folder');
+  } catch (err) {
+    console.warn(err);
+  }
+}
+
+/**
+ * Carpeta del expediente de una parte: la guardada en el catálogo; si no hay, la carpeta existente
+ * cuyo nombre coincide (p. ej. "MERCASA DEL BAJIO" ↔ "Mercasa del Bajío, S.A. de C.V."); si tampoco,
+ * una nueva con el nombre de la parte.
+ */
 function expedienteOf(p) {
-  return p.expediente ? dbx.normalizePath(p.expediente) : dbx.joinPath(sync.expedientesRoot(), slugify(p.nombre || 'sin-nombre'));
+  if (p.expediente) return dbx.normalizePath(p.expediente);
+  const key = folderKey(p.nombre);
+  const match = key.length >= 5 && expedienteFolders
+    .filter((f) => { const k = folderKey(f.name); return k.length >= 5 && (key.startsWith(k) || k.startsWith(key)); })
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  if (match) return match.path_display;
+  const name = (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim();
+  return dbx.joinPath(sync.expedientesRoot(), name);
 }
 
 async function openDropboxFile(path) {
@@ -1920,6 +1943,7 @@ function renderAnexos() {
     const i = Number(btn.closest('.anexo')?.dataset.i);
     switch (btn.dataset.act) {
       case 'pick': {
+        await loadExpedienteFolders();
         const shortcuts = [
           ...linked.map(({ sg, p }) => ({ label: `${sg.role}: ${p.nombre}`, path: expedienteOf(p) })),
           { label: 'Expedientes', path: sync.expedientesRoot() },
@@ -1952,6 +1976,7 @@ function renderAnexos() {
 
 async function uploadAnexos(linked) {
   const c = state.current;
+  await loadExpedienteFolders();
   // Elegir a qué expediente va el archivo
   const r = await modal({
     title: 'Subir archivo a Dropbox',
