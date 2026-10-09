@@ -113,6 +113,24 @@ export function buildPdf(c, { watermark = c.status !== 'final' } = {}) {
     }
   }
 
+  // Relación de anexos (documentos de las partes en Dropbox)
+  if (c.anexos?.length) {
+    ensure(LINE * 4);
+    y += 6;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('ANEXOS', M.left, y);
+    y += LINE + 1;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10.5);
+    c.anexos.forEach((a, i) => {
+      const lines = doc.splitTextToSize(`Anexo ${i + 1}. ${a.title || a.name}`, CONTENT_W);
+      ensure(lines.length * LINE);
+      doc.text(lines, M.left, y);
+      y += lines.length * LINE;
+    });
+  }
+
   // Constancia de firmas electrónicas avanzadas
   const efirmas = c.signers.map((sg) => [sg, c.signatures[sg.id]]).filter(([, sig]) => sig?.type === 'efirma');
   if (efirmas.length) {

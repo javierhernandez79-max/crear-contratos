@@ -1,5 +1,5 @@
 // Service worker: guarda la app en caché para que funcione sin conexión.
-const CACHE = 'crear-contratos-v3';
+const CACHE = 'crear-contratos-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -14,6 +14,9 @@ const ASSETS = [
   './js/efirma.js',
   './js/parties.js',
   './js/catalog-xlsx.js',
+  './js/config.js',
+  './js/dropbox.js',
+  './js/sync.js',
   './vendor/forge.min.js',
   './vendor/jspdf.umd.min.js',
   './vendor/exceljs.min.js',

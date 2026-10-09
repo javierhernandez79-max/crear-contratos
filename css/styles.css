@@ -455,3 +455,32 @@ input[type=file] { padding: 8px; font-size: 14px; }
 @media (max-width: 640px) {
   .page-head { flex-wrap: wrap; align-items: flex-start; }
 }
+
+/* ---------- Dropbox ---------- */
+.sync-pill {
+  position: fixed; top: 10px; right: 12px; z-index: 20; display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12px/1 var(--font); padding: 7px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted); box-shadow: var(--shadow);
+}
+.sync-pill.ok { color: var(--ok); }
+.sync-pill.busy { color: var(--primary); }
+.sync-pill.busy .icon { animation: pulse 1s ease-in-out infinite alternate; }
+.sync-pill.error { color: var(--danger); border-color: var(--danger); }
+@keyframes pulse { to { opacity: .3; } }
+body.in-editor .sync-pill { top: auto; bottom: 14px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 14px; }
+.crumbs .link { padding: 4px 2px; }
+.dbx-list { max-height: 50dvh; overflow: auto; border: 1px solid var(--border); border-radius: 12px; padding: 4px; }
+.dbx-list .menu-item { font-weight: 500; }
+.file-item { cursor: pointer; }
+.file-item input { width: 18px; height: 18px; accent-color: var(--primary); }
+.file-item span:first-of-type { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.anexos { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.anexo { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; }
+.anexo-main { flex: 1 1 260px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.anexo-main input { font-weight: 600; }
+.anexo-main .mono { overflow-wrap: anywhere; }
+.field-with-btn { display: flex; gap: 8px; align-items: flex-end; }
+.form-grid.full { width: 100%; }
+.settings-block .steps { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.settings-block code { overflow-wrap: anywhere; }

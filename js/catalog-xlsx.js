@@ -165,7 +165,7 @@ function readSheet(wb, name, cols) {
 
 /**
  * Lee el Excel y lo combina con el catálogo actual.
- * Devuelve { parties, created, updated, warnings } — `parties` son solo las nuevas o actualizadas.
+ * Devuelve { parties, created, updated, warnings, renamed, missingIds } — `parties` son solo las nuevas o actualizadas.
  */
 export async function xlsxToCatalog(ExcelJS, buffer, current) {
   const wb = new ExcelJS.Workbook();
@@ -177,6 +177,8 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
   const byId = new Map(current.map((p) => [p.id, p]));
   const byKey = new Map(current.map((p) => [partyKey(p), p]));
   const result = [];
+  const renamed = []; // [idLocal, idDelExcel]
+  let missingIds = 0; // filas capturadas a mano en Excel, sin ID todavía
   let created = 0;
   let updated = 0;
 
@@ -184,6 +186,12 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
     if (!row.nombre) { warnings.push(`Partes, fila ${row._row}: sin nombre, se omitió.`); continue; }
     const existing = (row.id && byId.get(row.id)) || byKey.get(partyKey(row));
     const p = existing ? structuredClone(existing) : newParty(row.kind, row.propia);
+    // El ID del Excel manda (lo escribió la app en algún equipo): así todos usan el mismo
+    if (row.id && p.id !== row.id) {
+      if (existing) renamed.push([existing.id, row.id]);
+      p.id = row.id;
+    }
+    if (!row.id) missingIds++;
     for (const [, key] of PARTES) if (key !== 'id' && row[key] !== undefined) p[key] = row[key];
     if (existing) {
       // Las listas se reconstruyen desde sus hojas; se conservan los ID por nombre
@@ -213,5 +221,5 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
     }
   }
   for (const p of final.values()) delete p._prev;
-  return { parties: [...final.values()], created, updated, warnings };
+  return { parties: [...final.values()], created, updated, warnings, renamed, missingIds };
 }
