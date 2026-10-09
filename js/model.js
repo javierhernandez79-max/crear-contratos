@@ -39,7 +39,7 @@ export function newContractFromTemplate(tpl) {
     variables,
     currency: 'MXN',
     sections: tpl.sections.map((sec) => ({ id: uid(), title: sec.title, body: sec.body })),
-    signers: tpl.signers.map((sg) => ({ id: uid(), role: sg.role, name: sg.name })),
+    signers: tpl.signers.map((sg) => ({ id: uid(), role: sg.role, name: sg.name, ...(sg.bind ? { bind: { ...sg.bind } } : {}) })),
     signatures: {},
     signedHash: null,
     versions: [],
@@ -208,7 +208,7 @@ export function contractToTemplate(c, name) {
     name,
     description: `Plantilla propia creada el ${new Date().toLocaleDateString('es-MX')}`,
     vars: c.varDefs.map((d) => [d.key, d.label, d.type, d.key === 'fecha_firma' ? undefined : c.variables[d.key] || undefined]),
-    signers: c.signers.map(({ role, name }) => ({ role, name })),
+    signers: c.signers.map(({ role, name, bind }) => ({ role, name, ...(bind ? { bind } : {}) })),
     sections: c.sections.map(({ title, body }) => ({ title, body })),
     createdAt: Date.now(),
   };

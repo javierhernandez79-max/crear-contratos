@@ -3,8 +3,12 @@ import { TEMPLATES, CLAUSES, CATEGORIES } from './templates.js';
 import {
   uid, VAR_TYPES, slugify, newContractFromTemplate, syncVarDefs, usedVariables, fill,
   missingVariables, contentHash, addVersion, restoreVersion, logChange, duplicateContract,
-  contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma,
+  contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
+import {
+  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate,
+} from './parties.js';
+import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { createSignaturePad } from './signature.js';
@@ -13,6 +17,10 @@ import { createSignaturePad } from './signature.js';
 const state = {
   contracts: [],
   userTemplates: [],
+  parties: [],
+  partyFilter: 'todas',
+  partyQuery: '',
+  returnTo: null, // { contractId, signerId } al capturar una parte nueva desde un contrato
   current: null, // contrato abierto en el editor
   homeFilter: 'todos',
   homeQuery: '',
@@ -53,6 +61,12 @@ const ICONS = {
   alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
   share: '<path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v14"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
+  user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -124,6 +138,7 @@ async function promptDialog(title, label, value = '', okLabel = 'Guardar') {
 async function loadAll() {
   state.contracts = (await db.getAll('contracts')).sort((a, b) => b.updatedAt - a.updatedAt);
   state.userTemplates = (await db.getAll('templates')).sort((a, b) => b.createdAt - a.createdAt);
+  state.parties = await db.getAll('parties');
 }
 
 async function saveContract(c) {
@@ -174,6 +189,7 @@ function route() {
   state.current = null;
   document.body.classList.remove('in-editor');
   if (view === 'plantillas') return renderTemplates();
+  if (view === 'catalogo') return id ? renderPartyEditor(id) : renderCatalog();
   if (view === 'ajustes') return renderSettings();
   return renderHome();
 }
@@ -713,11 +729,16 @@ function renderVariables(focusKey) {
   const used = usedVariables(c);
   const defs = c.varDefs;
   const usedDefs = defs.filter((d) => used.has(d.key));
-  const unused = defs.filter((d) => !used.has(d.key));
+  // Las variables del catálogo que no se usan en el texto se agrupan aparte para no saturar
+  const prefixes = c.signers.filter((s) => s.party).map((s) => `${s.party.prefix}_`);
+  const fromCatalog = (d) => prefixes.some((p) => d.key.startsWith(p));
+  const unused = defs.filter((d) => !used.has(d.key) && !fromCatalog(d));
+  const catalogUnused = defs.filter((d) => !used.has(d.key) && fromCatalog(d));
   const missing = missingVariables(c).length;
   const box = tabBox();
   box.innerHTML = `
     ${efirmaEditBanner(c)}
+    ${partiesBlock(c)}
     <div class="var-intro card soft">
       <div>
         <strong>${missing ? `${missing} de ${usedDefs.length} datos por completar` : 'Todos los datos están completos'}</strong>
@@ -729,6 +750,9 @@ function renderVariables(focusKey) {
     </div>
     <div class="vars">${usedDefs.map((d) => varRow(d, true)).join('')}</div>
     ${unused.length ? `<h4 class="sub">No usadas en el texto</h4><div class="vars">${unused.map((d) => varRow(d, false)).join('')}</div>` : ''}
+    ${catalogUnused.length ? `<details class="catalog-vars"><summary>Datos del catálogo disponibles para insertar (${catalogUnused.length})</summary>
+      <p class="muted small">Insértalos en cualquier sección con el botón ${icon('braces', 'xs')}.</p>
+      <div class="vars">${catalogUnused.map((d) => varRow(d, false)).join('')}</div></details>` : ''}
     <form class="card new-var-form" id="new-var">
       <strong>Nueva variable</strong>
       <div class="row">
@@ -769,6 +793,8 @@ function renderVariables(focusKey) {
     }
   });
   box.addEventListener('click', async (e) => {
+    const pbtn = e.target.closest('button[data-pact]');
+    if (pbtn) return partyAction(pbtn.dataset.pact, c.signers.find((s) => s.id === pbtn.closest('[data-sid]')?.dataset.sid));
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const key = btn.closest('.var-row').dataset.key;
@@ -1195,6 +1221,456 @@ function renderVersions() {
   });
 }
 
+// ---------- Catálogo de partes ----------
+let excelReady;
+function loadExcel() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  excelReady ??= new Promise((resolve, reject) => {
+    const s = Object.assign(document.createElement('script'), { src: 'vendor/exceljs.min.js' });
+    s.onload = () => resolve(window.ExcelJS);
+    s.onerror = () => { excelReady = null; reject(new Error('No se pudo cargar el módulo de Excel')); };
+    document.head.appendChild(s);
+  });
+  return excelReady;
+}
+
+async function saveParty(p) {
+  p.updatedAt = Date.now();
+  await db.put('parties', structuredClone(p));
+  const i = state.parties.findIndex((x) => x.id === p.id);
+  if (i >= 0) state.parties[i] = p; else state.parties.push(p);
+}
+
+const sortParties = (list) => [...list].sort((a, b) => (b.propia - a.propia) || (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+
+function partyBadges(p) {
+  return `${p.propia ? '<span class="badge grupo">Grupo</span>' : '<span class="badge contraparte">Contraparte</span>'}
+    ${p.activa ? '' : '<span class="badge inactiva">Inactiva</span>'}`;
+}
+
+function renderCatalog() {
+  setNav('catalog');
+  const q = state.partyQuery;
+  const activas = state.parties.filter((p) => p.activa);
+  const groups = {
+    todas: activas,
+    grupo: activas.filter((p) => p.propia),
+    contrapartes: activas.filter((p) => !p.propia),
+    inactivas: state.parties.filter((p) => !p.activa),
+  };
+  const list = sortParties(groups[state.partyFilter].filter((p) => matchesQuery(p, q)));
+
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Datos de las partes</p>
+        <h1>Catálogo</h1>
+      </div>
+      <div class="row">
+        <button class="btn" id="cat-export">${icon('download')}<span class="hide-xs">Exportar Excel</span></button>
+        <label class="btn">${icon('upload')}<span class="hide-xs">Importar Excel</span><input type="file" id="cat-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+        <button class="btn primary" id="cat-new">${icon('plus')} Nueva</button>
+      </div>
+    </header>
+    ${state.parties.length ? `
+      <div class="toolbar">
+        <label class="search">${icon('search')}<input id="cat-q" type="search" placeholder="Buscar por nombre o RFC" value="${esc(q)}"></label>
+        <div class="chips">
+          ${[['todas', 'Activas'], ['grupo', 'Empresas del grupo'], ['contrapartes', 'Contrapartes'], ['inactivas', 'Inactivas']].map(([k, l]) =>
+            `<button class="chip ${state.partyFilter === k ? 'on' : ''}" data-pf="${k}">${l} <span>${groups[k].length}</span></button>`).join('')}
+        </div>
+      </div>
+      <div class="grid">
+        ${list.map((p) => {
+          const gaps = partyGaps(p);
+          const apos = p.apoderados.filter((a) => a.vigente).length;
+          return `
+          <article class="card party-card" data-id="${p.id}" tabindex="0">
+            <div class="card-top"><span class="tpl-cat">${PARTY_KINDS[p.kind]}</span><span>${partyBadges(p)}</span></div>
+            <h3>${esc(p.nombre || 'Sin nombre')}</h3>
+            <p class="muted small mono">${esc(p.rfc || 'Sin RFC')}</p>
+            <div class="meta">
+              ${p.kind === 'pm' ? `<span>${apos} apoderado${apos === 1 ? '' : 's'} vigente${apos === 1 ? '' : 's'}</span>` : ''}
+              ${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Datos completos</span>'}
+            </div>
+          </article>`;
+        }).join('') || '<p class="empty-inline">Sin resultados.</p>'}
+      </div>` : `
+      <section class="empty">
+        <div class="empty-art">${icon('users')}</div>
+        <h2>Arma tu catálogo de partes</h2>
+        <p>Captura las empresas del grupo y las contrapartes una sola vez: razón social, RFC, escritura constitutiva, apoderados y accionistas. Después llénalas en cualquier contrato con un clic.</p>
+        <p class="small muted">También puedes descargar la plantilla de Excel (botón “Exportar Excel”), llenarla y volver a importarla.</p>
+      </section>`}`;
+
+  $('#cat-q')?.addEventListener('input', (e) => {
+    state.partyQuery = e.target.value;
+    const pos = e.target.selectionStart;
+    renderCatalog();
+    const el = $('#cat-q'); el.focus(); el.setSelectionRange(pos, pos);
+  });
+  $$('[data-pf]').forEach((b) => b.addEventListener('click', () => { state.partyFilter = b.dataset.pf; renderCatalog(); }));
+  $$('.party-card').forEach((card) => card.addEventListener('click', () => go(`#/catalogo/${card.dataset.id}`)));
+  $('#cat-new').addEventListener('click', () => createParty());
+  $('#cat-export').addEventListener('click', exportCatalog);
+  $('#cat-import').addEventListener('change', (e) => importCatalog(e.target.files[0]));
+}
+
+async function createParty(defaults = {}) {
+  const r = await modal({
+    title: 'Nueva parte',
+    body: `<div class="menu-list">
+      <button value="pm-grupo" class="menu-item">${icon('building')} Empresa del grupo (persona moral)</button>
+      <button value="pm" class="menu-item">${icon('building')} Contraparte: persona moral</button>
+      <button value="pf" class="menu-item">${icon('user')} Contraparte: persona física</button>
+    </div>`,
+  });
+  if (!r.value) return null;
+  const p = newParty(r.value.startsWith('pm') ? 'pm' : 'pf', r.value === 'pm-grupo');
+  Object.assign(p, defaults);
+  await saveParty(p);
+  go(`#/catalogo/${p.id}`);
+  return p;
+}
+
+async function exportCatalog() {
+  try {
+    const ExcelJS = await loadExcel();
+    const buf = await catalogToXlsx(ExcelJS, state.parties);
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    download(blob, state.parties.length ? `catalogo-partes-${todayISO()}.xlsx` : 'catalogo-partes-plantilla.xlsx');
+    toast(state.parties.length ? 'Catálogo exportado' : 'Plantilla de Excel descargada', 'ok');
+  } catch (err) {
+    console.error(err);
+    toast('No se pudo generar el Excel', 'error');
+  }
+}
+
+async function importCatalog(file) {
+  if (!file) return;
+  let res;
+  try {
+    const ExcelJS = await loadExcel();
+    res = await xlsxToCatalog(ExcelJS, await file.arrayBuffer(), state.parties);
+  } catch (err) {
+    console.error(err);
+    return toast(err.message?.startsWith('El archivo') ? err.message : 'No se pudo leer el Excel', 'error');
+  }
+  if (!res.parties.length) return toast('El Excel no tiene filas en la hoja "Partes"', 'error');
+  const r = await modal({
+    title: 'Importar catálogo',
+    body: `
+      <p><strong>${res.created}</strong> nueva(s) y <strong>${res.updated}</strong> actualizada(s). Las partes que no estén en el Excel se conservan sin cambios.</p>
+      ${res.warnings.length ? `<div class="banner warn">${icon('alert')} <span>${res.warnings.length} aviso(s)</span></div>
+        <ul class="small muted warn-list">${res.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost' }, { label: 'Importar', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  for (const p of res.parties) await saveParty(p);
+  toast('Catálogo actualizado', 'ok');
+  renderCatalog();
+}
+
+// --- Ficha de una parte ---
+const PARTY_FIELDS = {
+  general: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo', 'email'], ['telefono', 'Teléfono']],
+  pm: [['escrituraNumero', 'Escritura constitutiva núm.'], ['escrituraFecha', 'Fecha de constitución', 'date'], ['notario', 'Notario (con título)', 'text', 'Lic. Juan Pérez López'],
+    ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría', 'text', 'la Ciudad de México'], ['folioMercantil', 'Folio mercantil electrónico']],
+  pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
+  apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
+    ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…']],
+};
+
+function fieldHTML(obj, [key, label, type = 'text', ph = ''], attrs = '') {
+  const v = esc(obj[key] ?? '');
+  const a = `data-k="${key}" ${attrs} ${ph ? `placeholder="${esc(ph)}"` : ''}`;
+  const input = type === 'address'
+    ? `<textarea rows="2" ${a}>${v}</textarea>`
+    : `<input type="${type === 'date' ? 'date' : type === 'email' ? 'email' : 'text'}" ${a} value="${v}">`;
+  return `<label class="field"><span>${esc(label)}</span>${input}</label>`;
+}
+
+function renderPartyEditor(id) {
+  setNav('catalog');
+  const p = state.parties.find((x) => x.id === id);
+  if (!p) { toast('No se encontró en el catálogo', 'error'); return go('#/catalogo'); }
+  const ret = state.returnTo;
+  const totalAcc = p.accionistas.reduce((s, a) => s + (Number(String(a.acciones).replace(/[^0-9.]/g, '')) || 0), 0);
+  const pct = (a) => {
+    const n = Number(String(a.acciones).replace(/[^0-9.]/g, '')) || 0;
+    return totalAcc ? `${(n / totalAcc * 100).toLocaleString('es-MX', { maximumFractionDigits: 2 })} %` : '';
+  };
+  const gaps = partyGaps(p);
+
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/catalogo">Catálogo</a> · ${PARTY_KINDS[p.kind]}</p>
+        <h1>${esc(p.nombre || 'Nueva parte')}</h1>
+      </div>
+      <span id="party-save" class="muted small">Guardado</span>
+    </header>
+    ${ret ? `<div class="banner info">${icon('link')} <span>Al terminar, úsala en el contrato.</span><button class="btn sm primary" id="use-in-contract">Usar en el contrato</button></div>` : ''}
+    ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …].</span></div>` : ''}
+    <form class="party-form" id="party-form" autocomplete="off">
+      <section class="card form-block">
+        <div class="row">
+          <label class="field inline"><span>Tipo</span>
+            <select data-k="kind">${Object.entries(PARTY_KINDS).map(([k, l]) => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          </label>
+          <label class="check"><input type="checkbox" data-k="propia" ${p.propia ? 'checked' : ''}> Empresa del grupo</label>
+          <label class="check"><input type="checkbox" data-k="activa" ${p.activa ? 'checked' : ''}> Activa</label>
+        </div>
+        <div class="form-grid">${PARTY_FIELDS.general.map((f) => fieldHTML(p, f)).join('')}</div>
+      </section>
+      ${p.kind === 'pm' ? `
+      <section class="card form-block">
+        <h3>Escritura constitutiva</h3>
+        <div class="form-grid">${PARTY_FIELDS.pm.map((f) => fieldHTML(p, f)).join('')}</div>
+      </section>
+      <section class="card form-block">
+        <h3>Apoderados <span class="muted small">(en cada contrato se pregunta quién firma)</span></h3>
+        ${p.apoderados.map((a, i) => `
+          <div class="sub-item" data-list="apoderados" data-i="${i}">
+            <div class="form-grid">${PARTY_FIELDS.apoderado.map((f) => fieldHTML(a, f)).join('')}</div>
+            <div class="row end">
+              <label class="check"><input type="checkbox" data-k="vigente" ${a.vigente ? 'checked' : ''}> Poder vigente</label>
+              <button type="button" class="link danger" data-act="del-item">Quitar</button>
+            </div>
+          </div>`).join('') || '<p class="muted small">Sin apoderados.</p>'}
+        <button type="button" class="btn sm" data-act="add-apoderado">${icon('plus')} Agregar apoderado</button>
+      </section>
+      <section class="card form-block">
+        <h3>Accionistas</h3>
+        ${p.accionistas.length ? `
+        <div class="acc-table">
+          <span class="muted small">Accionista</span><span class="muted small">Acciones</span><span class="muted small">Serie</span><span class="muted small">%</span><span></span>
+          ${p.accionistas.map((a, i) => `
+            <input data-list="accionistas" data-i="${i}" data-k="nombre" value="${esc(a.nombre)}" aria-label="Accionista">
+            <input data-list="accionistas" data-i="${i}" data-k="acciones" value="${esc(a.acciones)}" inputmode="numeric" aria-label="Acciones">
+            <input data-list="accionistas" data-i="${i}" data-k="serie" value="${esc(a.serie)}" aria-label="Serie">
+            <span class="small acc-pct">${pct(a)}</span>
+            <button type="button" class="icon-btn sm danger" data-list="accionistas" data-i="${i}" data-act="del-item" aria-label="Quitar">${icon('trash')}</button>`).join('')}
+        </div>
+        <p class="muted small">Total: ${totalAcc.toLocaleString('es-MX')} acciones</p>` : '<p class="muted small">Sin accionistas.</p>'}
+        <button type="button" class="btn sm" data-act="add-accionista">${icon('plus')} Agregar accionista</button>
+      </section>` : `
+      <section class="card form-block">
+        <h3>Datos personales</h3>
+        <div class="form-grid">${PARTY_FIELDS.pf.map((f) => fieldHTML(p, f)).join('')}</div>
+      </section>`}
+      <section class="card form-block">
+        <h3>Expediente y notas</h3>
+        <div class="form-grid">
+          ${fieldHTML(p, ['expediente', 'Carpeta del expediente en Dropbox', 'text', '/Corporativo/Empresa/…'])}
+          ${fieldHTML(p, ['notas', 'Notas', 'address'])}
+        </div>
+      </section>
+      <section class="card form-block">
+        <h3>Vista previa de declaraciones</h3>
+        <p class="muted small">Así se insertará con la variable de declaraciones${p.kind === 'pm' ? ' (con el primer apoderado vigente)' : ''}.</p>
+        <p class="decl-preview">${esc(declaracionesText(p, p.apoderados.find((a) => a.vigente)))}</p>
+      </section>
+      <div class="row">
+        <button type="button" class="btn ghost danger" data-act="delete">${icon('trash')} Eliminar del catálogo</button>
+      </div>
+    </form>`;
+
+  const form = $('#party-form');
+  const status = (t) => { const el = $('#party-save'); if (el) el.textContent = t; };
+  const persist = debounce(async () => { await saveParty(p); status('Guardado'); }, 400);
+  const target = (el) => (el.dataset.list ? p[el.dataset.list][Number(el.dataset.i)]
+    : el.closest('[data-list]') ? p[el.closest('[data-list]').dataset.list][Number(el.closest('[data-list]').dataset.i)] : p);
+
+  form.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    if (!k || e.target.type === 'checkbox' || k === 'kind') return;
+    target(e.target)[k] = k === 'rfc' || k === 'curp' ? e.target.value.toUpperCase() : e.target.value;
+    status('Guardando…');
+    persist();
+  });
+  form.addEventListener('change', async (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    if (e.target.type === 'checkbox') target(e.target)[k] = e.target.checked;
+    else if (k === 'kind') p.kind = e.target.value;
+    else if (k === 'rfc' || k === 'curp') e.target.value = e.target.value.toUpperCase();
+    await saveParty(p);
+    // Redibuja para recalcular faltantes, porcentajes y la vista previa (si seguimos en la ficha)
+    if (location.hash !== `#/catalogo/${p.id}`) return;
+    const y = window.scrollY;
+    renderPartyEditor(p.id);
+    window.scrollTo(0, y);
+  });
+  form.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const y = window.scrollY;
+    switch (btn.dataset.act) {
+      case 'add-apoderado': p.apoderados.push(newApoderado()); break;
+      case 'add-accionista': p.accionistas.push(newAccionista()); break;
+      case 'del-item': {
+        const holder = btn.dataset.list ? btn : btn.closest('[data-list]');
+        p[holder.dataset.list].splice(Number(holder.dataset.i), 1);
+        break;
+      }
+      case 'delete': {
+        const used = state.contracts.filter((c) => c.signers.some((s) => s.party?.id === p.id)).length;
+        if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa".`, 'Eliminar'))) return;
+        await db.remove('parties', p.id);
+        state.parties = state.parties.filter((x) => x.id !== p.id);
+        toast('Eliminada del catálogo');
+        return go('#/catalogo');
+      }
+      default: return;
+    }
+    await saveParty(p);
+    renderPartyEditor(p.id);
+    window.scrollTo(0, y);
+  });
+  $('#use-in-contract')?.addEventListener('click', async () => {
+    await saveParty(p);
+    const { contractId, signerId } = state.returnTo;
+    state.returnTo = null;
+    const c = state.contracts.find((x) => x.id === contractId);
+    const sg = c?.signers.find((s) => s.id === signerId);
+    if (!sg) return go('#/catalogo');
+    state.current = c;
+    if (await linkPartyToSigner(sg, p)) await saveContract(c);
+    go(`#/c/${c.id}/variables`);
+  });
+}
+
+// --- Partes dentro del contrato (pestaña Variables) ---
+function partiesBlock(c) {
+  if (!c.signers.length) return '';
+  const linked = c.signers.filter((s) => s.party);
+  const hasDecl = c.sections.some((s) => /declaraciones/i.test(s.title));
+  return `
+    <section class="card parties-box">
+      <div class="parties-head">
+        <strong>Partes del contrato</strong>
+        <span class="muted small">Elige del catálogo y se llenan nombre, RFC, domicilio, representante, escritura y declaraciones.</span>
+      </div>
+      ${c.signers.map((sg) => {
+        const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
+        const apo = p?.apoderados.find((a) => a.id === sg.party.apoderadoId);
+        return `
+        <div class="party-slot" data-sid="${sg.id}">
+          <div class="party-slot-info">
+            <span class="muted small">${esc(sg.role)}</span>
+            <strong>${sg.party ? esc(p?.nombre || 'Parte eliminada del catálogo') : '<span class="muted">Sin vincular</span>'}</strong>
+            ${apo ? `<span class="small">Firma: ${esc(apo.nombre)} · ${esc(apo.cargo)}</span>` : ''}
+            ${sg.party ? `<span class="small muted">Variables: <code>{{${esc(sg.party.prefix)}_…}}</code></span>` : ''}
+          </div>
+          <div class="party-slot-actions">
+            ${sg.party ? `
+              ${p ? '<button class="btn sm" data-pact="refresh" title="Volver a copiar los datos del catálogo">Actualizar</button>' : ''}
+              <button class="btn sm" data-pact="pick">Cambiar</button>
+              <button class="link danger" data-pact="unlink">Desvincular</button>`
+              : `<button class="btn sm primary" data-pact="pick">${icon('users')} Elegir del catálogo</button>`}
+          </div>
+        </div>`;
+      }).join('')}
+      ${linked.length && !hasDecl ? `<button class="btn sm" data-pact="decl">${icon('plus')} Agregar sección de Declaraciones</button>` : ''}
+    </section>`;
+}
+
+async function pickParty(sg) {
+  const c = state.current;
+  const list = sortParties(state.parties.filter((p) => p.activa));
+  const item = (p) => `
+    <button value="${p.id}" class="menu-item party-pick" data-search="${esc(`${p.nombre} ${p.rfc}`.toLowerCase())}">
+      ${icon(p.kind === 'pm' ? 'building' : 'user')}
+      <span><strong>${esc(p.nombre || 'Sin nombre')}</strong><span class="muted small mono">${esc(p.rfc)}</span></span>
+    </button>`;
+  const grupo = list.filter((p) => p.propia);
+  const otras = list.filter((p) => !p.propia);
+  const r = await modal({
+    title: `Elegir parte: ${sg.role}`,
+    body: `
+      <label class="search">${icon('search')}<input id="pick-q" type="search" placeholder="Buscar por nombre o RFC" autofocus></label>
+      ${grupo.length ? `<h4 class="sub">Empresas del grupo</h4><div class="menu-list">${grupo.map(item).join('')}</div>` : ''}
+      ${otras.length ? `<h4 class="sub">Contrapartes</h4><div class="menu-list">${otras.map(item).join('')}</div>` : ''}
+      ${list.length ? '' : '<p class="muted">El catálogo está vacío.</p>'}`,
+    actions: [{ label: 'Capturar nueva en el catálogo', value: '__new', kind: 'ghost' }],
+    wide: true,
+    onOpen: (dlg) => {
+      $('#pick-q', dlg).addEventListener('input', (e) => {
+        const q = e.target.value.toLowerCase().trim();
+        $$('.party-pick', dlg).forEach((b) => { b.hidden = q && !b.dataset.search.includes(q); });
+      });
+    },
+  });
+  if (!r.value) return;
+  if (r.value === '__new') {
+    await saveNow();
+    state.returnTo = { contractId: c.id, signerId: sg.id };
+    return createParty();
+  }
+  const p = state.parties.find((x) => x.id === r.value);
+  if (await linkPartyToSigner(sg, p)) renderVariables();
+}
+
+/** Pregunta quién firma (personas morales) y escribe los datos en el contrato. */
+async function linkPartyToSigner(sg, p, apoderadoId) {
+  const c = state.current;
+  let apo = null;
+  if (p.kind === 'pm') {
+    if (apoderadoId === undefined) {
+      const apos = p.apoderados.filter((a) => a.nombre.trim());
+      const r = await modal({
+        title: `¿Quién firma por ${p.nombre}?`,
+        body: apos.length ? `<div class="radio-list">${apos.map((a, i) => `
+          <label class="radio-item ${a.vigente ? '' : 'off'}">
+            <input type="radio" name="apo" value="${a.id}" ${i === 0 && a.vigente ? 'checked' : ''} required>
+            <span><span><strong>${esc(a.nombre)}</strong> · ${esc(a.cargo)}${a.vigente ? '' : ' · <span class="warn-text">poder no vigente</span>'}</span>
+            <span class="muted small">${a.poderNumero ? `Escritura ${esc(a.poderNumero)}${a.poderFecha ? ` del ${esc(fmtLongDate(a.poderFecha))}` : ''}` : 'Sin datos del poder'}${a.facultades ? ` · ${esc(a.facultades)}` : ''}</span></span>
+          </label>`).join('')}
+          <label class="radio-item"><input type="radio" name="apo" value="none"> <span>Sin representante por ahora</span></label></div>`
+          : `<p class="muted">Esta empresa no tiene apoderados en el catálogo. Se vinculará sin representante; agrégalo en el catálogo y pulsa “Actualizar”.</p><input type="hidden" name="apo" value="none">`,
+        actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Usar', value: 'ok', kind: 'primary' }],
+      });
+      if (r.value !== 'ok') return false;
+      apoderadoId = r.data.apo === 'none' ? null : r.data.apo;
+    }
+    apo = p.apoderados.find((a) => a.id === apoderadoId) || null;
+  }
+  applyParty(c, sg, p, apo);
+  syncVarDefs(c);
+  touched({ log: `Vinculó a ${p.nombre} como ${sg.role}${apo ? ` (firma ${apo.nombre})` : ''}` });
+  toast('Datos del catálogo aplicados', 'ok');
+  return true;
+}
+
+async function partyAction(act, sg) {
+  const c = state.current;
+  if (act === 'pick') return pickParty(sg);
+  if (act === 'refresh') {
+    const p = state.parties.find((x) => x.id === sg.party.id);
+    const keep = p.apoderados.some((a) => a.id === sg.party.apoderadoId) ? sg.party.apoderadoId : undefined;
+    if (await linkPartyToSigner(sg, p, keep)) renderVariables();
+    return;
+  }
+  if (act === 'unlink') {
+    delete sg.party;
+    touched({ log: `Desvinculó del catálogo a ${sg.role}`, content: false });
+    toast('Desvinculado. Los datos ya escritos se conservan.');
+    return renderVariables();
+  }
+  if (act === 'decl') {
+    const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+    const body = c.signers.filter((s) => s.party).map((s, i) =>
+      `${roman[i] || i + 1}. Declara ${/^(el|la|los|las)\s/i.test(s.role) ? s.role.replace(/^\S+/, (m) => m.toLowerCase()) : `la ${s.role}`}, ${c.varDefs.some((d) => d.key === `${s.party.prefix}_representante`) && c.variables[`${s.party.prefix}_representante`] ? `por conducto de su representante, ` : ''}bajo protesta de decir verdad:\n{{${s.party.prefix}_declaraciones}}`).join('\n');
+    const idx = c.sections.findIndex((s) => /^partes$/i.test(s.title.trim()));
+    c.sections.splice(idx >= 0 ? idx + 1 : 0, 0, { id: uid(), title: 'Declaraciones', body });
+    syncVarDefs(c);
+    touched({ log: 'Agregó la sección de Declaraciones' });
+    toast('Sección de Declaraciones agregada', 'ok');
+    return renderVariables();
+  }
+}
+
 // ---------- Ajustes ----------
 async function renderSettings() {
   setNav('settings');
@@ -1216,7 +1692,7 @@ async function renderSettings() {
     <section class="card settings-block">
       <h3>Tus datos</h3>
       <p class="muted">Tus contratos se guardan solo en este dispositivo (no hay servidor ni cuenta). ${usage ? esc(usage) + '.' : ''} ${persisted ? 'El almacenamiento está protegido contra limpieza automática.' : ''}</p>
-      <p class="muted small">${state.contracts.length} contratos · ${state.userTemplates.length} plantillas propias</p>
+      <p class="muted small">${state.contracts.length} contratos · ${state.userTemplates.length} plantillas propias · ${state.parties.length} partes en el catálogo</p>
       <div class="row wrap">
         <button class="btn" id="export">${icon('pdf')} Exportar respaldo (.json)</button>
         <label class="btn">Importar respaldo<input type="file" id="import" accept="application/json,.json" hidden></label>
@@ -1235,7 +1711,7 @@ async function renderSettings() {
     renderSettings();
   });
   $('#export').addEventListener('click', () => {
-    const data = { app: 'crear-contratos', version: 1, exportedAt: new Date().toISOString(), contracts: state.contracts, templates: state.userTemplates };
+    const data = { app: 'crear-contratos', version: 1, exportedAt: new Date().toISOString(), contracts: state.contracts, templates: state.userTemplates, parties: state.parties };
     download(new Blob([JSON.stringify(data)], { type: 'application/json' }), `respaldo-contratos-${new Date().toISOString().slice(0, 10)}.json`);
     toast('Respaldo descargado', 'ok');
   });
@@ -1246,9 +1722,10 @@ async function renderSettings() {
       const data = JSON.parse(await file.text());
       if (data.app !== 'crear-contratos') throw new Error('formato');
       const n = (data.contracts || []).length;
-      if (!(await confirmDialog('Importar respaldo', `Se importarán ${n} contratos y ${(data.templates || []).length} plantillas. Los que tengan el mismo identificador se reemplazarán.`, 'Importar', 'primary'))) return;
+      if (!(await confirmDialog('Importar respaldo', `Se importarán ${n} contratos, ${(data.templates || []).length} plantillas y ${(data.parties || []).length} partes del catálogo. Los que tengan el mismo identificador se reemplazarán.`, 'Importar', 'primary'))) return;
       for (const c of data.contracts || []) await db.put('contracts', c);
       for (const t of data.templates || []) await db.put('templates', t);
+      for (const p of data.parties || []) await db.put('parties', p);
       await loadAll();
       toast('Respaldo importado', 'ok');
       renderSettings();
@@ -1257,9 +1734,10 @@ async function renderSettings() {
     }
   });
   $('#wipe').addEventListener('click', async () => {
-    if (!(await confirmDialog('Borrar todos los datos', 'Se eliminarán todos los contratos, versiones, firmas y plantillas propias de este dispositivo. Exporta un respaldo antes si lo necesitas.', 'Borrar todo'))) return;
+    if (!(await confirmDialog('Borrar todos los datos', 'Se eliminarán todos los contratos, versiones, firmas, plantillas propias y el catálogo de partes de este dispositivo. Exporta un respaldo antes si lo necesitas.', 'Borrar todo'))) return;
     await db.clear('contracts');
     await db.clear('templates');
+    await db.clear('parties');
     await loadAll();
     toast('Datos eliminados');
     renderSettings();

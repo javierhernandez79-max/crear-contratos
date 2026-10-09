@@ -13,6 +13,7 @@ Backlog priorizado. Se construye una funcionalidad a la vez; no se avanza a la s
 - **Dispositivos**: arrancar en computadora; después móvil.
 - **Vencimientos**: sí, con alertas.
 - **Documentos de las partes**: se suben a Dropbox y se incluyen desde ahí.
+- **Catálogo** (2026-10-09): ~30 empresas propias, cambian con el tiempo. Campos según cada contrato marco. Varios apoderados por empresa; siempre preguntar quién firma. No hay Excel previo: la app genera uno que queda como catálogo, actualizable a mano o automáticamente. Dropbox va antes que Word.
 
 ## Decisión de arquitectura pendiente
 Hoy todo vive en el navegador de un solo equipo (IndexedDB). Con 3 usuarios, catálogo compartido y Dropbox, eso ya no alcanza. Propuesta: **Dropbox como almacén compartido** (catálogo, contratos y anexos en una carpeta del equipo), sin servidor propio. La firma remota sí requerirá un proveedor externo o un servidor.
@@ -21,11 +22,11 @@ Hoy todo vive en el navegador de un solo equipo (IndexedDB). Con 3 usuarios, cat
 
 | # | Funcionalidad | Por qué va en este lugar | Estado |
 |---|---|---|---|
-| 1 | **Catálogo de partes**: empresas propias (razón social, RFC, domicilio, escritura constitutiva, notario, folio mercantil, accionistas, apoderados y sus poderes) y contrapartes (PF/PM). Al elegir una parte, se llenan solas sus variables. | Base de todo lo demás: actas, lote y contratos dependen de estos datos. | Pendiente |
-| 2 | **Exportar a Word (.docx)** + flujo Borrador → En revisión → Aprobado → PDF. Montos en letra. | Es el flujo real de trabajo con los abogados. | Pendiente |
-| 3 | **Actas de asamblea**: ordinaria/extraordinaria (SA, SAPI, S de RL). Orden del día, lista de asistencia y quórum calculados con los accionistas del catálogo, resoluciones, delegado especial. | Segundo tipo de documento prioritario. | Pendiente |
-| 4 | **Generación en lote desde Excel** (contratos individuales de trabajo): una fila = un contrato; salida en .docx/.zip. | Alto ahorro de tiempo; requiere 1 y 2. | Pendiente |
-| 5 | **Dropbox**: carpeta compartida para catálogo, contratos y anexos de las partes (INE, actas, poderes); adjuntarlos al documento. | Habilita el trabajo de los 3 usuarios. | Pendiente |
+| 1 | ✅ **Catálogo de partes**: empresas propias (razón social, RFC, domicilio, escritura constitutiva, notario, folio mercantil, accionistas, apoderados y sus poderes) y contrapartes (PF/PM). Al elegir una parte, se llenan solas sus variables. | Base de todo lo demás: actas, lote y contratos dependen de estos datos. | Hecho (Excel importable/exportable) |
+| 2 | **Dropbox**: carpeta compartida para catálogo, contratos y anexos de las partes (INE, actas, poderes); adjuntarlos al documento. | Habilita el trabajo de los 3 usuarios. Javier pidió adelantarlo antes que Word. El catálogo vivirá como Excel en la carpeta compartida. | Pendiente |
+| 3 | **Exportar a Word (.docx)** + flujo Borrador → En revisión → Aprobado → PDF. Montos en letra. | Es el flujo real de trabajo con los abogados. | Pendiente |
+| 4 | **Actas de asamblea**: ordinaria/extraordinaria (SA, SAPI, S de RL). Orden del día, lista de asistencia y quórum calculados con los accionistas del catálogo, resoluciones, delegado especial. | Segundo tipo de documento prioritario. | Pendiente |
+| 5 | **Generación en lote desde Excel** (contratos individuales de trabajo): una fila = un contrato; salida en .docx/.zip. | Alto ahorro de tiempo; requiere 1 y 3. | Pendiente |
 | 6 | **Vencimientos y alertas**: fecha de término/renovación por contrato, tablero de próximos a vencer. | Control posterior a la firma. | Pendiente |
 | 7 | **Firma remota** de la contraparte (proveedor externo, p. ej. Mifiel/DocuSign, o liga propia). | Necesaria, pero la más costosa; conviene tener el flujo resuelto antes. | Pendiente |
 | 8 | **Extracción automática** de datos del expediente en Dropbox (actas constitutivas, poderes) para llenar el catálogo. | Ahorra captura, pero es lo más incierto técnicamente. | Pendiente |

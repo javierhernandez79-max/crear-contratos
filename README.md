@@ -4,6 +4,9 @@ App web instalable para crear, personalizar, firmar y exportar contratos. Funcio
 
 ## Funciones
 - Biblioteca de plantillas: NDA mutuo y unilateral, prestación de servicios, consultoría, contrato laboral, acuerdo entre socios, cesión de PI, licencia de uso, compraventa y documento en blanco.
+- **Catálogo de partes**: empresas del grupo y contrapartes (personas morales y físicas) con RFC, domicilio, escritura constitutiva, folio mercantil, apoderados con sus poderes y accionistas (con porcentaje calculado). Marca de "Activa" para dar de baja sin borrar.
+  - En el contrato (pestaña Variables → *Partes del contrato*) se elige la parte por firmante; para personas morales **siempre pregunta qué apoderado firma**. Llena las variables de la plantilla y genera `{{prefijo_nombre}}`, `_rfc`, `_domicilio`, `_representante`, `_constitucion`, `_poder` y `_declaraciones` (párrafo completo de declaraciones). Un botón agrega la sección de Declaraciones.
+  - Importar/exportar en Excel (.xlsx, hojas Partes, Apoderados y Accionistas). Plantilla vacía en `catalogo/catalogo-partes-plantilla.xlsx` o desde Catálogo → Exportar Excel con el catálogo vacío.
 - Biblioteca de 14 cláusulas para agregar con un toque.
 - Edición por secciones: agregar, eliminar, duplicar y reordenar (botones ↑↓ o arrastrar en escritorio).
 - Variables `{{clave}}` con tipo (texto, fecha, monto, número, dirección, correo); se detectan solas y se completan en todo el documento. Moneda configurable.
@@ -32,7 +35,9 @@ Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (N
 - `index.html`, `manifest.webmanifest`, `sw.js` — cascarón de la PWA
 - `js/app.js` — interfaz y navegación
 - `js/model.js` — variables, versiones, historial
-- `js/templates.js` — plantillas y cláusulas (edítalas aquí)
+- `js/templates.js` — plantillas y cláusulas (edítalas aquí). Cada firmante puede llevar `bind` para indicar qué variables llena el catálogo
+- `js/parties.js` — catálogo de partes: modelo, texto de declaraciones y vinculación con contratos
+- `js/catalog-xlsx.js` — catálogo ⇄ Excel (ExcelJS 4.4.0 en `vendor/`, se carga solo al usarlo)
 - `js/pdf.js` — generación de PDF (jsPDF 2.5.1 en `vendor/`)
 - `js/signature.js` — panel de firma autógrafa
 - `js/efirma.js` — firma electrónica avanzada (node-forge 1.3.1 en `vendor/`, se carga solo al usarla)
