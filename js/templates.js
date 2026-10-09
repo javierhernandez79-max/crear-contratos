@@ -35,8 +35,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'Parte A', name: '{{parte_a}}' },
-      { role: 'Parte B', name: '{{parte_b}}' },
+      { role: 'Parte A', name: '{{parte_a}}', bind: { prefix: 'a', nombre: 'parte_a', domicilio: 'domicilio_a' } },
+      { role: 'Parte B', name: '{{parte_b}}', bind: { prefix: 'b', nombre: 'parte_b', domicilio: 'domicilio_b' } },
     ],
     sections: [
       s('Partes', `
@@ -71,8 +71,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'Parte Reveladora', name: '{{reveladora}}' },
-      { role: 'Parte Receptora', name: '{{receptora}}' },
+      { role: 'Parte Reveladora', name: '{{reveladora}}', bind: { prefix: 'reveladora', nombre: 'reveladora' } },
+      { role: 'Parte Receptora', name: '{{receptora}}', bind: { prefix: 'receptora', nombre: 'receptora' } },
     ],
     sections: [
       s('Partes', `
@@ -109,8 +109,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Cliente', name: '{{cliente}}' },
-      { role: 'El Prestador', name: '{{prestador}}' },
+      { role: 'El Cliente', name: '{{cliente}}', bind: { prefix: 'cliente', nombre: 'cliente', domicilio: 'domicilio_cliente', correo: 'email_cliente' } },
+      { role: 'El Prestador', name: '{{prestador}}', bind: { prefix: 'prestador', nombre: 'prestador', domicilio: 'domicilio_prestador', correo: 'email_prestador' } },
     ],
     sections: [
       s('Partes', `
@@ -151,8 +151,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Cliente', name: '{{cliente}}' },
-      { role: 'El Consultor', name: '{{consultor}}' },
+      { role: 'El Cliente', name: '{{cliente}}', bind: { prefix: 'cliente', nombre: 'cliente' } },
+      { role: 'El Consultor', name: '{{consultor}}', bind: { prefix: 'consultor', nombre: 'consultor' } },
     ],
     sections: [
       s('Partes', `
@@ -190,8 +190,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Patrón', name: '{{empresa}}, representada por {{representante}}' },
-      { role: 'El Trabajador', name: '{{trabajador}}' },
+      { role: 'El Patrón', name: '{{empresa}}, representada por {{representante}}', bind: { prefix: 'patron', nombre: 'empresa', representante: 'representante' } },
+      { role: 'El Trabajador', name: '{{trabajador}}', bind: { prefix: 'trabajador', nombre: 'trabajador', domicilio: 'domicilio_trabajador' } },
     ],
     sections: [
       s('Partes', `
@@ -229,8 +229,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'Socio', name: '{{socio_1}}' },
-      { role: 'Socio', name: '{{socio_2}}' },
+      { role: 'Socio', name: '{{socio_1}}', bind: { prefix: 'socio_1', nombre: 'socio_1' } },
+      { role: 'Socio', name: '{{socio_2}}', bind: { prefix: 'socio_2', nombre: 'socio_2' } },
     ],
     sections: [
       s('Partes', `
@@ -265,8 +265,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Cedente', name: '{{cedente}}' },
-      { role: 'El Cesionario', name: '{{cesionario}}' },
+      { role: 'El Cedente', name: '{{cedente}}', bind: { prefix: 'cedente', nombre: 'cedente' } },
+      { role: 'El Cesionario', name: '{{cesionario}}', bind: { prefix: 'cesionario', nombre: 'cesionario' } },
     ],
     sections: [
       s('Partes', `
@@ -298,8 +298,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Licenciante', name: '{{licenciante}}' },
-      { role: 'El Licenciatario', name: '{{licenciatario}}' },
+      { role: 'El Licenciante', name: '{{licenciante}}', bind: { prefix: 'licenciante', nombre: 'licenciante' } },
+      { role: 'El Licenciatario', name: '{{licenciatario}}', bind: { prefix: 'licenciatario', nombre: 'licenciatario' } },
     ],
     sections: [
       s('Partes', `
@@ -333,8 +333,8 @@ export const TEMPLATES = [
       ...COMMON,
     ],
     signers: [
-      { role: 'El Vendedor', name: '{{vendedor}}' },
-      { role: 'El Comprador', name: '{{comprador}}' },
+      { role: 'El Vendedor', name: '{{vendedor}}', bind: { prefix: 'vendedor', nombre: 'vendedor' } },
+      { role: 'El Comprador', name: '{{comprador}}', bind: { prefix: 'comprador', nombre: 'comprador' } },
     ],
     sections: [
       s('Partes', `
@@ -356,8 +356,8 @@ export const TEMPLATES = [
     description: 'Empieza desde cero y arma tu acuerdo sección por sección.',
     vars: [...COMMON],
     signers: [
-      { role: 'Parte A', name: '' },
-      { role: 'Parte B', name: '' },
+      { role: 'Parte A', name: '', bind: { prefix: 'a' } },
+      { role: 'Parte B', name: '', bind: { prefix: 'b' } },
     ],
     sections: [s('Partes', 'Acuerdo celebrado en {{ciudad_firma}} el {{fecha_firma}} entre ...')],
   },
