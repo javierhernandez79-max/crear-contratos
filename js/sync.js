@@ -11,6 +11,7 @@
 import * as db from './db.js';
 import * as dbx from './dropbox.js';
 import { uid } from './model.js';
+import { DROPBOX_EXPEDIENTES } from './config.js';
 
 export const CATALOG_FILE = 'catalogo-partes.xlsx';
 const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas' };
@@ -246,4 +247,4 @@ async function syncCatalog(root, opts, report) {
 }
 
 // ---------- Expedientes ----------
-export const expedientesRoot = () => dbx.joinPath(dbx.config().folder, 'expedientes');
+export const expedientesRoot = () => dbx.joinPath(dbx.config().folder, DROPBOX_EXPEDIENTES);

@@ -17,7 +17,9 @@ Backlog priorizado. Se construye una funcionalidad a la vez; no se avanza a la s
 
 ## Arquitectura
 **Dropbox como almacén compartido** (catálogo en Excel, contratos, plantillas y expedientes en una carpeta del equipo), sin servidor propio; cada equipo mantiene copia local (IndexedDB) y sincroniza. La firma remota sí requerirá un proveedor externo o un servidor.
-Pendiente de Javier: crear la app en Dropbox (App key) y decidir dónde se publica la app (la Redirect URI depende de esa dirección).
+Publicada en https://documentos-legales-s0c.pages.dev (Cloudflare Pages, despliegue automático desde `main`), protegida con Cloudflare Access (código por correo, solo el equipo legal).
+Dropbox Business (team space): carpeta `/Legal - Documentos App`, expedientes en `EXPEDIENTES CORPORATIVOS RM/<empresa>`.
+Pendiente de Javier: App key de Dropbox (Redirect URI `https://documentos-legales-s0c.pages.dev/`).
 
 ## Backlog
 
