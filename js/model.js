@@ -33,13 +33,15 @@ export function newContractFromTemplate(tpl) {
   }
   const c = {
     id: uid(),
-    title: tpl.name,
+    title: tpl.titulo || tpl.name,
     templateId: tpl.id,
     status: 'borrador',
     varDefs,
     variables,
     currency: 'MXN',
-    sections: tpl.sections.map((sec) => ({ id: uid(), title: sec.title, body: sec.body })),
+    sections: tpl.sections.map((sec) => ({ id: uid(), title: sec.title, body: sec.body, ...(sec.kind ? { kind: sec.kind } : {}) })),
+    numeracion: tpl.numeracion || 'decimal',
+    tituloClausula: tpl.tituloClausula || 'arriba',
     signers: tpl.signers.map((sg) => ({ id: uid(), role: sg.role, name: sg.name, ...(sg.bind ? { bind: { ...sg.bind } } : {}) })),
     signatures: {},
     signedHash: null,
@@ -109,7 +111,9 @@ export function fill(c, text, mode = 'text') {
     if (m.index > last) parts.push({ text: text.slice(last, m.index) });
     const key = m[1];
     const def = c.varDefs.find((d) => d.key === key);
-    const val = formatValue(def, c.variables[key], c.currency);
+    let val = formatValue(def, c.variables[key], c.currency);
+    // En párrafos escritos todo en mayúsculas (proemios de los documentos marco), el dato también
+    if (val !== null && upperLine(text, m.index)) val = val.toLocaleUpperCase('es-MX');
     parts.push(val === null
       ? { text: `[${def?.label || humanize(key)}]`, var: key, missing: true }
       : { text: val, var: key });
@@ -117,6 +121,15 @@ export function fill(c, text, mode = 'text') {
   }
   if (last < (text || '').length) parts.push({ text: text.slice(last) });
   return mode === 'parts' ? parts : parts.map((p) => p.text).join('');
+}
+
+/** ¿La línea donde está la variable tiene su texto fijo todo en mayúsculas? */
+function upperLine(text, i) {
+  const start = text.lastIndexOf('\n', i) + 1;
+  const end = text.indexOf('\n', i);
+  const literal = text.slice(start, end < 0 ? undefined : end).replace(VAR_RE, '');
+  const letters = literal.replace(/[^\p{L}]/gu, '');
+  return letters.length >= 4 && letters === letters.toLocaleUpperCase('es-MX');
 }
 
 export function missingVariables(c) {
@@ -131,15 +144,51 @@ export function contentHash(c) {
   return (h >>> 0).toString(16);
 }
 
+// ---------- Numeración de cláusulas ----------
+const ORD = ['PRIMERA', 'SEGUNDA', 'TERCERA', 'CUARTA', 'QUINTA', 'SEXTA', 'SÉPTIMA', 'OCTAVA', 'NOVENA'];
+const ORD10 = ['', 'DÉCIMA', 'VIGÉSIMA', 'TRIGÉSIMA', 'CUADRAGÉSIMA', 'QUINCUAGÉSIMA', 'SEXAGÉSIMA', 'SEPTUAGÉSIMA', 'OCTOGÉSIMA', 'NONAGÉSIMA'];
+
+/** 1 → PRIMERA, 11 → DÉCIMA PRIMERA, 21 → VIGÉSIMA PRIMERA. */
+export function ordinal(n) {
+  const d = Math.floor(n / 10);
+  const u = n % 10;
+  return [ORD10[d] || '', u ? ORD[u - 1] : ''].filter(Boolean).join(' ') || String(n);
+}
+
+/**
+ * Cómo se presenta cada sección. Secciones "texto" (proemio, declaraciones, cierre) no se numeran.
+ * Numeración "decimal": "1. TÍTULO". Numeración "ordinal" (estilo despacho):
+ *  - tituloClausula "arriba":   "OBJETO" en su línea y el texto inicia con "PRIMERA.- "
+ *  - tituloClausula "en_linea": "PRIMERA. - Objeto." en su línea y luego el texto
+ *  - sin título:                el texto inicia con "PRIMERA.- "
+ * `f` resuelve variables en los títulos. Devuelve [{ s, texto?, heading, prefix }].
+ */
+// Mayúsculas sin alterar las claves {{variable}}
+const upper = (t) => t.split(/(\{\{\s*[a-zA-Z0-9_]+\s*\}\})/).map((p, i) => (i % 2 ? p : p.toUpperCase())).join('');
+
+export function layoutSections(c, f = (t) => t) {
+  let n = 0;
+  return c.sections.map((s) => {
+    const title = f(s.title || '').trim();
+    if (s.kind === 'texto') return { s, texto: true, heading: title, prefix: '' };
+    n++;
+    if (c.numeracion !== 'ordinal') return { s, heading: `${n}. ${upper(title)}`, prefix: '' };
+    const ord = ordinal(n);
+    if (!title) return { s, heading: '', prefix: `${ord}.- ` };
+    if (c.tituloClausula === 'en_linea') return { s, heading: `${ord}. - ${title}${/[.:]$/.test(title) ? '' : '.'}`, prefix: '' };
+    return { s, heading: upper(title), prefix: `${ord}.- ` };
+  });
+}
+
 /**
  * Texto canónico que se firma con e.firma: mismo contenido que el PDF, en texto plano y
  * normalizado para que cualquier persona pueda volver a calcular la huella SHA-256.
  */
 export function canonicalText(c) {
   const lines = [fill(c, c.title).toUpperCase(), ''];
-  c.sections.forEach((s, i) => {
-    lines.push(`${i + 1}. ${fill(c, s.title).toUpperCase()}`);
-    lines.push(fill(c, s.body).trim(), '');
+  layoutSections(c, (t) => fill(c, t)).forEach((l) => {
+    if (l.heading) lines.push(l.heading.toUpperCase());
+    lines.push(l.prefix + fill(c, l.s.body).trim(), '');
   });
   lines.push('FIRMANTES');
   c.signers.forEach((sg) => lines.push(`${sg.role}: ${fill(c, sg.name)}`));
@@ -157,7 +206,7 @@ export const hasEfirma = (c) => Object.values(c.signatures).some((s) => s.type =
 export function snapshot(c) {
   return structuredClone({
     title: c.title, varDefs: c.varDefs, variables: c.variables,
-    sections: c.sections, signers: c.signers, currency: c.currency,
+    sections: c.sections, signers: c.signers, currency: c.currency, numeracion: c.numeracion, tituloClausula: c.tituloClausula,
   });
 }
 
@@ -211,7 +260,9 @@ export function contractToTemplate(c, name) {
     description: `Plantilla propia creada el ${new Date().toLocaleDateString('es-MX')}`,
     vars: c.varDefs.map((d) => [d.key, d.label, d.type, d.key === 'fecha_firma' ? undefined : c.variables[d.key] || undefined]),
     signers: c.signers.map(({ role, name, bind }) => ({ role, name, ...(bind ? { bind } : {}) })),
-    sections: c.sections.map(({ title, body }) => ({ title, body })),
+    sections: c.sections.map(({ title, body, kind }) => ({ title, body, ...(kind ? { kind } : {}) })),
+    numeracion: c.numeracion || 'decimal',
+    tituloClausula: c.tituloClausula || 'arriba',
     createdAt: Date.now(),
   };
 }

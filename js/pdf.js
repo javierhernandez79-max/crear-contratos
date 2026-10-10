@@ -1,5 +1,5 @@
 // Generación de PDF con jsPDF (incluido localmente para funcionar sin conexión).
-import { fill, fmtDateTime, slugify, canonicalText } from './model.js';
+import { fill, fmtDateTime, slugify, canonicalText, layoutSections } from './model.js';
 
 const PAGE = { w: 215.9, h: 279.4 }; // Carta
 const M = { top: 25, bottom: 25, left: 25, right: 25 };
@@ -35,18 +35,22 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
   doc.text(titleLines, PAGE.w / 2, y, { align: 'center' });
   y += titleLines.length * 7 + 6;
 
-  // Secciones
-  c.sections.forEach((sec, i) => {
-    const heading = `${i + 1}. ${fill(c, sec.title).toUpperCase()}`;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    ensure(LINE * 3);
-    doc.text(heading, M.left, y);
-    y += LINE + 1;
+  // Secciones (numeración decimal u ordinal "PRIMERA.-"; las de texto no se numeran)
+  layoutSections(c, (t) => fill(c, t)).forEach((l) => {
+    if (l.heading) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      ensure(LINE * 3);
+      const hl = doc.splitTextToSize(l.heading, CONTENT_W);
+      doc.text(hl, l.texto ? PAGE.w / 2 : M.left, y, l.texto ? { align: 'center' } : undefined);
+      y += hl.length * LINE + 1;
+    }
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(11);
-    const paragraphs = fill(c, sec.body).split(/\n\s*\n|\n/).map((p) => p.trim()).filter(Boolean);
+    const paragraphs = fill(c, l.s.body).split(/\n\s*\n|\n/).map((p) => p.trim()).filter(Boolean);
+    if (l.prefix && paragraphs.length) paragraphs[0] = l.prefix + paragraphs[0];
+    else if (l.prefix) paragraphs.push(l.prefix.trim());
     paragraphs.forEach((p) => {
       const lines = doc.splitTextToSize(p, CONTENT_W);
       lines.forEach((ln, j) => {

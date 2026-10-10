@@ -1,9 +1,10 @@
 // Generación de Word (.docx) para revisión de los abogados. Recibe la librería docx como parámetro
 // (vendor/docx.iife.js en el navegador, carga diferida; paquete npm en pruebas).
-import { fill } from './model.js';
+import { fill, layoutSections } from './model.js';
 
+// Estilo de los documentos marco del despacho: Arial 10, márgenes laterales de 3 cm
 const FONT = 'Arial';
-const SIZE = 22; // medios puntos → 11 pt
+const SIZE = 20; // medios puntos → 10 pt
 const TWIP_CM = 567;
 
 /**
@@ -11,30 +12,48 @@ const TWIP_CM = 567;
  * vacío en la versión aprobada.
  */
 export function buildDocxDocument(D, c, { label = '' } = {}) {
-  const { Document, Paragraph, TextRun, AlignmentType, Header, Footer, PageNumber, Table, TableRow, TableCell, WidthType, BorderStyle } = D;
+  const { Document, Paragraph, TextRun, AlignmentType, Header, Footer, PageNumber, Table, TableRow, TableCell, WidthType, BorderStyle, TabStopType } = D;
   const run = (text, opts = {}) => new TextRun({ text, font: FONT, size: SIZE, ...opts });
+  const BODY = { after: 160, line: 252 };
   const para = (text, opts = {}) => new Paragraph({
     alignment: AlignmentType.JUSTIFIED,
-    spacing: { after: 160, line: 300 },
+    spacing: BODY,
     children: [run(text, opts.run)],
     ...opts.para,
   });
+  // Los datos capturados van en negritas, como las "XXXX" de los documentos marco
+  const filledRuns = (line) => fill(c, line, 'parts').map((p) => run(p.text, p.var && !p.missing ? { bold: true } : {}));
 
-  const children = [
+  const title = fill(c, c.title);
+  // Si el documento abre con su propio proemio, el título solo va en el encabezado
+  const children = c.sections[0]?.kind === 'texto' ? [] : [
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 400 },
-      children: [run(fill(c, c.title).toUpperCase(), { bold: true, size: 26 })],
+      children: [run(title.toUpperCase(), { bold: true, size: 24 })],
     }),
   ];
 
-  c.sections.forEach((sec, i) => {
-    children.push(new Paragraph({
-      keepNext: true,
-      spacing: { before: 240, after: 120 },
-      children: [run(`${i + 1}. ${fill(c, sec.title).toUpperCase()}`, { bold: true })],
-    }));
-    fill(c, sec.body).split(/\n/).map((p) => p.trim()).filter(Boolean).forEach((p) => children.push(para(p)));
+  layoutSections(c, (t) => fill(c, t)).forEach((l) => {
+    if (l.heading) {
+      children.push(new Paragraph({
+        keepNext: true,
+        alignment: l.texto ? AlignmentType.CENTER : AlignmentType.LEFT,
+        spacing: { before: 240, after: 120 },
+        children: [run(l.heading, { bold: true })],
+      }));
+    }
+    const paras = (l.s.body || '').split(/\n/).map((p) => p.trim()).filter(Boolean);
+    if (!paras.length && l.prefix) paras.push('');
+    paras.forEach((p, j) => {
+      // La primera línea de una cláusula ordinal inicia con "PRIMERA.- " en negritas
+      const runs = filledRuns(p);
+      children.push(new Paragraph({
+        alignment: AlignmentType.JUSTIFIED,
+        spacing: BODY,
+        children: j === 0 && l.prefix ? [run(l.prefix, { bold: true }), ...runs] : runs,
+      }));
+    });
   });
 
   // Firmas: tabla de dos columnas sin bordes
@@ -45,11 +64,12 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
     const cell = (sg) => new TableCell({
       width: { size: 50, type: WidthType.PERCENTAGE },
       borders: noBorders,
+      // Como en los documentos marco: el carácter ("EL PATRÓN") arriba, la línea y el nombre abajo
       children: sg ? [
-        new Paragraph({ spacing: { before: 720 }, alignment: AlignmentType.CENTER, children: [run(signatureMark(c, sg), { italics: true, size: 18, color: '1E3A5F' })] }),
+        new Paragraph({ spacing: { before: 240 }, alignment: AlignmentType.CENTER, children: [run(sg.role || '', { bold: true })] }),
+        new Paragraph({ spacing: { before: 600 }, alignment: AlignmentType.CENTER, children: [run(signatureMark(c, sg), { italics: true, size: 18, color: '1E3A5F' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, children: [run('_________________________________')] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, children: [run(fill(c, sg.name) || ' ', { bold: true })] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 240 }, children: [run(sg.role || '', { color: '555555', size: 20 })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 240 }, children: [run(fill(c, sg.name) || ' ')] }),
       ] : [new Paragraph('')],
     });
     const rows = [];
@@ -63,6 +83,7 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
   }
 
   const small = { font: FONT, size: 16, color: '888888' };
+  const gray = { font: FONT, size: 22, color: 'A6A6A6', characterSpacing: 60 };
   return new Document({
     creator: 'Crear Contratos',
     title: fill(c, c.title),
@@ -71,18 +92,25 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
       properties: {
         page: {
           size: { width: 12240, height: 15840 }, // carta
-          margin: { top: 2.5 * TWIP_CM, bottom: 2.5 * TWIP_CM, left: 2.5 * TWIP_CM, right: 2.5 * TWIP_CM },
+          margin: { top: 2.5 * TWIP_CM, bottom: 2.5 * TWIP_CM, left: 3 * TWIP_CM, right: 3 * TWIP_CM },
         },
       },
-      headers: label ? { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: label, ...small, bold: true, color: 'B42318' })] })] }) } : undefined,
-      footers: {
-        default: new Footer({
+      // Encabezado como en los documentos marco: "1 | Página" a la izquierda y el título espaciado a la derecha
+      headers: {
+        default: new Header({
           children: [new Paragraph({
-            alignment: AlignmentType.RIGHT,
-            children: [new TextRun({ ...small, children: ['Página ', PageNumber.CURRENT, ' de ', PageNumber.TOTAL_PAGES] })],
+            tabStops: [{ type: TabStopType.RIGHT, position: 12240 - 6 * TWIP_CM }],
+            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'BFBFBF', space: 4 } },
+            spacing: { after: 240 },
+            children: [
+              new TextRun({ ...gray, bold: true, color: '7F7F7F', children: [PageNumber.CURRENT] }),
+              new TextRun({ ...gray, text: ' | Página' }),
+              new TextRun({ ...gray, text: `\t${title.toUpperCase()}` }),
+            ],
           })],
         }),
       },
+      footers: label ? { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: label, ...small, bold: true, color: 'B42318' })] })] }) } : undefined,
       children,
     }],
   });

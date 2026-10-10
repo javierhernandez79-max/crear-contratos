@@ -504,3 +504,8 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 @media (max-width: 640px) { .var-table { grid-template-columns: 1fr 1fr; } .var-table > span:empty { display: none; } }
 .sub-item .sec-head { margin-bottom: 6px; }
 .sub-item textarea { min-height: 84px; }
+.doc-sec h2.center { text-align: center; letter-spacing: .02em; }
+.numbering { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; }
+.numbering select { width: auto; }
+.sec-kind { width: auto !important; min-height: 32px !important; padding: 4px 8px !important; font-size: 13px; }
+.sec-card.is-texto { border-left: 4px solid var(--accent); }

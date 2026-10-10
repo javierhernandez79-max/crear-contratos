@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { TEMPLATES, CLAUSES, CATEGORIES } from './templates.js';
 import {
   uid, VAR_TYPES, slugify, humanize, newContractFromTemplate, syncVarDefs, usedVariables, fill,
-  missingVariables, contentHash, addVersion, restoreVersion, logChange, duplicateContract,
+  missingVariables, contentHash, addVersion, layoutSections, ordinal, restoreVersion, logChange, duplicateContract,
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
@@ -538,11 +538,15 @@ function documentHTML(c, { interactive = false } = {}) {
   return `
     ${!['aprobado', 'final'].includes(c.status) ? `<div class="watermark">${c.status === 'revision' ? 'REVISIÓN' : 'BORRADOR'}</div>` : ''}
     <h1 class="doc-h1">${parts(c.title)}</h1>
-    ${c.sections.map((s, i) => `
+    ${layoutSections(c).map((l) => {
+      const paras = l.s.body.split(/\n/).filter((p) => p.trim());
+      const head = l.heading ? `<h2${l.texto ? ' class="center"' : ''}>${parts(l.heading)}</h2>` : '';
+      return `
       <section class="doc-sec">
-        <h2>${i + 1}. ${parts(s.title)}</h2>
-        ${s.body.split(/\n/).filter((p) => p.trim()).map((p) => `<p>${parts(p)}</p>`).join('')}
-      </section>`).join('')}
+        ${head}
+        ${paras.map((p, j) => `<p>${j === 0 && l.prefix ? `<b>${esc(l.prefix)}</b>` : ''}${parts(p)}</p>`).join('')}
+      </section>`;
+    }).join('')}
     ${c.signers.length ? `
       <div class="doc-signs">
         ${c.signers.map((sg) => `
@@ -563,10 +567,12 @@ let lastField = null;
 function renderSections() {
   const c = state.current;
   const box = tabBox();
+  const nums = sectionNumbers(c);
   box.innerHTML = `
     ${efirmaEditBanner(c)}
+    ${numberingControls(c)}
     <div class="sections" id="sections">
-      ${c.sections.map((s, i) => sectionCard(s, i, c.sections.length)).join('')}
+      ${c.sections.map((s, i) => sectionCard(s, i, c.sections.length, nums[i])).join('')}
     </div>
     <div class="add-row">
       <button class="btn" data-add="blank">${icon('plus')} Sección en blanco</button>
@@ -579,12 +585,26 @@ function renderSections() {
   });
   box.addEventListener('input', (e) => {
     const f = e.target.dataset.field;
-    if (!f) return;
+    if (!f || f === 'kind') return;
     const sec = c.sections.find((s) => s.id === e.target.closest('.sec-card').dataset.id);
     sec[f] = e.target.value;
     if (f === 'body') autosize(e.target);
     syncVarDefs(c);
     touched({ log: `Editó la sección "${sec.title || 'sin título'}"`, groupKey: `sec-${sec.id}` });
+  });
+  box.addEventListener('change', (e) => {
+    if (e.target.dataset.field === 'kind') {
+      const sec = c.sections.find((s) => s.id === e.target.closest('.sec-card').dataset.id);
+      if (e.target.value === 'texto') sec.kind = 'texto'; else delete sec.kind;
+      touched({ log: `Cambió "${sec.title || 'sin título'}" a ${e.target.value === 'texto' ? 'texto sin número' : 'cláusula'}` });
+      return renderSections();
+    }
+    const k = e.target.dataset.num;
+    if (k) {
+      c[k] = e.target.value;
+      touched({ log: 'Cambió el estilo de numeración' });
+      renderSections();
+    }
   });
   box.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
@@ -618,13 +638,45 @@ function renderSections() {
   enableDrag($('#sections'));
 }
 
-function sectionCard(s, i, n) {
+/** Número que se muestra en el editor: "1", "PRIMERA" o "—" para secciones de texto. */
+function sectionNumbers(c) {
+  return layoutSections(c).map((l, i, all) => {
+    if (l.texto) return '—';
+    const n = all.slice(0, i + 1).filter((x) => !x.texto).length;
+    return c.numeracion === 'ordinal' ? ordinal(n) : String(n);
+  });
+}
+
+function numberingControls(t) {
   return `
-    <article class="card sec-card" data-id="${s.id}">
+    <div class="card soft numbering">
+      <label class="field inline"><span>Numeración</span>
+        <select data-num="numeracion">
+          <option value="decimal" ${t.numeracion !== 'ordinal' ? 'selected' : ''}>1. 2. 3.</option>
+          <option value="ordinal" ${t.numeracion === 'ordinal' ? 'selected' : ''}>PRIMERA.- SEGUNDA.-</option>
+        </select>
+      </label>
+      ${t.numeracion === 'ordinal' ? `
+      <label class="field inline"><span>Título de cláusula</span>
+        <select data-num="tituloClausula">
+          <option value="arriba" ${t.tituloClausula !== 'en_linea' ? 'selected' : ''}>Arriba: “OBJETO” / “PRIMERA.- …”</option>
+          <option value="en_linea" ${t.tituloClausula === 'en_linea' ? 'selected' : ''}>En línea: “PRIMERA. - Objeto.”</option>
+        </select>
+      </label>` : ''}
+    </div>`;
+}
+
+function sectionCard(s, i, n, num = String(i + 1)) {
+  return `
+    <article class="card sec-card ${s.kind === 'texto' ? 'is-texto' : ''}" data-id="${s.id}">
       <div class="sec-head">
         <span class="grip" title="Arrastra para reordenar" aria-hidden="true">${icon('grip')}</span>
-        <span class="sec-num">${i + 1}</span>
+        <span class="sec-num">${esc(num)}</span>
         <input class="sec-title" data-field="title" value="${esc(s.title)}" aria-label="Título de la sección">
+        <select class="sec-kind" data-field="kind" aria-label="Tipo de sección">
+          <option value="clausula" ${s.kind !== 'texto' ? 'selected' : ''}>Cláusula</option>
+          <option value="texto" ${s.kind === 'texto' ? 'selected' : ''}>Texto sin número</option>
+        </select>
         <div class="sec-actions">
           <button class="icon-btn sm" data-act="var" title="Insertar variable" aria-label="Insertar variable">${icon('braces')}</button>
           <button class="icon-btn sm" data-act="up" title="Subir" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button>
@@ -1413,8 +1465,9 @@ async function importCatalog(file) {
 const PARTY_FIELDS = {
   general: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo', 'email'], ['telefono', 'Teléfono']],
   pm: [['escrituraNumero', 'Escritura constitutiva núm.'], ['escrituraFecha', 'Fecha de constitución', 'date'], ['notario', 'Notario (con título)', 'text', 'Lic. Juan Pérez López'],
-    ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría', 'text', 'la Ciudad de México'], ['folioMercantil', 'Folio mercantil electrónico']],
-  pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
+    ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría', 'text', 'la Ciudad de México'], ['folioMercantil', 'Folio mercantil electrónico'],
+    ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['objetoSocial', 'Objeto social (resumen)', 'address']],
+  pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['sexo', 'Sexo'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
   apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
     ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…']],
 };
@@ -2320,6 +2373,7 @@ function renderTemplateEditor(id) {
   const t = state.userTemplates.find((x) => x.id === id);
   if (!t) { toast('Plantilla no encontrada', 'error'); return go('#/plantillas'); }
   const original = t.replaces && TEMPLATES.find((x) => x.id === t.replaces);
+  const tplNums = sectionNumbers(t);
   const keysInText = () => {
     const used = new Set();
     const scan = (txt) => { for (const m of String(txt || '').matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)) used.add(m[1]); };
@@ -2355,12 +2409,17 @@ function renderTemplateEditor(id) {
       </section>
       <section class="card form-block">
         <h3>Secciones</h3>
-        <p class="muted small">Usa <code>{{variable}}</code> para los datos que se llenan en cada contrato.</p>
+        <p class="muted small">Usa <code>{{variable}}</code> para los datos que se llenan en cada contrato. Las secciones de “texto sin número” sirven para proemio, declaraciones y cierre.</p>
+        ${numberingControls(t)}
         ${t.sections.map((s, i) => `
           <div class="sub-item" data-list="sections" data-i="${i}">
             <div class="sec-head">
-              <span class="sec-num">${i + 1}</span>
+              <span class="sec-num">${esc(tplNums[i])}</span>
               <input class="sec-title" data-k="title" value="${esc(s.title)}" aria-label="Título de la sección">
+              <select class="sec-kind" data-k="kind" aria-label="Tipo de sección">
+                <option value="clausula" ${s.kind !== 'texto' ? 'selected' : ''}>Cláusula</option>
+                <option value="texto" ${s.kind === 'texto' ? 'selected' : ''}>Texto sin número</option>
+              </select>
               <div class="sec-actions">
                 <button type="button" class="icon-btn sm" data-act="up" ${i === 0 ? 'disabled' : ''} aria-label="Subir">${icon('up')}</button>
                 <button type="button" class="icon-btn sm" data-act="down" ${i === t.sections.length - 1 ? 'disabled' : ''} aria-label="Bajar">${icon('down')}</button>
@@ -2418,9 +2477,18 @@ function renderTemplateEditor(id) {
   const rerender = async () => { await saveTemplate(t); const y = window.scrollY; renderTemplateEditor(t.id); window.scrollTo(0, y); };
   const holder = (el) => el.dataset.list ? el : el.closest('[data-list]');
 
+  form.addEventListener('change', (e) => {
+    const num = e.target.dataset.num;
+    if (num) { t[num] = e.target.value; rerender(); }
+    if (e.target.dataset.k === 'kind') {
+      const sec = t.sections[Number(holder(e.target).dataset.i)];
+      if (e.target.value === 'texto') sec.kind = 'texto'; else delete sec.kind;
+      rerender();
+    }
+  });
   form.addEventListener('input', (e) => {
     const k = e.target.dataset.k;
-    if (k === undefined) return;
+    if (k === undefined || k === 'kind') return;
     const h = holder(e.target);
     if (!h) t[k] = e.target.value;
     else if (h.dataset.list === 'vars') t.vars[Number(h.dataset.i)][Number(k)] = k === '0' ? slugify(e.target.value) : e.target.value;

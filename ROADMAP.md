@@ -13,6 +13,7 @@ Backlog priorizado. Se construye una funcionalidad a la vez; no se avanza a la s
 - **Dispositivos**: arrancar en computadora; después móvil.
 - **Vencimientos**: sí, con alertas.
 - **Documentos de las partes**: se suben a Dropbox y se incluyen desde ahí.
+- **Formato Word** (2026-10-10): Arial 10, márgenes laterales de 3 cm, encabezado "1 | Página" + título espaciado, datos capturados en negritas.
 - **Catálogo** (2026-10-09): ~30 empresas propias, cambian con el tiempo. Campos según cada contrato marco. Varios apoderados por empresa; siempre preguntar quién firma. No hay Excel previo: la app genera uno que queda como catálogo, actualizable a mano o automáticamente. Dropbox va antes que Word.
 
 ## Arquitectura
@@ -32,6 +33,6 @@ App de Dropbox "Documentos Legales" (App key en `js/config.js`; la App secret no
 | 5 | **Generación en lote desde Excel** (contratos individuales de trabajo): una fila = un contrato; salida en .docx/.zip. | Alto ahorro de tiempo; requiere 1 y 3. | Pendiente |
 | 6 | **Vencimientos y alertas**: fecha de término/renovación por contrato, tablero de próximos a vencer. | Control posterior a la firma. | Pendiente |
 | 7 | **Firma remota** de la contraparte (proveedor externo, p. ej. Mifiel/DocuSign, o liga propia). | Necesaria, pero la más costosa; conviene tener el flujo resuelto antes. | Pendiente |
-| 8 | **Extracción automática** (decidido: con revisión antes de aplicar; pendiente confirmar si se usa API de IA de pago, necesaria para escaneados; sin ella solo CSF y PDFs con texto) de datos del expediente en Dropbox (actas constitutivas, poderes) para llenar el catálogo. | Ahorra captura, pero es lo más incierto técnicamente. | Pendiente |
+| 8 | **Extracción automática** (decidido: con revisión antes de aplicar y sin API de IA de pago; solo CSF y PDFs con texto, los escaneados se capturan a mano) de datos del expediente en Dropbox (actas constitutivas, poderes) para llenar el catálogo. | Ahorra captura, pero es lo más incierto técnicamente. | Pendiente |
 | 9 | **Móvil y sincronización** entre dispositivos. | Se pidió empezar solo con computadora. | Pendiente |
 | 10 | Cálculo de IVA/retenciones y tablas de pagos. | Opcional. | Pendiente |
