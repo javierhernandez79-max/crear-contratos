@@ -148,10 +148,22 @@ async function loadAccount() {
   cfg.pathRoot = null;
   const acc = await call(`${API}/users/get_current_account`);
   cfg.account = { name: acc.name?.display_name || acc.email, email: acc.email };
-  // Cuentas de equipo con "team space": se trabaja desde la raíz del equipo para ver las carpetas compartidas
-  const ri = acc.root_info;
-  if (ri && ri['.tag'] === 'team' && ri.root_namespace_id !== ri.home_namespace_id) cfg.pathRoot = ri.root_namespace_id;
+  // Cuentas de equipo ("team space"): la raíz del equipo es distinta de la carpeta personal del miembro.
+  // Sin el encabezado Dropbox-API-Path-Root, "/Carpeta" se crearía dentro de la carpeta personal.
+  const ri = acc.root_info || {};
+  cfg.rootInfo = { tag: ri['.tag'] || null, root: ri.root_namespace_id || null, home: ri.home_namespace_id || null, homePath: ri.home_path || null };
+  if (ri.root_namespace_id && ri.root_namespace_id !== ri.home_namespace_id) cfg.pathRoot = String(ri.root_namespace_id);
 }
+
+/** Conexiones hechas con versiones anteriores no guardaban la raíz del equipo: se vuelve a leer la cuenta. */
+export async function ensureAccount() {
+  if (!isConnected() || cfg.rootInfo) return;
+  await loadAccount();
+  await save();
+}
+
+/** Texto para Ajustes: en qué espacio de Dropbox se trabaja. */
+export const rootLabel = () => (cfg?.pathRoot ? 'espacio del equipo' : cfg?.rootInfo ? 'carpeta personal' : '');
 
 export async function listFolder(path) {
   const entries = [];
