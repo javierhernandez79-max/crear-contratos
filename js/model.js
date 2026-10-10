@@ -111,7 +111,9 @@ export function fill(c, text, mode = 'text') {
     if (m.index > last) parts.push({ text: text.slice(last, m.index) });
     const key = m[1];
     const def = c.varDefs.find((d) => d.key === key);
-    const val = formatValue(def, c.variables[key], c.currency);
+    let val = formatValue(def, c.variables[key], c.currency);
+    // En párrafos escritos todo en mayúsculas (proemios de los documentos marco), el dato también
+    if (val !== null && upperLine(text, m.index)) val = val.toLocaleUpperCase('es-MX');
     parts.push(val === null
       ? { text: `[${def?.label || humanize(key)}]`, var: key, missing: true }
       : { text: val, var: key });
@@ -119,6 +121,15 @@ export function fill(c, text, mode = 'text') {
   }
   if (last < (text || '').length) parts.push({ text: text.slice(last) });
   return mode === 'parts' ? parts : parts.map((p) => p.text).join('');
+}
+
+/** ¿La línea donde está la variable tiene su texto fijo todo en mayúsculas? */
+function upperLine(text, i) {
+  const start = text.lastIndexOf('\n', i) + 1;
+  const end = text.indexOf('\n', i);
+  const literal = text.slice(start, end < 0 ? undefined : end).replace(VAR_RE, '');
+  const letters = literal.replace(/[^\p{L}]/gu, '');
+  return letters.length >= 4 && letters === letters.toLocaleUpperCase('es-MX');
 }
 
 export function missingVariables(c) {
