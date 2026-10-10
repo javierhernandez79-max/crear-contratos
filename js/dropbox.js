@@ -1,7 +1,7 @@
 // Cliente mínimo de la API de Dropbox, sin servidor: OAuth con PKCE desde el navegador.
 // La configuración y los tokens se guardan en IndexedDB (store "meta") de cada equipo.
 import * as db from './db.js';
-import { DROPBOX_APP_KEY, DROPBOX_FOLDER } from './config.js';
+import { DROPBOX_APP_KEY, DROPBOX_RETIRED_KEYS, DROPBOX_FOLDER } from './config.js';
 
 const AUTH_URL = 'https://www.dropbox.com/oauth2/authorize';
 const TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
@@ -24,6 +24,11 @@ export async function loadConfig() {
   cfg = (await db.get('meta', 'dropbox')) || { id: 'dropbox' };
   cfg.appKey ||= DROPBOX_APP_KEY;
   cfg.folder ||= DROPBOX_FOLDER;
+  // La sesión de una app retirada no sirve con la nueva: se cambia la key y se pide conectar de nuevo
+  if (DROPBOX_RETIRED_KEYS.includes(cfg.appKey)) {
+    cfg = { id: 'dropbox', appKey: DROPBOX_APP_KEY, folder: cfg.folder };
+    await save();
+  }
   return cfg;
 }
 export const config = () => cfg;
