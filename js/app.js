@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { TEMPLATES, CLAUSES, CATEGORIES } from './templates.js';
 import {
-  uid, VAR_TYPES, slugify, newContractFromTemplate, syncVarDefs, usedVariables, fill,
+  uid, VAR_TYPES, slugify, humanize, newContractFromTemplate, syncVarDefs, usedVariables, fill,
   missingVariables, contentHash, addVersion, restoreVersion, logChange, duplicateContract,
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
@@ -13,6 +13,7 @@ import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
 import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
+import { buildDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
 
 // ---------- Estado ----------
@@ -31,6 +32,9 @@ const state = {
   installPrompt: null,
 };
 
+const STATUS = { borrador: 'Borrador', revision: 'En revisión', aprobado: 'Aprobado', final: 'Firmado' };
+const statusBadge = (c) => `<span class="badge ${c.status}">${STATUS[c.status] || c.status}</span>`;
+
 const app = document.getElementById('app');
 const nav = document.getElementById('bottom-nav');
 
@@ -39,7 +43,11 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-const allTemplates = () => [...state.userTemplates, ...TEMPLATES];
+// Las plantillas de la app que tienen una versión modificada ("replaces") se muestran solo modificadas
+const allTemplates = () => {
+  const replaced = new Set(state.userTemplates.map((t) => t.replaces).filter(Boolean));
+  return [...state.userTemplates, ...TEMPLATES.filter((t) => !replaced.has(t.id))];
+};
 const go = (hash) => { location.hash = hash; };
 
 const ICONS = {
@@ -177,10 +185,10 @@ async function saveNow() {
 function touched({ log, groupKey, content = true } = {}) {
   const c = state.current;
   if (log) logChange(c, log, groupKey);
-  if (content && c.status === 'final') {
+  if (content && c.status !== 'borrador') {
+    logChange(c, `El contrato pasó de "${STATUS[c.status]}" a borrador por una edición`);
     c.status = 'borrador';
-    logChange(c, 'El contrato volvió a borrador por una edición');
-    toast('El contrato volvió a borrador');
+    toast('El contrato volvió a borrador: genera una nueva versión para revisión');
     renderEditorHeader();
   }
   setSaveStatus('Guardando…');
@@ -202,6 +210,7 @@ function routeView() {
   state.current = null;
   document.body.classList.remove('in-editor');
   if (view === 'plantillas') return renderTemplates();
+  if (view === 'plantilla' && id) return renderTemplateEditor(id);
   if (view === 'catalogo') return id ? renderPartyEditor(id) : renderCatalog();
   if (view === 'ajustes') return renderSettings();
   return renderHome();
@@ -224,11 +233,8 @@ function renderHome() {
   const list = state.contracts.filter((c) =>
     (state.homeFilter === 'todos' || c.status === state.homeFilter) &&
     (!q || fill(c, c.title).toLowerCase().includes(q)));
-  const counts = {
-    todos: state.contracts.length,
-    borrador: state.contracts.filter((c) => c.status === 'borrador').length,
-    final: state.contracts.filter((c) => c.status === 'final').length,
-  };
+  const counts = { todos: state.contracts.length };
+  for (const k of Object.keys(STATUS)) counts[k] = state.contracts.filter((c) => c.status === k).length;
 
   app.innerHTML = `
     <header class="page-head">
@@ -242,7 +248,7 @@ function renderHome() {
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar contrato" value="${esc(state.homeQuery)}"></label>
         <div class="chips" role="tablist">
-          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['final', 'Finales']].map(([k, l]) =>
+          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['revision', 'En revisión'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
         </div>
       </div>
@@ -282,7 +288,7 @@ function contractCard(c) {
   return `
     <article class="card contract-card" data-id="${c.id}" tabindex="0">
       <div class="card-top">
-        <span class="badge ${c.status}">${c.status === 'final' ? 'Final' : 'Borrador'}</span>
+        ${statusBadge(c)}
         <button class="icon-btn sm" data-act="menu" aria-label="Más acciones">${icon('more')}</button>
       </div>
       <h3>${esc(fill(c, c.title))}</h3>
@@ -387,7 +393,7 @@ function renderTemplates() {
     <div class="grid templates">
       ${list.map((t) => `
         <article class="card tpl-card" data-id="${t.id}" tabindex="0">
-          <span class="tpl-cat">${esc(t.custom ? 'Mis plantillas' : CATEGORIES.find((c) => c.id === t.category)?.label)}</span>
+          <span class="tpl-cat">${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}${t.replaces ? ' · modificada' : ''}</span>
           <h3>${esc(t.name)}</h3>
           <p class="muted">${esc(t.description)}</p>
           <p class="small muted">${t.sections.length} secciones · ${t.vars.length} variables</p>
@@ -416,10 +422,12 @@ async function previewTemplate(t) {
       <h4 class="sub">Variables</h4>
       <div class="token-list">${t.vars.map(([k, l]) => `<span class="token" title="{{${esc(k)}}}">${esc(l)}</span>`).join('')}</div>`,
     actions: [
-      ...(t.custom ? [{ label: 'Eliminar plantilla', value: 'del', kind: 'ghost danger' }] : []),
+      ...(t.custom && !t.replaces ? [{ label: 'Eliminar plantilla', value: 'del', kind: 'ghost danger' }] : []),
+      { label: 'Editar plantilla', value: 'edit', kind: 'ghost' },
       { label: 'Usar plantilla', value: 'use', kind: 'primary' },
     ],
   });
+  if (r.value === 'edit') return editTemplate(t);
   if (r.value === 'use') {
     const c = newContractFromTemplate(t);
     await saveContract(c);
@@ -440,6 +448,7 @@ const TABS = [
   ['secciones', 'Secciones'],
   ['variables', 'Variables'],
   ['vista', 'Vista previa'],
+  ['documento', 'Word y PDF'],
   ['firmas', 'Firmas'],
   ['anexos', 'Anexos'],
   ['versiones', 'Versiones'],
@@ -471,7 +480,7 @@ async function openEditor(id, tab) {
   renderEditorHeader();
   const focusVar = state.focusVar;
   state.focusVar = null;
-  ({ secciones: renderSections, variables: () => renderVariables(focusVar), vista: renderPreviewTab, firmas: renderSigners, anexos: renderAnexos, versiones: renderVersions })[state.tab]();
+  ({ secciones: renderSections, variables: () => renderVariables(focusVar), vista: renderPreviewTab, documento: renderDocumento, firmas: renderSigners, anexos: renderAnexos, versiones: renderVersions })[state.tab]();
   refreshSidePreview();
   window.scrollTo(0, 0);
 }
@@ -485,17 +494,16 @@ function renderEditorHeader() {
     <div class="title-wrap">
       <input id="doc-title" class="doc-title" value="${esc(c.title)}" aria-label="Título del contrato">
       <div class="title-meta">
-        <span class="badge ${c.status}">${c.status === 'final' ? 'Final' : 'Borrador'}</span>
+        ${statusBadge(c)}
         <span id="save-status" class="muted small">Guardado</span>
       </div>
     </div>
-    <button class="btn primary" id="btn-pdf">${icon('share')}<span class="hide-xs">Exportar PDF</span></button>
+    <a class="btn primary" href="#/c/${c.id}/documento">${icon('doc')}<span class="hide-xs">Word y PDF</span></a>
     <button class="icon-btn" id="btn-more" aria-label="Más acciones">${icon('more')}</button>`;
   $('#doc-title').addEventListener('input', (e) => {
     c.title = e.target.value;
     touched({ log: 'Cambió el título', groupKey: 'title' });
   });
-  $('#btn-pdf').addEventListener('click', () => exportPdf(c));
   $('#btn-more').addEventListener('click', () => contractAction('menu', c));
   updateMissingDot();
 }
@@ -528,7 +536,7 @@ function documentHTML(c, { interactive = false } = {}) {
   const parts = (txt) => fill(c, txt, 'parts').map((p) =>
     p.var ? `<span class="v ${p.missing ? 'missing' : ''}" ${interactive ? `data-var="${esc(p.var)}" role="button" tabindex="0"` : ''}>${esc(p.text)}</span>` : esc(p.text)).join('');
   return `
-    ${c.status !== 'final' ? '<div class="watermark">BORRADOR</div>' : ''}
+    ${!['aprobado', 'final'].includes(c.status) ? `<div class="watermark">${c.status === 'revision' ? 'REVISIÓN' : 'BORRADOR'}</div>` : ''}
     <h1 class="doc-h1">${parts(c.title)}</h1>
     ${c.sections.map((s, i) => `
       <section class="doc-sec">
@@ -922,7 +930,7 @@ function renderSigners() {
       </div>
       ${c.status === 'final'
         ? `<button class="btn" data-act="draft">Volver a borrador</button>`
-        : `<button class="btn primary" data-act="final" ${missingVariables(c).length ? 'title="Hay datos pendientes"' : ''}>${icon('check')} Marcar como final</button>`}
+        : `<button class="btn primary" data-act="final" ${missingVariables(c).length ? 'title="Hay datos pendientes"' : ''}>${icon('check')} Marcar como firmado</button>`}
     </div>
     <div class="signers">
       ${c.signers.map((sg) => {
@@ -1005,14 +1013,14 @@ function renderSigners() {
         const missing = missingVariables(c).length;
         if (missing || pending) {
           const msg = [missing && `${missing} dato(s) sin completar`, pending && `${pending} firma(s) pendiente(s)`].filter(Boolean).join(' y ');
-          if (!(await confirmDialog('Marcar como final', `Hay ${msg}. ¿Marcar como final de todos modos?`, 'Marcar final', 'primary'))) return;
+          if (!(await confirmDialog('Marcar como firmado', `Hay ${msg}. ¿Marcar como firmado de todos modos?`, 'Marcar firmado', 'primary'))) return;
         }
         c.status = 'final';
-        addVersion(c, 'Versión final');
-        logChange(c, 'Marcó el contrato como final');
+        addVersion(c, 'Versión firmada');
+        logChange(c, 'Marcó el contrato como firmado');
         await saveContract(c);
         renderEditorHeader();
-        toast('Contrato marcado como final y versión guardada', 'ok');
+        toast('Contrato marcado como firmado y versión guardada', 'ok');
         return renderSigners();
       }
       case 'draft':
@@ -2090,6 +2098,392 @@ function bindDropboxSettings() {
       setSyncPill('ok');
       renderSettings();
     }
+  });
+}
+
+// ---------- Word y PDF: flujo Borrador → En revisión → Aprobado → Firmado ----------
+let docxReady;
+function loadDocx() {
+  if (window.docx) return Promise.resolve(window.docx);
+  docxReady ??= new Promise((resolve, reject) => {
+    const s = Object.assign(document.createElement('script'), { src: 'vendor/docx.iife.js' });
+    s.onload = () => resolve(window.docx);
+    s.onerror = () => { docxReady = null; reject(new Error('No se pudo cargar el módulo de Word')); };
+    document.head.appendChild(s);
+  });
+  return docxReady;
+}
+
+const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Documento';
+
+/** Empresa a cuya carpeta va el contrato: la primera del grupo vinculada; si no, la primera parte vinculada. */
+function clientParty(c) {
+  const linked = c.signers.map((sg) => sg.party && state.parties.find((p) => p.id === sg.party.id)).filter(Boolean);
+  return linked.find((p) => p.propia) || linked[0] || null;
+}
+
+/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente de la empresa>/CONTRATOS/<título>. */
+function contractFolder(c) {
+  if (c.carpeta) return c.carpeta;
+  const p = clientParty(c);
+  const base = p ? expedienteOf(p) : dbx.joinPath(sync.expedientesRoot(), 'SIN EMPRESA');
+  return dbx.joinPath(base, 'CONTRATOS', safeName(fill(c, c.title)));
+}
+
+/** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
+async function deliverFile(c, blob, filename, kind) {
+  let path = null;
+  if (dbx.isConnected()) {
+    await loadExpedienteFolders();
+    const folder = contractFolder(c);
+    const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, { autorename: true });
+    path = meta.path_display;
+    // Si la carpeta de la empresa se creó ahora, queda guardada en su ficha del catálogo
+    const p = clientParty(c);
+    if (p && !p.expediente && !c.carpeta) { p.expediente = expedienteOf(p); await saveParty(p); }
+  }
+  download(blob, filename);
+  const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: dbx.config()?.account?.name || '', status: c.status };
+  c.documentos = [rec, ...(c.documentos || [])];
+  return rec;
+}
+
+const STATUS_STEPS = [['borrador', 'Borrador'], ['revision', 'En revisión'], ['aprobado', 'Aprobado'], ['final', 'Firmado']];
+
+function renderDocumento() {
+  const c = state.current;
+  c.documentos ||= [];
+  const box = tabBox();
+  const connected = dbx.isConnected();
+  const idx = STATUS_STEPS.findIndex(([k]) => k === c.status);
+  const missing = missingVariables(c).length;
+  const rev = c.revision || 0;
+  box.innerHTML = `
+    <ol class="stepper">
+      ${STATUS_STEPS.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
+    </ol>
+    ${missing ? `<div class="banner warn">${icon('alert')} <span>${missing} dato(s) sin completar: aparecerán entre corchetes en el documento.</span></div>` : ''}
+    <section class="card form-block">
+      ${c.status === 'borrador' ? `
+        <h3>Enviar a revisión</h3>
+        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'} con la leyenda “EN REVISIÓN” para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
+        <div class="row"><button class="btn primary" data-wf="review">${icon('doc')} Generar Word para revisión</button></div>`
+      : c.status === 'revision' ? `
+        <h3>En revisión · v${rev}</h3>
+        <p class="muted">Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.</p>
+        <div class="row">
+          <button class="btn" data-wf="review">${icon('doc')} Nueva versión v${rev + 1}</button>
+          <button class="btn primary" data-wf="approve">${icon('check')} Aprobar y generar PDF</button>
+        </div>`
+      : c.status === 'aprobado' ? `
+        <h3>Aprobado</h3>
+        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado.</p>
+        <div class="row">
+          <button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>
+          <a class="btn primary" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
+        </div>`
+      : `
+        <h3>Firmado</h3>
+        <p class="muted">El contrato está firmado. Cualquier edición lo regresa a borrador.</p>
+        <div class="row"><button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button></div>`}
+      <button class="link" data-wf="word">Descargar Word de trabajo (sin guardar en Dropbox)</button>
+    </section>
+    <section class="card form-block">
+      <h3>Dónde se guarda</h3>
+      ${connected ? `
+        <p class="muted small">En Dropbox, dentro del expediente de ${clientParty(c) ? `<strong>${esc(clientParty(c).nombre)}</strong>` : 'la empresa (vincula una parte en Variables)'}. Si la carpeta no existe, se crea sola.</p>
+        <p><code id="doc-folder">${esc(contractFolder(c))}</code></p>
+        <div class="row">
+          <button class="btn sm" data-wf="folder">${icon('folder')} Cambiar carpeta</button>
+          ${c.carpeta ? '<button class="link" data-wf="folder-reset">Usar la carpeta automática</button>' : ''}
+        </div>`
+      : `<p class="muted">Sin Dropbox conectado: los archivos solo se descargan en este equipo. Conéctalo en <a href="#/ajustes">Ajustes</a>.</p>`}
+    </section>
+    <section class="card form-block">
+      <h3>Documentos generados</h3>
+      ${c.documentos.length ? `<div class="doc-list">${c.documentos.map((d) => `
+        <div class="doc-item" data-id="${d.id}">
+          <span class="badge ${d.kind === 'pdf' ? 'final' : 'revision'}">${d.kind === 'pdf' ? 'PDF' : 'Word'}</span>
+          <div class="anexo-main"><strong>${esc(d.name)}</strong><span class="muted small">${fmtDateTime(d.date)}${d.by ? ` · ${esc(d.by)}` : ''}${d.path ? '' : ' · solo descargado'}</span></div>
+          ${d.path && connected ? '<button class="btn sm" data-wf="open">Abrir</button>' : ''}
+        </div>`).join('')}</div>` : '<p class="muted small">Aún no se ha generado ningún documento.</p>'}
+    </section>`;
+
+  if (connected && !c.carpeta) {
+    // Al leer las carpetas existentes puede reconocerse la del expediente (p. ej. "MERCASA DEL BAJIO")
+    loadExpedienteFolders().then(() => { const el = $('#doc-folder'); if (el) el.textContent = contractFolder(c); });
+  }
+
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-wf]');
+    if (!btn) return;
+    const act = btn.dataset.wf;
+    try {
+      if (act === 'review') return await sendToReview(c, btn);
+      if (act === 'approve') return await approve(c, btn);
+      if (act === 'pdf') return exportPdf(c);
+      if (act === 'word') {
+        const D = await loadDocx();
+        download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(fill(c, c.title))}.docx`);
+        return toast('Word descargado', 'ok');
+      }
+      if (act === 'open') return openDropboxFile(c.documentos.find((d) => d.id === btn.closest('.doc-item').dataset.id).path);
+      if (act === 'folder') {
+        await loadExpedienteFolders();
+        const p = clientParty(c);
+        const folder = await browseDropbox({ mode: 'folder', start: p ? expedienteOf(p) : sync.expedientesRoot(), title: 'Carpeta para los documentos del contrato' });
+        if (!folder) return;
+        c.carpeta = folder;
+        touched({ log: `Cambió la carpeta de documentos a ${folder}`, content: false });
+        return renderDocumento();
+      }
+      if (act === 'folder-reset') {
+        delete c.carpeta;
+        touched({ log: 'Volvió a la carpeta automática de documentos', content: false });
+        return renderDocumento();
+      }
+    } catch (err) {
+      console.error(err);
+      toast(err.message || 'No se pudo generar el documento', 'error');
+      btn.disabled = false;
+    }
+  });
+}
+
+async function sendToReview(c, btn) {
+  const missing = missingVariables(c).length;
+  if (missing && !(await confirmDialog('Faltan datos', `Hay ${missing} dato(s) sin completar; aparecerán entre corchetes. ¿Generar el Word de todos modos?`, 'Generar', 'primary'))) return;
+  btn.disabled = true;
+  const D = await loadDocx();
+  const n = (c.revision || 0) + 1;
+  const blob = await buildDocxBlob(D, c, { label: `EN REVISIÓN · v${n}` });
+  c.revision = n;
+  c.status = 'revision';
+  await deliverFile(c, blob, `${safeName(fill(c, c.title))} - v${n} revision.docx`, 'docx');
+  addVersion(c, `Revisión v${n}`);
+  logChange(c, `Generó el Word de revisión v${n}`);
+  await saveContract(c);
+  renderEditorHeader();
+  renderDocumento();
+  toast(`Word v${n} generado${dbx.isConnected() ? ' y guardado en Dropbox' : ''}`, 'ok');
+}
+
+async function approve(c, btn) {
+  const missing = missingVariables(c).length;
+  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}Se generarán el Word y el PDF finales (sin leyendas) y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
+  btn.disabled = true;
+  const prev = c.status;
+  c.status = 'aprobado';
+  try {
+    const D = await loadDocx();
+    const base = safeName(fill(c, c.title));
+    await deliverFile(c, await buildDocxBlob(D, c, { label: '' }), `${base} - APROBADO.docx`, 'docx');
+    const { blob } = buildPdf(c);
+    await deliverFile(c, blob, `${base} - APROBADO.pdf`, 'pdf');
+  } catch (err) {
+    c.status = prev;
+    throw err;
+  }
+  c.aprobado = { by: dbx.config()?.account?.name || '', date: Date.now() };
+  addVersion(c, 'Aprobado');
+  logChange(c, `Aprobó el contrato${c.aprobado.by ? ` (${c.aprobado.by})` : ''}`);
+  await saveContract(c);
+  renderEditorHeader();
+  renderDocumento();
+  toast(`Contrato aprobado${dbx.isConnected() ? '; Word y PDF guardados en Dropbox' : ''}`, 'ok');
+}
+
+// ---------- Editor de plantillas ----------
+// Las plantillas de la app se editan como una copia propia que la reemplaza ("replaces"); se puede
+// restaurar la original. Los contratos ya creados no cambian al editar una plantilla.
+async function saveTemplate(t) {
+  t.updatedAt = Date.now();
+  await db.put('templates', structuredClone(t));
+  await sync.markDirty('templates', t.id);
+  scheduleSync();
+  const i = state.userTemplates.findIndex((x) => x.id === t.id);
+  if (i >= 0) state.userTemplates[i] = t; else state.userTemplates.unshift(t);
+}
+
+async function editTemplate(t) {
+  if (!t.custom) {
+    // Plantilla de la app: se crea su versión editable
+    const copy = { ...structuredClone(t), id: `u-${t.id}`, custom: true, replaces: t.id, createdAt: Date.now() };
+    await saveTemplate(copy);
+    t = copy;
+  }
+  go(`#/plantilla/${t.id}`);
+}
+
+function renderTemplateEditor(id) {
+  setNav('templates');
+  const t = state.userTemplates.find((x) => x.id === id);
+  if (!t) { toast('Plantilla no encontrada', 'error'); return go('#/plantillas'); }
+  const original = t.replaces && TEMPLATES.find((x) => x.id === t.replaces);
+  const keysInText = () => {
+    const used = new Set();
+    const scan = (txt) => { for (const m of String(txt || '').matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)) used.add(m[1]); };
+    t.sections.forEach((s) => { scan(s.title); scan(s.body); });
+    t.signers.forEach((sg) => scan(sg.name));
+    return used;
+  };
+  const usedKeys = keysInText();
+  const undefinedKeys = () => [...keysInText()].filter((k) => !t.vars.some(([key]) => key === k));
+  const missingHTML = () => {
+    const keys = undefinedKeys();
+    return keys.length ? `<div class="banner warn">${icon('alert')} <span>Hay ${keys.length} variable(s) en el texto sin definir: ${keys.map((k) => `<code>{{${esc(k)}}}</code>`).join(' ')}</span><button type="button" class="btn sm" data-act="add-missing">Agregarlas</button></div>` : '';
+  };
+
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/plantillas">Plantillas</a> · ${original ? 'Plantilla de la app modificada' : 'Plantilla propia'}</p>
+        <h1>${esc(t.name)}</h1>
+      </div>
+      <span id="tpl-save" class="muted small">Guardado</span>
+    </header>
+    <div class="banner info">${icon('alert')} <span>Los cambios aplican a los contratos nuevos. Los contratos ya creados no se modifican.</span></div>
+    <form class="party-form" id="tpl-form" autocomplete="off">
+      <section class="card form-block">
+        <div class="form-grid">
+          <label class="field"><span>Nombre</span><input data-k="name" value="${esc(t.name)}"></label>
+          <label class="field"><span>Categoría</span><select data-k="category">
+            ${[...CATEGORIES, { id: 'mis', label: 'Mis plantillas' }].map((c) => `<option value="${c.id}" ${t.category === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+          </select></label>
+        </div>
+        <label class="field"><span>Descripción</span><input data-k="description" value="${esc(t.description || '')}"></label>
+      </section>
+      <section class="card form-block">
+        <h3>Secciones</h3>
+        <p class="muted small">Usa <code>{{variable}}</code> para los datos que se llenan en cada contrato.</p>
+        ${t.sections.map((s, i) => `
+          <div class="sub-item" data-list="sections" data-i="${i}">
+            <div class="sec-head">
+              <span class="sec-num">${i + 1}</span>
+              <input class="sec-title" data-k="title" value="${esc(s.title)}" aria-label="Título de la sección">
+              <div class="sec-actions">
+                <button type="button" class="icon-btn sm" data-act="up" ${i === 0 ? 'disabled' : ''} aria-label="Subir">${icon('up')}</button>
+                <button type="button" class="icon-btn sm" data-act="down" ${i === t.sections.length - 1 ? 'disabled' : ''} aria-label="Bajar">${icon('down')}</button>
+                <button type="button" class="icon-btn sm danger" data-act="del" aria-label="Eliminar">${icon('trash')}</button>
+              </div>
+            </div>
+            <textarea data-k="body" rows="4">${esc(s.body)}</textarea>
+          </div>`).join('')}
+        <div class="row">
+          <button type="button" class="btn sm" data-act="add-section">${icon('plus')} Sección en blanco</button>
+          <button type="button" class="btn sm" data-act="add-clause">${icon('library')} Desde biblioteca de cláusulas</button>
+        </div>
+      </section>
+      <section class="card form-block">
+        <h3>Variables</h3>
+        <div id="tpl-missing">${missingHTML()}</div>
+        <div class="var-table">
+          <span class="muted small">Clave</span><span class="muted small">Etiqueta</span><span class="muted small">Tipo</span><span class="muted small">Valor por defecto</span><span></span>
+          ${t.vars.map(([key, label, type, def], i) => `
+            <input data-list="vars" data-i="${i}" data-k="0" value="${esc(key)}" aria-label="Clave" class="mono">
+            <input data-list="vars" data-i="${i}" data-k="1" value="${esc(label)}" aria-label="Etiqueta">
+            <select data-list="vars" data-i="${i}" data-k="2" aria-label="Tipo">${Object.entries(VAR_TYPES).map(([k, l]) => `<option value="${k}" ${type === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            <input data-list="vars" data-i="${i}" data-k="3" value="${esc(def ?? '')}" aria-label="Valor por defecto">
+            <button type="button" class="icon-btn sm danger" data-list="vars" data-i="${i}" data-act="del-var" aria-label="Quitar" ${usedKeys.has(key) ? 'disabled title="Se usa en el texto"' : ''}>${icon('trash')}</button>`).join('')}
+        </div>
+        <button type="button" class="btn sm" data-act="add-var">${icon('plus')} Agregar variable</button>
+      </section>
+      <section class="card form-block">
+        <h3>Firmantes</h3>
+        ${t.signers.map((sg, i) => `
+          <div class="row" data-list="signers" data-i="${i}">
+            <label class="field"><span>Rol</span><input data-k="role" value="${esc(sg.role)}"></label>
+            <label class="field"><span>Nombre (admite variables)</span><input data-k="name" value="${esc(sg.name)}"></label>
+            <button type="button" class="icon-btn sm danger" data-act="del-signer" aria-label="Quitar">${icon('trash')}</button>
+          </div>`).join('')}
+        <button type="button" class="btn sm" data-act="add-signer">${icon('plus')} Agregar firmante</button>
+      </section>
+      <div class="row">
+        ${original
+          ? '<button type="button" class="btn ghost danger" data-act="restore">Restaurar la plantilla original</button>'
+          : '<button type="button" class="btn ghost danger" data-act="delete">Eliminar plantilla</button>'}
+        <button type="button" class="btn" data-act="use">${icon('plus')} Crear contrato con esta plantilla</button>
+      </div>
+    </form>`;
+
+  const form = $('#tpl-form');
+  $$('textarea', form).forEach(autosize);
+  const status = (txt) => { const el = $('#tpl-save'); if (el) el.textContent = txt; };
+  const persist = debounce(async () => {
+    await saveTemplate(t);
+    status('Guardado');
+    const box = $('#tpl-missing');
+    if (box) box.innerHTML = missingHTML(); // se actualiza sin redibujar para no perder el foco
+  }, 500);
+  const rerender = async () => { await saveTemplate(t); const y = window.scrollY; renderTemplateEditor(t.id); window.scrollTo(0, y); };
+  const holder = (el) => el.dataset.list ? el : el.closest('[data-list]');
+
+  form.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    if (k === undefined) return;
+    const h = holder(e.target);
+    if (!h) t[k] = e.target.value;
+    else if (h.dataset.list === 'vars') t.vars[Number(h.dataset.i)][Number(k)] = k === '0' ? slugify(e.target.value) : e.target.value;
+    else t[h.dataset.list][Number(h.dataset.i)][k] = e.target.value;
+    if (e.target.tagName === 'TEXTAREA') autosize(e.target);
+    status('Guardando…');
+    persist();
+  });
+  form.addEventListener('change', (e) => {
+    // Al terminar de editar una clave o un texto se recalculan las variables detectadas
+    if (e.target.dataset.k === '0' || e.target.tagName === 'SELECT') rerender();
+  });
+  form.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const h = holder(btn);
+    const i = h ? Number(h.dataset.i) : -1;
+    switch (btn.dataset.act) {
+      case 'up': [t.sections[i - 1], t.sections[i]] = [t.sections[i], t.sections[i - 1]]; break;
+      case 'down': [t.sections[i + 1], t.sections[i]] = [t.sections[i], t.sections[i + 1]]; break;
+      case 'del':
+        if (!(await confirmDialog('Eliminar sección', `¿Eliminar "${t.sections[i].title}" de la plantilla?`, 'Eliminar'))) return;
+        t.sections.splice(i, 1);
+        break;
+      case 'add-section': t.sections.push({ title: 'Nueva sección', body: '' }); break;
+      case 'add-clause': {
+        const r = await modal({
+          title: 'Biblioteca de cláusulas',
+          wide: true,
+          body: `<div class="clause-list">${CLAUSES.map((cl, n) => `<button value="${n}" class="clause-item"><strong>${esc(cl.title)}</strong><span>${esc(cl.body)}</span></button>`).join('')}</div>`,
+        });
+        if (r.value === '') return;
+        const cl = CLAUSES[Number(r.value)];
+        t.sections.push({ title: cl.title, body: cl.body });
+        break;
+      }
+      case 'add-missing': undefinedKeys().forEach((k) => t.vars.push([k, humanize(k), 'text'])); break;
+      case 'add-var': t.vars.push([`variable_${t.vars.length + 1}`, 'Nueva variable', 'text']); break;
+      case 'del-var': t.vars.splice(i, 1); break;
+      case 'add-signer': t.signers.push({ role: 'Firmante', name: '' }); break;
+      case 'del-signer': t.signers.splice(i, 1); break;
+      case 'use': {
+        await saveTemplate(t);
+        const c = newContractFromTemplate(t);
+        await saveContract(c);
+        return go(`#/c/${c.id}/variables`);
+      }
+      case 'restore':
+      case 'delete': {
+        const restoring = btn.dataset.act === 'restore';
+        if (!(await confirmDialog(restoring ? 'Restaurar original' : 'Eliminar plantilla',
+          restoring ? 'Se descartan los cambios hechos a esta plantilla y vuelve la versión original de la app. Los contratos ya creados no cambian.' : `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`,
+          restoring ? 'Restaurar' : 'Eliminar'))) return;
+        await db.remove('templates', t.id);
+        await sync.markDeleted('templates', t.id);
+        scheduleSync();
+        state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
+        toast(restoring ? 'Plantilla original restaurada' : 'Plantilla eliminada', 'ok');
+        return go('#/plantillas');
+      }
+      default: return;
+    }
+    rerender();
   });
 }
 

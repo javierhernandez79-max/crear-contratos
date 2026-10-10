@@ -6,7 +6,7 @@ const M = { top: 25, bottom: 25, left: 25, right: 25 };
 const CONTENT_W = PAGE.w - M.left - M.right;
 const LINE = 5.6; // mm por línea a 11pt
 
-export function buildPdf(c, { watermark = c.status !== 'final' } = {}) {
+export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.status) } = {}) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'letter', compress: true });
   doc.setProperties({ title: fill(c, c.title), creator: 'Crear Contratos' });
