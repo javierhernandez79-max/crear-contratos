@@ -2,8 +2,8 @@
 // (vendor/docx.iife.js en el navegador, carga diferida; paquete npm en pruebas).
 import { fill, layoutSections } from './model.js';
 
-// Estilo de los documentos marco del despacho: Arial Narrow 10, márgenes laterales de 3 cm
-const FONT = 'Arial Narrow';
+// Estilo de los documentos marco del despacho: Arial 10, márgenes laterales de 3 cm
+const FONT = 'Arial';
 const SIZE = 20; // medios puntos → 10 pt
 const TWIP_CM = 567;
 

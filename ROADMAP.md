@@ -13,7 +13,7 @@ Backlog priorizado. Se construye una funcionalidad a la vez; no se avanza a la s
 - **Dispositivos**: arrancar en computadora; después móvil.
 - **Vencimientos**: sí, con alertas.
 - **Documentos de las partes**: se suben a Dropbox y se incluyen desde ahí.
-- **Formato Word** (2026-10-10): Arial Narrow 10, márgenes laterales de 3 cm, encabezado "1 | Página" + título espaciado, datos capturados en negritas.
+- **Formato Word** (2026-10-10): Arial 10, márgenes laterales de 3 cm, encabezado "1 | Página" + título espaciado, datos capturados en negritas.
 - **Catálogo** (2026-10-09): ~30 empresas propias, cambian con el tiempo. Campos según cada contrato marco. Varios apoderados por empresa; siempre preguntar quién firma. No hay Excel previo: la app genera uno que queda como catálogo, actualizable a mano o automáticamente. Dropbox va antes que Word.
 
 ## Arquitectura
