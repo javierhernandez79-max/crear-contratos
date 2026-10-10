@@ -19,7 +19,7 @@ Backlog priorizado. Se construye una funcionalidad a la vez; no se avanza a la s
 **Dropbox como almacén compartido** (catálogo en Excel, contratos, plantillas y expedientes en una carpeta del equipo), sin servidor propio; cada equipo mantiene copia local (IndexedDB) y sincroniza. La firma remota sí requerirá un proveedor externo o un servidor.
 Publicada en https://documentos-legales-s0c.pages.dev (Cloudflare Pages, despliegue automático desde `main`), protegida con Cloudflare Access (código por correo, solo el equipo legal).
 Dropbox Business (team space): carpeta `/Legal - Documentos App`, expedientes en `EXPEDIENTES CORPORATIVOS RM/<empresa>`.
-Pendiente de Javier: App key de Dropbox (Redirect URI `https://documentos-legales-s0c.pages.dev/`).
+App de Dropbox "Documentos Legales" (App key en `js/config.js`; la App secret no se usa con PKCE y no debe guardarse en el repositorio). Redirect URI `https://documentos-legales-s0c.pages.dev/`.
 
 ## Backlog
 

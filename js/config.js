@@ -1,6 +1,6 @@
 // Configuración del equipo. La App key de Dropbox no es secreta (se usa PKCE, sin "app secret"):
 // escríbela aquí para que nadie tenga que capturarla en Ajustes.
-export const DROPBOX_APP_KEY = '';
+export const DROPBOX_APP_KEY = '16o22x7le8ff56i';
 // Carpeta compartida donde vive todo: catálogo en Excel, expedientes y datos de la app.
 // En Dropbox Business la ruta se escribe desde la raíz del equipo.
 export const DROPBOX_FOLDER = '/Legal - Documentos App';
