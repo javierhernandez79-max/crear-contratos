@@ -1,6 +1,6 @@
 // Generación de Word (.docx) para revisión de los abogados. Recibe la librería docx como parámetro
 // (vendor/docx.iife.js en el navegador, carga diferida; paquete npm en pruebas).
-import { fill } from './model.js';
+import { fill, layoutSections } from './model.js';
 
 const FONT = 'Arial';
 const SIZE = 22; // medios puntos → 11 pt
@@ -28,13 +28,23 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
     }),
   ];
 
-  c.sections.forEach((sec, i) => {
-    children.push(new Paragraph({
-      keepNext: true,
-      spacing: { before: 240, after: 120 },
-      children: [run(`${i + 1}. ${fill(c, sec.title).toUpperCase()}`, { bold: true })],
-    }));
-    fill(c, sec.body).split(/\n/).map((p) => p.trim()).filter(Boolean).forEach((p) => children.push(para(p)));
+  layoutSections(c, (t) => fill(c, t)).forEach((l) => {
+    if (l.heading) {
+      children.push(new Paragraph({
+        keepNext: true,
+        alignment: l.texto ? AlignmentType.CENTER : AlignmentType.LEFT,
+        spacing: { before: 240, after: 120 },
+        children: [run(l.heading, { bold: true })],
+      }));
+    }
+    const paras = fill(c, l.s.body).split(/\n/).map((p) => p.trim()).filter(Boolean);
+    if (!paras.length && l.prefix) paras.push('');
+    paras.forEach((p, j) => {
+      // La primera línea de una cláusula ordinal inicia con "PRIMERA.- " en negritas
+      children.push(j === 0 && l.prefix
+        ? new Paragraph({ alignment: AlignmentType.JUSTIFIED, spacing: { after: 160, line: 300 }, children: [run(l.prefix, { bold: true }), run(p)] })
+        : para(p));
+    });
   });
 
   // Firmas: tabla de dos columnas sin bordes
@@ -45,11 +55,12 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
     const cell = (sg) => new TableCell({
       width: { size: 50, type: WidthType.PERCENTAGE },
       borders: noBorders,
+      // Como en los documentos marco: el carácter ("EL PATRÓN") arriba, la línea y el nombre abajo
       children: sg ? [
-        new Paragraph({ spacing: { before: 720 }, alignment: AlignmentType.CENTER, children: [run(signatureMark(c, sg), { italics: true, size: 18, color: '1E3A5F' })] }),
+        new Paragraph({ spacing: { before: 240 }, alignment: AlignmentType.CENTER, children: [run(sg.role || '', { bold: true })] }),
+        new Paragraph({ spacing: { before: 600 }, alignment: AlignmentType.CENTER, children: [run(signatureMark(c, sg), { italics: true, size: 18, color: '1E3A5F' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, children: [run('_________________________________')] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, children: [run(fill(c, sg.name) || ' ', { bold: true })] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 240 }, children: [run(sg.role || '', { color: '555555', size: 20 })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 240 }, children: [run(fill(c, sg.name) || ' ')] }),
       ] : [new Paragraph('')],
     });
     const rows = [];

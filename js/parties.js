@@ -11,9 +11,9 @@ export function newParty(kind = 'pm', propia = false) {
     id: uid(), kind, propia, activa: true,
     nombre: '', rfc: '', domicilio: '', correo: '', telefono: '',
     // Persona moral: escritura constitutiva
-    escrituraNumero: '', escrituraFecha: '', notario: '', notariaNumero: '', notariaCiudad: '', folioMercantil: '',
+    escrituraNumero: '', escrituraFecha: '', notario: '', notariaNumero: '', notariaCiudad: '', folioMercantil: '', folioFecha: '', objetoSocial: '',
     // Persona física
-    curp: '', nacionalidad: 'mexicana', estadoCivil: '', ocupacion: '', identificacion: '',
+    curp: '', nacionalidad: 'mexicana', sexo: '', estadoCivil: '', ocupacion: '', identificacion: '',
     expediente: '', notas: '',
     apoderados: [], accionistas: [],
     createdAt: now, updatedAt: now,
@@ -88,10 +88,25 @@ const PM_VARS = [
   ['cargo_representante', 'Cargo del representante', 'text', (p, a) => a?.cargo || ''],
   ['constitucion', 'Datos de constitución', 'text', (p) => constitucionText(p)],
   ['poder', 'Datos del poder', 'text', (p, a) => (a ? poderText(a) : '')],
+  // Datos sueltos para plantillas con redacción propia ("instrumento público número …, del …, pasado ante la fe del …")
+  ['escritura_numero', 'Escritura constitutiva núm.', 'text', (p) => p.escrituraNumero],
+  ['escritura_fecha', 'Fecha de la escritura constitutiva', 'text', (p) => fmtLongDate(p.escrituraFecha)],
+  ['notario', 'Notario de la constitutiva', 'text', (p) => p.notario],
+  ['notaria_numero', 'Notaría núm. de la constitutiva', 'text', (p) => p.notariaNumero],
+  ['notaria_ciudad', 'Ciudad de la notaría de la constitutiva', 'text', (p) => p.notariaCiudad],
+  ['folio', 'Folio mercantil', 'text', (p) => p.folioMercantil],
+  ['folio_fecha', 'Fecha de inscripción del folio', 'text', (p) => fmtLongDate(p.folioFecha)],
+  ['objeto_social', 'Objeto social', 'text', (p) => p.objetoSocial],
+  ['poder_numero', 'Escritura del poder núm.', 'text', (p, a) => a?.poderNumero || ''],
+  ['poder_fecha', 'Fecha del poder', 'text', (p, a) => fmtLongDate(a?.poderFecha)],
+  ['poder_notario', 'Notario del poder', 'text', (p, a) => a?.notario || ''],
+  ['poder_notaria_numero', 'Notaría núm. del poder', 'text', (p, a) => a?.notariaNumero || ''],
+  ['poder_notaria_ciudad', 'Ciudad de la notaría del poder', 'text', (p, a) => a?.notariaCiudad || ''],
 ];
 const PF_VARS = [
   ['curp', 'CURP', 'text', (p) => p.curp],
   ['nacionalidad', 'Nacionalidad', 'text', (p) => p.nacionalidad],
+  ['sexo', 'Sexo', 'text', (p) => p.sexo],
   ['estado_civil', 'Estado civil', 'text', (p) => p.estadoCivil],
   ['ocupacion', 'Ocupación', 'text', (p) => p.ocupacion],
   ['identificacion', 'Identificación', 'text', (p) => p.identificacion],
