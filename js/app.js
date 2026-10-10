@@ -2033,7 +2033,7 @@ async function dropboxSettingsHTML() {
     <section class="card settings-block" id="dbx-block">
       <h3>Dropbox</h3>
       <p>Conectado como <strong>${esc(cfg.account?.name || '')}</strong> <span class="muted">${esc(cfg.account?.email || '')}</span></p>
-      <p class="muted small">Carpeta compartida: <code>${esc(cfg.folder)}</code> · ${info.lastSync ? `Última sincronización ${fmtRelative(info.lastSync)}` : 'Aún sin sincronizar'}${info.pending ? ` · ${info.pending} cambio(s) por subir` : ''}</p>
+      <p class="muted small">Carpeta compartida: <code>${esc(cfg.folder)}</code>${dbx.rootLabel() ? ` (${esc(dbx.rootLabel())})` : ''} · ${info.lastSync ? `Última sincronización ${fmtRelative(info.lastSync)}` : 'Aún sin sincronizar'}${info.pending ? ` · ${info.pending} cambio(s) por subir` : ''}</p>
       ${syncError ? `<p class="error-text">${esc(syncError)}</p>` : ''}
       <p class="muted small">El catálogo se guarda como <code>${esc(sync.CATALOG_FILE)}</code> en esa carpeta: se puede abrir y editar en Excel; los cambios entran a la app en la siguiente sincronización.</p>
       <div class="row wrap">
