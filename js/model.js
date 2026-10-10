@@ -1,4 +1,5 @@
 // Lógica de documentos: creación, variables, formato y versiones.
+import { montoEnLetra } from './letras.js';
 export const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 
@@ -88,7 +89,8 @@ export function formatValue(def, raw, currency = 'MXN') {
     case 'money': {
       const n = Number(String(raw).replace(/[^0-9.-]/g, ''));
       if (Number.isNaN(n)) return String(raw);
-      return `${n.toLocaleString('es-MX', { style: 'currency', currency })} ${currency}`;
+      // "$150,000.00 (CIENTO CINCUENTA MIL PESOS 00/100 M.N.)"
+      return `${n.toLocaleString('es-MX', { style: 'currency', currency })}${currency === 'MXN' ? '' : ` ${currency}`} (${montoEnLetra(n, currency)})`;
     }
     default:
       return String(raw);

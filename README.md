@@ -13,6 +13,12 @@ App web instalable para crear, personalizar, firmar y exportar contratos. Funcio
   - `datos-app/contratos/*.json` y `datos-app/plantillas/*.json` — datos de la app (no editar a mano).
   - Sincroniza al abrir, cada minuto, al volver a la ventana y unos segundos después de cada cambio. Se sube con control de versión (rev): si dos personas editan el mismo contrato a la vez, se conserva la versión de Dropbox y la otra queda como "copia en conflicto". El indicador ☁ (arriba a la derecha) muestra el estado; al tocarlo sincroniza.
   - Configuración: App key y carpeta en `js/config.js` (o en Ajustes). Pasos para crear la app de Dropbox en Ajustes → Dropbox → "Cómo obtener la App key". La Redirect URI a registrar es la dirección exacta donde se publica la app.
+- **Word y PDF (flujo de revisión)**: pestaña *Word y PDF* del contrato con estados Borrador → En revisión → Aprobado → Firmado.
+  - *Generar Word para revisión* crea `… - vN revision.docx` con la leyenda "EN REVISIÓN · vN". Los abogados anotan con control de cambios y las correcciones se aplican en la app; cualquier edición regresa el contrato a borrador.
+  - *Aprobar* (cualquier usuario) genera `… - APROBADO.docx` y `.pdf` sin leyendas y registra quién y cuándo.
+  - Se guardan en Dropbox en `<expediente de la empresa del grupo>/CONTRATOS/<título>/`; si la carpeta no existe se crea. Se puede elegir otra carpeta por contrato.
+  - Montos en letra automáticos: `$150,000.00 (CIENTO CINCUENTA MIL PESOS 00/100 M.N.)`.
+- **Editar plantillas**: cualquier plantilla (incluidas las de la app) se edita desde *Plantillas → Editar plantilla*: secciones, variables (detecta las que faltan), firmantes. Las de la app se guardan como versión modificada, se pueden restaurar y se comparten por Dropbox. Los contratos ya creados no cambian.
 - Biblioteca de 14 cláusulas para agregar con un toque.
 - Edición por secciones: agregar, eliminar, duplicar y reordenar (botones ↑↓ o arrastrar en escritorio).
 - Variables `{{clave}}` con tipo (texto, fecha, monto, número, dirección, correo); se detectan solas y se completan en todo el documento. Moneda configurable.
@@ -45,6 +51,8 @@ Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (N
 - `js/parties.js` — catálogo de partes: modelo, texto de declaraciones y vinculación con contratos
 - `js/catalog-xlsx.js` — catálogo ⇄ Excel (ExcelJS 4.4.0 en `vendor/`, se carga solo al usarlo)
 - `js/pdf.js` — generación de PDF (jsPDF 2.5.1 en `vendor/`)
+- `js/docx-export.js` — generación de Word (docx 9.5.1 en `vendor/`, se carga solo al usarlo)
+- `js/letras.js` — montos en letra
 - `js/signature.js` — panel de firma autógrafa
 - `js/efirma.js` — firma electrónica avanzada (node-forge 1.3.1 en `vendor/`, se carga solo al usarla)
 - `js/dropbox.js` — cliente de la API de Dropbox (OAuth PKCE, carga y descarga)
