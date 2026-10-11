@@ -260,9 +260,11 @@ function renderHome() {
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
         </div>
       </div>
-      <div class="grid contracts">
-        ${list.map(contractCard).join('') || '<p class="empty-inline">No hay contratos que coincidan.</p>'}
-      </div>` : `
+      ${list.length ? `
+      <div class="card lotes-list contract-list">
+        <div class="ll-row ll-head"><span>Contrato</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
+        ${list.map(contractRow).join('')}
+      </div>` : '<p class="empty-inline">No hay contratos que coincidan.</p>'}` : `
       <section class="empty">
         <div class="empty-art">${icon('doc')}</div>
         <h2>Crea tu primer contrato</h2>
@@ -279,36 +281,33 @@ function renderHome() {
     const el = $('#home-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-filter]').forEach((b) => b.addEventListener('click', () => { state.homeFilter = b.dataset.filter; renderHome(); }));
-  $$('.contract-card').forEach((card) => {
-    const id = card.dataset.id;
-    card.addEventListener('click', (e) => {
+  $$('.contract-list .ll-row[data-id]').forEach((row) => {
+    const id = row.dataset.id;
+    row.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (!act) return go(`#/c/${id}`);
-      e.stopPropagation();
       contractAction(act, state.contracts.find((c) => c.id === id));
     });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/c/${id}`); });
   });
 }
 
-function contractCard(c) {
+function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
   const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
-    <article class="card contract-card" data-id="${c.id}" tabindex="0">
-      <div class="card-top">
-        ${statusBadge(c)}
-        <button class="icon-btn sm" data-act="menu" aria-label="Más acciones">${icon('more')}</button>
-      </div>
-      <h3>${esc(fill(c, c.title))}</h3>
-      <p class="muted small">${esc(tpl?.name || 'Documento personalizado')}</p>
-      <div class="meta">
-        <span>${icon('clock', 'xs')} ${fmtRelative(c.updatedAt)}</span>
-        <span>${c.sections.length} secciones</span>
-        ${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Variables completas</span>'}
-        ${total ? `<span>${signed}/${total} firmas</span>` : ''}
-        ${c.updatedBy ? `<span>por ${esc(c.updatedBy)}</span>` : ''}
-      </div>
-    </article>`;
+        <div class="ll-row" data-id="${c.id}" tabindex="0" role="link">
+          <span><strong>${esc(fill(c, c.title))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
+          <span>${statusBadge(c)}</span>
+          <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
+          <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
+          <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm danger" data-act="del" title="Eliminar" aria-label="Eliminar">${icon('trash')}</button>
+            <button class="icon-btn sm" data-act="menu" title="Más acciones" aria-label="Más acciones">${icon('more')}</button>
+          </span>
+        </div>`;
 }
 
 async function contractAction(act, c) {
@@ -327,6 +326,12 @@ async function contractAction(act, c) {
     return;
   }
   if (act === 'open') return go(`#/c/${c.id}`);
+  if (act === 'view') {
+    const r = await modal({ title: fill(c, c.title), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
+      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' }, { label: 'Abrir y editar', value: 'open', kind: 'primary' }] });
+    if (r.value) return contractAction(r.value, c);
+    return;
+  }
   if (act === 'pdf') return exportPdf(c);
   if (act === 'dup') {
     const copy = duplicateContract(c);
@@ -398,15 +403,24 @@ function renderTemplates() {
         ${cats.map((c) => `<button class="chip ${state.tplCategory === c.id ? 'on' : ''}" data-cat="${c.id}">${esc(c.label)}</button>`).join('')}
       </div>
     </div>
-    <div class="grid templates">
+    ${list.length ? `
+    <div class="card lotes-list tpl-list">
+      <div class="ll-row ll-head"><span>Plantilla</span><span>Categoría</span><span>Secciones</span><span>Variables</span><span>Origen</span><span></span></div>
       ${list.map((t) => `
-        <article class="card tpl-card" data-id="${t.id}" tabindex="0">
-          <span class="tpl-cat">${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}${t.replaces ? ' · modificada' : ''}</span>
-          <h3>${esc(t.name)}</h3>
-          <p class="muted">${esc(t.description)}</p>
-          <p class="small muted">${t.sections.length} secciones · ${t.vars.length} variables</p>
-        </article>`).join('') || '<p class="empty-inline">Sin resultados.</p>'}
-    </div>
+      <div class="ll-row" data-id="${t.id}" tabindex="0" role="button">
+        <span><strong>${esc(t.name)}</strong><span class="muted small clamp">${esc(t.description)}</span></span>
+        <span>${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}</span>
+        <span>${t.sections.length}</span>
+        <span>${t.vars.length}</span>
+        <span class="small">${t.replaces ? 'Modificada' : t.custom ? 'Propia' : '<span class="muted">Incluida</span>'}</span>
+        <span class="ll-acts">
+          <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+          ${t.custom && !t.replaces
+            ? `<button class="icon-btn sm danger" data-act="del" title="Eliminar plantilla" aria-label="Eliminar">${icon('trash')}</button>`
+            : `<button class="icon-btn sm" disabled title="${t.replaces ? 'Es una modificación de una plantilla incluida: restáurala desde el editor' : 'Las plantillas incluidas no se eliminan'}" aria-label="No se puede eliminar">${icon('trash')}</button>`}
+        </span>
+      </div>`).join('')}
+    </div>` : '<p class="empty-inline">Sin resultados.</p>'}
     <p class="disclaimer">Las plantillas son modelos generales de referencia y no sustituyen la asesoría de un abogado. Revisa que el contenido se ajuste a tu caso y a la legislación aplicable.</p>
   `;
   $('#tpl-q').addEventListener('input', (e) => {
@@ -416,7 +430,15 @@ function renderTemplates() {
     const el = $('#tpl-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.tplCategory = b.dataset.cat; renderTemplates(); }));
-  $$('.tpl-card').forEach((card) => card.addEventListener('click', () => previewTemplate(allTemplates().find((t) => t.id === card.dataset.id))));
+  $$('.tpl-list .ll-row[data-id]').forEach((row) => {
+    const t = allTemplates().find((x) => x.id === row.dataset.id);
+    row.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'del') return deleteTemplate(t);
+      previewTemplate(t);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) previewTemplate(t); });
+  });
 }
 
 async function previewTemplate(t) {
@@ -442,13 +464,17 @@ async function previewTemplate(t) {
     go(`#/c/${c.id}/variables`);
     toast('Contrato creado. Empieza completando los datos.', 'ok');
   } else if (r.value === 'del') {
-    if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`, 'Eliminar'))) return;
-    await db.remove('templates', t.id);
-    await sync.markDeleted('templates', t.id);
-    scheduleSync();
-    state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
-    renderTemplates();
+    await deleteTemplate(t);
   }
+}
+
+async function deleteTemplate(t) {
+  if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`, 'Eliminar'))) return;
+  await db.remove('templates', t.id);
+  await sync.markDeleted('templates', t.id);
+  scheduleSync();
+  state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
+  renderTemplates();
 }
 
 // ---------- Editor ----------
