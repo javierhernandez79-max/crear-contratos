@@ -178,6 +178,9 @@ body.in-editor .container { max-width: 1440px; }
   flex: 0 1 140px; display: flex; flex-direction: column; align-items: center; gap: 2px;
   padding: 6px 8px; border-radius: 10px; text-decoration: none; color: var(--muted); font-size: 12px; font-weight: 600;
 }
+.bottom-nav a { position: relative; }
+.nav-badge { position: absolute; top: 2px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+@media (max-width: 520px) { .bottom-nav a { font-size: 10px; padding: 6px 2px; } }
 .bottom-nav a.active { color: var(--primary); background: var(--surface-2); }
 
 .offline { background: var(--warn-bg); color: var(--warn); text-align: center; font-size: 13px; font-weight: 600; padding: 6px; }
@@ -563,6 +566,17 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
   .lote-list .ll-row { grid-template-columns: minmax(0, 1fr) auto auto; }
   .lote-list .ll-row > span:nth-child(2), .lote-list .ll-row > span:nth-child(3), .lote-list .ll-row > span:nth-child(4), .lote-list .ll-row > span:nth-child(6) { display: none; }
   .lote-list .ll-row > span:nth-child(5) { display: flex; }
+}
+.banner-link { text-decoration: none; }
+.banner-link span { flex: 1; }
+.venc-list .ll-row { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr) minmax(0, 1.6fr) minmax(0, 1.2fr) minmax(0, 1.3fr) 84px; }
+.venc-list .v-vencido .venc-dias, .venc-list .v-urgente .venc-dias { color: var(--danger); font-weight: 700; }
+.venc-list .v-proximo .venc-dias { color: var(--warn); font-weight: 700; }
+.venc-list .v-vencido { box-shadow: inset 3px 0 0 var(--danger); }
+@media (max-width: 760px) {
+  .venc-list .ll-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .venc-list .ll-row > span:nth-child(4) { display: none; }
+  .venc-list .ll-row > span:nth-child(5) { display: flex; }
 }
 .err-list { margin: 8px 0 12px; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; }
 .lt-rev { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
