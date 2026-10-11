@@ -25,6 +25,7 @@ const state = {
   parties: [],
   lotes: [],
   loteDraft: null,
+  loteQuery: '',
   partyFilter: 'todas',
   partyQuery: '',
   returnTo: null, // { contractId, signerId } al capturar una parte nueva desde un contrato
@@ -260,9 +261,11 @@ function renderHome() {
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
         </div>
       </div>
-      <div class="grid contracts">
-        ${list.map(contractCard).join('') || '<p class="empty-inline">No hay contratos que coincidan.</p>'}
-      </div>` : `
+      ${list.length ? `
+      <div class="card lotes-list contract-list">
+        <div class="ll-row ll-head"><span>Contrato</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
+        ${list.map(contractRow).join('')}
+      </div>` : '<p class="empty-inline">No hay contratos que coincidan.</p>'}` : `
       <section class="empty">
         <div class="empty-art">${icon('doc')}</div>
         <h2>Crea tu primer contrato</h2>
@@ -279,36 +282,34 @@ function renderHome() {
     const el = $('#home-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-filter]').forEach((b) => b.addEventListener('click', () => { state.homeFilter = b.dataset.filter; renderHome(); }));
-  $$('.contract-card').forEach((card) => {
-    const id = card.dataset.id;
-    card.addEventListener('click', (e) => {
+  $$('.contract-list .ll-row[data-id]').forEach((row) => {
+    const id = row.dataset.id;
+    row.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (!act) return go(`#/c/${id}`);
-      e.stopPropagation();
       contractAction(act, state.contracts.find((c) => c.id === id));
     });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/c/${id}`); });
   });
 }
 
-function contractCard(c) {
+function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
   const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
-    <article class="card contract-card" data-id="${c.id}" tabindex="0">
-      <div class="card-top">
-        ${statusBadge(c)}
-        <button class="icon-btn sm" data-act="menu" aria-label="Más acciones">${icon('more')}</button>
-      </div>
-      <h3>${esc(fill(c, c.title))}</h3>
-      <p class="muted small">${esc(tpl?.name || 'Documento personalizado')}</p>
-      <div class="meta">
-        <span>${icon('clock', 'xs')} ${fmtRelative(c.updatedAt)}</span>
-        <span>${c.sections.length} secciones</span>
-        ${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Variables completas</span>'}
-        ${total ? `<span>${signed}/${total} firmas</span>` : ''}
-        ${c.updatedBy ? `<span>por ${esc(c.updatedBy)}</span>` : ''}
-      </div>
-    </article>`;
+        <div class="ll-row" data-id="${c.id}" tabindex="0" role="link">
+          <span><strong>${esc(fill(c, c.title))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
+          <span>${statusBadge(c)}</span>
+          <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
+          <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
+          <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm" data-act="open" title="Editar" aria-label="Editar">${icon('pen')}</button>
+            <button class="icon-btn sm danger" data-act="del" title="Eliminar" aria-label="Eliminar">${icon('trash')}</button>
+            <button class="icon-btn sm" data-act="menu" title="Más acciones" aria-label="Más acciones">${icon('more')}</button>
+          </span>
+        </div>`;
 }
 
 async function contractAction(act, c) {
@@ -327,6 +328,12 @@ async function contractAction(act, c) {
     return;
   }
   if (act === 'open') return go(`#/c/${c.id}`);
+  if (act === 'view') {
+    const r = await modal({ title: fill(c, c.title), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
+      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' }, { label: 'Abrir y editar', value: 'open', kind: 'primary' }] });
+    if (r.value) return contractAction(r.value, c);
+    return;
+  }
   if (act === 'pdf') return exportPdf(c);
   if (act === 'dup') {
     const copy = duplicateContract(c);
@@ -398,15 +405,25 @@ function renderTemplates() {
         ${cats.map((c) => `<button class="chip ${state.tplCategory === c.id ? 'on' : ''}" data-cat="${c.id}">${esc(c.label)}</button>`).join('')}
       </div>
     </div>
-    <div class="grid templates">
+    ${list.length ? `
+    <div class="card lotes-list tpl-list">
+      <div class="ll-row ll-head"><span>Plantilla</span><span>Categoría</span><span>Secciones</span><span>Variables</span><span>Origen</span><span></span></div>
       ${list.map((t) => `
-        <article class="card tpl-card" data-id="${t.id}" tabindex="0">
-          <span class="tpl-cat">${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}${t.replaces ? ' · modificada' : ''}</span>
-          <h3>${esc(t.name)}</h3>
-          <p class="muted">${esc(t.description)}</p>
-          <p class="small muted">${t.sections.length} secciones · ${t.vars.length} variables</p>
-        </article>`).join('') || '<p class="empty-inline">Sin resultados.</p>'}
-    </div>
+      <div class="ll-row" data-id="${t.id}" tabindex="0" role="button">
+        <span><strong>${esc(t.name)}</strong><span class="muted small clamp">${esc(t.description)}</span></span>
+        <span>${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}</span>
+        <span>${t.sections.length}</span>
+        <span>${t.vars.length}</span>
+        <span class="small">${t.replaces ? 'Modificada' : t.custom ? 'Propia' : '<span class="muted">Incluida</span>'}</span>
+        <span class="ll-acts">
+          <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+          <button class="icon-btn sm" data-act="edit" title="Editar plantilla" aria-label="Editar">${icon('pen')}</button>
+          ${t.custom && !t.replaces
+            ? `<button class="icon-btn sm danger" data-act="del" title="Eliminar plantilla" aria-label="Eliminar">${icon('trash')}</button>`
+            : `<button class="icon-btn sm" disabled title="${t.replaces ? 'Es una modificación de una plantilla incluida: restáurala desde el editor' : 'Las plantillas incluidas no se eliminan'}" aria-label="No se puede eliminar">${icon('trash')}</button>`}
+        </span>
+      </div>`).join('')}
+    </div>` : '<p class="empty-inline">Sin resultados.</p>'}
     <p class="disclaimer">Las plantillas son modelos generales de referencia y no sustituyen la asesoría de un abogado. Revisa que el contenido se ajuste a tu caso y a la legislación aplicable.</p>
   `;
   $('#tpl-q').addEventListener('input', (e) => {
@@ -416,7 +433,16 @@ function renderTemplates() {
     const el = $('#tpl-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.tplCategory = b.dataset.cat; renderTemplates(); }));
-  $$('.tpl-card').forEach((card) => card.addEventListener('click', () => previewTemplate(allTemplates().find((t) => t.id === card.dataset.id))));
+  $$('.tpl-list .ll-row[data-id]').forEach((row) => {
+    const t = allTemplates().find((x) => x.id === row.dataset.id);
+    row.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'del') return deleteTemplate(t);
+      if (act === 'edit') return editTemplate(t);
+      previewTemplate(t);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) previewTemplate(t); });
+  });
 }
 
 async function previewTemplate(t) {
@@ -442,13 +468,17 @@ async function previewTemplate(t) {
     go(`#/c/${c.id}/variables`);
     toast('Contrato creado. Empieza completando los datos.', 'ok');
   } else if (r.value === 'del') {
-    if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`, 'Eliminar'))) return;
-    await db.remove('templates', t.id);
-    await sync.markDeleted('templates', t.id);
-    scheduleSync();
-    state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
-    renderTemplates();
+    await deleteTemplate(t);
   }
+}
+
+async function deleteTemplate(t) {
+  if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`, 'Eliminar'))) return;
+  await db.remove('templates', t.id);
+  await sync.markDeleted('templates', t.id);
+  scheduleSync();
+  state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
+  renderTemplates();
 }
 
 // ---------- Editor ----------
@@ -1386,6 +1416,7 @@ function renderCatalog() {
           <span>${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm" data-act="edit" title="Editar" aria-label="Editar">${icon('pen')}</button>
             <button class="icon-btn sm danger" data-act="del" title="Eliminar del catálogo" aria-label="Eliminar">${icon('trash')}</button>
           </span>
         </div>`;
@@ -2220,7 +2251,7 @@ function loadDocx() {
   return docxReady;
 }
 
-const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Documento';
+const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Documento';
 
 /** Empresa a cuya carpeta va el contrato: la primera del grupo vinculada; si no, la primera parte vinculada. */
 function clientParty(c) {
@@ -2714,7 +2745,9 @@ async function saveLote(l, log) {
 
 function renderLotes() {
   setNav('lotes');
-  const list = [...state.lotes].sort((a, b) => b.createdAt - a.createdAt);
+  const q = state.loteQuery.trim().toLowerCase();
+  const list = [...state.lotes].sort((a, b) => b.createdAt - a.createdAt)
+    .filter((l) => !q || [l.cliente, l.empresa?.nombre, l.title].some((v) => String(v || '').toLowerCase().includes(q)));
   app.innerHTML = `
     <header class="page-head">
       <div>
@@ -2726,11 +2759,16 @@ function renderLotes() {
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </div>
     </header>
+    ${state.lotes.length ? `
+      <div class="toolbar">
+        <label class="search">${icon('search')}<input id="lote-q" type="search" placeholder="Buscar por cliente o empresa" value="${esc(state.loteQuery)}"></label>
+      </div>` : ''}
     ${list.length ? `
-      <div class="card lotes-list">
-        <div class="ll-row ll-head"><span>Lote</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
+      <div class="card lotes-list lote-list">
+        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa (patrón)</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
         ${list.map((l) => `
         <div class="ll-row" data-id="${l.id}" tabindex="0" role="link">
+          <span><strong>${l.cliente ? esc(l.cliente) : '<span class="muted">—</span>'}</strong></span>
           <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
           <span>${l.tipo === 'DETERMINADO' ? 'Determinado' : 'Indeterminado'}</span>
           <span>${l.trabajadores.length}${l.excluidos?.length ? `<span class="warn-text small">${l.excluidos.length} con errores</span>` : ''}</span>
@@ -2742,13 +2780,19 @@ function renderLotes() {
             <button class="icon-btn sm danger" data-act="del" title="Eliminar lote" aria-label="Eliminar">${icon('trash')}</button>
           </span>
         </div>`).join('')}
-      </div>` : `
+      </div>` : state.lotes.length ? '<p class="empty-inline">No hay lotes que coincidan.</p>' : `
       <section class="empty">
         <div class="empty-art">${icon('users')}</div>
         <h2>Contratos de trabajo en lote</h2>
         <p>Sube tu Excel P1 (una fila por trabajador), elige la empresa, quién firma y la plantilla. La app revisa los datos, genera un contrato por trabajador y, cuando alguien del equipo aprueba el lote, descargas todos en un .zip.</p>
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </section>`}`;
+  $('#lote-q')?.addEventListener('input', (e) => {
+    state.loteQuery = e.target.value;
+    const pos = e.target.selectionStart;
+    renderLotes();
+    const el = $('#lote-q'); el.focus(); el.setSelectionRange(pos, pos);
+  });
   $$('.ll-row[data-id]').forEach((row) => {
     const l = state.lotes.find((x) => x.id === row.dataset.id);
     row.addEventListener('click', (e) => {
@@ -2797,7 +2841,7 @@ async function downloadP1Columns() {
 // --- Nuevo lote ---
 function renderNuevoLote() {
   setNav('lotes');
-  const d = (state.loteDraft ||= { templateId: '', empresaId: '', apoderadoId: '', periodicidad: '', file: null, workers: null, errors: null, rawMissing: [] });
+  const d = (state.loteDraft ||= { cliente: '', templateId: '', empresaId: '', apoderadoId: '', periodicidad: '', file: null, workers: null, errors: null, rawMissing: [] });
   const tpls = loteTemplates();
   const empresas = sortParties(state.parties.filter((p) => p.activa && p.propia && p.kind === 'pm'));
   const emp = empresas.find((p) => p.id === d.empresaId);
@@ -2823,6 +2867,9 @@ function renderNuevoLote() {
       </div>
     </header>
     <section class="card settings-block lote-form">
+      <label class="field"><span>Cliente</span>
+        <input id="l-cli" list="l-cli-list" value="${esc(d.cliente || '')}" placeholder="Nombre del cliente" autocomplete="off">
+        <datalist id="l-cli-list">${[...new Set(state.lotes.map((l) => l.cliente).filter(Boolean))].sort().map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       <div class="row wrap">
         <label class="field"><span>Plantilla</span>
           <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${t.id}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
@@ -2860,7 +2907,7 @@ function renderNuevoLote() {
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
     <div class="row wrap lote-actions">
       <a class="btn ghost" href="#/lotes">Cancelar</a>
-      <button class="btn primary" id="l-create" ${ok && tpl && emp && d.periodicidad ? '' : 'disabled'}>${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
+      <button class="btn primary" id="l-create" ${ok && tpl && emp && d.periodicidad && d.cliente?.trim() ? '' : 'disabled'} data-ready="${ok && tpl && emp && d.periodicidad ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
     </div>`;
 
   const revalidate = () => {
@@ -2868,6 +2915,12 @@ function renderNuevoLote() {
     if (d.workers) d.errors = t ? validateWorkers(d.workers, t, { periodicidad: d.periodicidad || 'X' }) : d.workers.map(() => []);
     renderNuevoLote();
   };
+  // Sin re-render al escribir para no perder el foco; solo se habilita o no el botón
+  $('#l-cli').addEventListener('input', (e) => {
+    d.cliente = e.target.value;
+    const b = $('#l-create');
+    b.disabled = !(b.dataset.ready && d.cliente.trim());
+  });
   $('#l-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; revalidate(); });
   $('#l-per').addEventListener('change', (e) => { d.periodicidad = e.target.value; renderNuevoLote(); });
   $('#l-emp').addEventListener('change', (e) => {
@@ -2965,10 +3018,12 @@ async function createLote() {
   const validos = d.workers.filter((w, i) => !d.errors[i].length);
   const excluidos = d.workers.map((w, i) => ({ fila: w.fila, nombre: w.nombre, curp: w.curp, errores: d.errors[i] })).filter((x) => x.errores.length);
   const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+  const cliente = d.cliente.trim().replace(/\s+/g, ' ');
   // Se guardan copias de la plantilla y de la empresa: lo que se aprueba es exactamente lo que se revisó
   const l = {
     id: uid(),
-    title: `${emp.nombre} · ${validos.length} contrato${validos.length === 1 ? '' : 's'} · ${fecha}`,
+    cliente,
+    title: `${cliente} · ${emp.nombre} · ${validos.length} contrato${validos.length === 1 ? '' : 's'} · ${fecha}`,
     tipo,
     status: 'revision',
     periodicidad: d.periodicidad,
@@ -3012,6 +3067,7 @@ function renderLote(id) {
       </div>
     </header>
     <section class="card settings-block">
+      ${l.cliente ? `<p><strong>Cliente:</strong> ${esc(l.cliente)}</p>` : ''}
       <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
       <p><strong>Patrón:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
       <p><strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · <strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
@@ -3092,6 +3148,7 @@ function loteHTML(l, { toolbar = false } = {}) {
     <section class="pg">
       <h1>${esc(l.title)}</h1>
       <table class="kv">
+        ${l.cliente ? `<tr><th>Cliente</th><td>${esc(l.cliente)}</td></tr>` : ''}
         <tr><th>Patrón</th><td>${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ''}</td></tr>
         <tr><th>Tipo</th><td>Tiempo ${l.tipo === 'DETERMINADO' ? 'determinado' : 'indeterminado'}</td></tr>
         <tr><th>Plantilla</th><td>${esc(l.plantilla?.name || '')}</td></tr>
