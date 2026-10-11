@@ -15,7 +15,7 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
-import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
+import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
 
 // ---------- Estado ----------
@@ -2792,7 +2792,8 @@ function renderNuevoLote() {
               <span><strong>${esc(w.nombre || '(sin nombre)')}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
               <span>${esc(w.puesto)}</span>
               <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>
-              <span>${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : '<span class="ok-text">Listo</span>'}</span>
+              <span class="lt-rev">${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : `<span class="ok-text">Listo${d.editadas?.has(i) ? ' · corregido aquí' : ''}</span>`}
+                <button class="btn sm ${d.errors[i].length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${d.errors[i].length ? 'Corregir' : 'Editar'}</button></span>
             </div>`).join('')}
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
     <div class="row wrap lote-actions">
@@ -2825,6 +2826,8 @@ function renderNuevoLote() {
       const { rows, missing } = readP1(wb);
       d.rawMissing = missing;
       d.file = f.name;
+      d.raw = rows;
+      d.editadas = new Set();
       d.workers = rows.map(normalizeRow);
       revalidate();
     } catch (err) {
@@ -2833,6 +2836,58 @@ function renderNuevoLote() {
     }
   });
   $('#l-create').addEventListener('click', createLote);
+  $$('[data-edit]').forEach((b) => b.addEventListener('click', () => editLoteRow(Number(b.dataset.edit))));
+}
+
+// Campos del P1 que se pueden corregir en la plataforma (los demás no los usa el contrato)
+const P1_EDIT = ['nombre', 'apPaterno', 'apMaterno', 'nombreCompleto', 'curp', 'rfc', 'nacionalidad', 'sexo', 'estadoCivil', 'calle', 'noExt', 'noInt',
+  'colonia', 'municipio', 'cp', 'sueldo', 'sd', 'puesto', 'lugar', 'diasPago', 'tipo', 'antiguedad', 'ingreso', 'fin', 'firma'];
+const P1_DATES = new Set(['antiguedad', 'ingreso', 'fin', 'firma']);
+const normP1 = (v) => String(v ?? '').trim().toUpperCase();
+
+/** Corrige una fila del P1 sin salir de la plataforma; el Excel original no se modifica. */
+async function editLoteRow(i) {
+  const d = state.loteDraft;
+  const raw = d.raw[i];
+  const errs = d.errors[i];
+  const tpl = loteTemplates().find((x) => x.id === d.templateId);
+  const determinado = tpl && tipoDePlantilla(tpl) === 'DETERMINADO';
+  const cols = P1_COLUMNS.filter((c) => P1_EDIT.includes(c.key)
+    && (c.key in raw || !['nombreCompleto', 'sd', 'sexo'].includes(c.key))
+    && !(c.key === 'nombreCompleto' && 'nombre' in raw)
+    && !(c.key === 'fin' && !determinado));
+  const val = (c) => (P1_DATES.has(c.key) ? toISODate(raw[c.key]) : raw[c.key] ?? '');
+  const field = (c) => {
+    const id = `p1-${c.key}`;
+    const type = P1_DATES.has(c.key) ? 'date' : ['sueldo', 'sd'].includes(c.key) ? 'number' : 'text';
+    const input = c.key === 'tipo'
+      ? `<select name="${c.key}" id="${id}"><option value=""></option>${['INDETERMINADO', 'DETERMINADO'].map((o) => `<option ${normP1(val(c)) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
+      : `<input name="${c.key}" id="${id}" type="${type}" ${type === 'number' ? 'step="0.01" min="0"' : ''} value="${esc(val(c))}">`;
+    return `<label class="field"><span>${esc(c.label)}</span>${input}</label>`;
+  };
+  const r = await modal({
+    title: `Corregir fila ${raw.fila}${d.workers[i].nombre ? `: ${d.workers[i].nombre}` : ''}`,
+    wide: true,
+    body: `
+      ${errs.length ? `<div class="banner danger">${icon('alert')} <span>${errs.map(esc).join('<br>')}</span></div>` : ''}
+      <p class="muted small">La corrección se usa en este lote; el Excel no se modifica. Sexo y nacionalidad se calculan con la CURP y el salario diario con el sueldo mensual.</p>
+      <div class="p1-grid">${cols.map(field).join('')}</div>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Guardar corrección', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  const next = { ...raw };
+  for (const c of cols) {
+    const v = (r.data[c.key] ?? '').trim();
+    next[c.key] = ['sueldo', 'sd'].includes(c.key) ? (v === '' ? '' : Number(v)) : v;
+  }
+  d.raw[i] = next;
+  d.workers[i] = normalizeRow(next);
+  d.editadas.add(i);
+  const t = loteTemplates().find((x) => x.id === d.templateId);
+  if (t) d.errors = validateWorkers(d.workers, t, { periodicidad: d.periodicidad || 'X' });
+  const quedan = d.errors[i]?.length;
+  toast(quedan ? `La fila ${raw.fila} aún tiene ${quedan} error(es)` : `Fila ${raw.fila} corregida`, quedan ? 'error' : 'ok');
+  renderNuevoLote();
 }
 
 async function createLote() {
@@ -2862,7 +2917,7 @@ async function createLote() {
     createdBy: whoAmI(),
     history: [],
   };
-  await saveLote(l, `Creó el lote con ${validos.length} trabajadores (${d.file})${excluidos.length ? `; ${excluidos.length} quedaron fuera por errores` : ''}`);
+  await saveLote(l, `Creó el lote con ${validos.length} trabajadores (${d.file})${d.editadas?.size ? `; ${d.editadas.size} fila(s) corregida(s) en la plataforma` : ''}${excluidos.length ? `; ${excluidos.length} quedaron fuera por errores` : ''}`);
   state.loteDraft = null;
   toast('Lote enviado a revisión', 'ok');
   go(`#/lotes/${l.id}`);
