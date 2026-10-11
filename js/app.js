@@ -17,6 +17,7 @@ import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
 
 // ---------- Estado ----------
@@ -27,6 +28,7 @@ const state = {
   lotes: [],
   loteDraft: null,
   loteQuery: '',
+  servDraft: null,
   vencFilter: 'atender',
   prefs: { anticipacion: DIAS_DEFAULT },
   partyFilter: 'todas',
@@ -228,12 +230,169 @@ function routeView() {
   if (view === 'lotes') return id === 'nuevo' ? renderNuevoLote() : id ? renderLote(id) : renderLotes();
   if (view === 'ajustes') return renderSettings();
   if (view === 'vencimientos') return renderVencimientos();
+  if (view === 'servicios') return renderServicios();
   return renderHome();
 }
 
 function setNav(active) {
   $$('a', nav).forEach((a) => a.classList.toggle('active', a.dataset.nav === active));
   updateVencBadge();
+}
+
+// ---------- Servicios desde el Excel "Sugerido de conceptos" ----------
+// Un contrato de prestación de servicios por empresa del grupo, para un mismo cliente.
+function renderServicios() {
+  setNav('home');
+  const tpls = allTemplates().filter(isServiciosTemplate);
+  const d = (state.servDraft ||= { templateId: tpls[0]?.id || '', fecha: todayISO(), file: null, cliente: '', clienteModo: 'catalogo', clienteId: '', clienteApoId: '', manual: {}, empresas: [] });
+  const tpl = tpls.find((t) => t.id === d.templateId);
+  const grupo = sortParties(state.parties.filter((p) => p.activa && p.propia));
+  const todas = sortParties(state.parties.filter((p) => p.activa));
+  const cliente = state.parties.find((p) => p.id === d.clienteId);
+  const apoSelect = (p, sel, attr) => {
+    const apos = p ? p.apoderados.filter((a) => a.nombre.trim()) : [];
+    return `<select ${attr} ${p ? '' : 'disabled'}><option value="">${p ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : '—'}</option>
+      ${apos.map((a) => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select>`;
+  };
+  const clienteCands = d.cliente ? candidatos(d.cliente, todas, 0.3) : [];
+  const clienteOpts = [...clienteCands.map((x) => x.p), ...todas.filter((p) => !clienteCands.some((x) => x.p === p))];
+  const manualVars = tpl ? tpl.vars.filter(([k]) => k.startsWith('cliente_')) : [];
+  // Quien tenga apoderados en el catálogo debe tener elegido quién firma
+  const firmaOk = (p, apoId) => !p || !p.apoderados.some((a) => a.nombre.trim()) || !!apoId;
+  const empresasOk = d.empresas.length && d.empresas.every((e) => e.partyId && firmaOk(state.parties.find((p) => p.id === e.partyId), e.apoId));
+  const listo = tpl && empresasOk &&
+    (d.clienteModo === 'catalogo' ? !!cliente && firmaOk(cliente, d.clienteApoId) : !!String(d.manual.cliente_nombre || '').trim());
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/">Contratos</a></p>
+        <h1>Servicios desde Sugerido de conceptos</h1>
+      </div>
+    </header>
+    <section class="card settings-block lote-form">
+      <div class="row wrap">
+        <label class="field"><span>Plantilla</span>
+          <select id="s-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${t.id}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Fecha de firma</span><input id="s-fecha" type="date" value="${esc(d.fecha)}"></label>
+      </div>
+      ${tpls.length ? '' : '<p class="warn-text small">No hay plantilla de servicios con la variable {{servicios}}. Sincroniza para traer la plantilla marco actualizada.</p>'}
+      <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Sugerido de conceptos'}<input type="file" id="s-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+      <p class="muted small">Arriba el nombre del cliente; abajo la tabla EMPRESA | CONCEPTO. Se crea un contrato por empresa del grupo con todos sus conceptos como objeto (sin la clave SAT). Los montos no se usan.</p>
+    </section>
+    ${d.file ? `
+      <h4 class="sub">Cliente${d.cliente ? ` <span class="muted small">(en el Excel: ${esc(d.cliente)})</span>` : ''}</h4>
+      <section class="card settings-block">
+        <div class="chips">
+          <button type="button" class="chip ${d.clienteModo === 'catalogo' ? 'on' : ''}" data-modo="catalogo">Del catálogo</button>
+          <button type="button" class="chip ${d.clienteModo === 'manual' ? 'on' : ''}" data-modo="manual">Capturar aquí (no se guarda en el catálogo)</button>
+        </div>
+        ${d.clienteModo === 'catalogo' ? `
+          <div class="row wrap">
+            <label class="field"><span>Cliente</span>
+              <select id="s-cli"><option value="">Elige…</option>${clienteOpts.map((p) => `<option value="${p.id}" ${p.id === d.clienteId ? 'selected' : ''}>${esc(p.nombre)}${p.propia ? ' (empresa del grupo)' : ''}</option>`).join('')}</select></label>
+            <label class="field"><span>Firma por el cliente</span>${apoSelect(cliente, d.clienteApoId, 'id="s-cli-apo"')}</label>
+          </div>
+          ${!clienteCands.length && d.cliente ? `<p class="warn-text small">No encontré en el catálogo nada parecido a “${esc(d.cliente)}”. Elígelo de la lista o captúralo aquí.</p>` : ''}` : `
+          <div class="p1-grid full">${manualVars.map(([k, label, type]) => `
+            <label class="field"><span>${esc(label.replace(/\s*\(El “?Cliente”?\)\s*$/i, ''))}</span>
+              <input data-man="${k}" ${type === 'date' ? 'type="date"' : ''} value="${esc(d.manual[k] ?? (k === 'cliente_nombre' ? d.cliente : ''))}"></label>`).join('')}</div>`}
+      </section>
+      <h4 class="sub">Contratos a crear (${d.empresas.length})</h4>
+      ${d.empresas.length ? `
+      <div class="card lotes-list serv-list">
+        <div class="ll-row ll-head"><span>En el Excel</span><span>Empresa del grupo (prestador)</span><span>Firma</span><span>Servicios</span></div>
+        ${d.empresas.map((e, i) => {
+          const p = state.parties.find((x) => x.id === e.partyId);
+          return `
+        <div class="ll-row">
+          <span><strong>${esc(e.nombre)}</strong>${e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
+          <span><select data-emp="${i}"><option value="">Elige…</option>${grupo.map((g) => `<option value="${g.id}" ${g.id === e.partyId ? 'selected' : ''}>${esc(g.nombre)}</option>`).join('')}</select></span>
+          <span>${apoSelect(p, e.apoId, `data-apo="${i}"`)}</span>
+          <span class="small">${e.conceptos.map(esc).join('<br>')}</span>
+        </div>`;
+        }).join('')}
+      </div>` : '<div class="banner warn">No encontré empresas con conceptos en el Excel.</div>'}
+      <div class="row wrap lote-actions">
+        <a class="btn ghost" href="#/" id="s-cancel">Cancelar</a>
+        <button class="btn primary" id="s-create" ${listo ? '' : 'disabled'}>${icon('check')} Crear ${d.empresas.length} contrato${d.empresas.length === 1 ? '' : 's'}</button>
+      </div>` : ''}`;
+
+  const vigenteUnico = (p) => { const v = p?.apoderados.filter((a) => a.nombre.trim() && a.vigente) || []; return v.length === 1 ? v[0].id : ''; };
+  $('#s-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; renderServicios(); });
+  $('#s-fecha').addEventListener('change', (e) => { d.fecha = e.target.value; });
+  $('#s-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const ExcelJS = await loadExcel();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(await f.arrayBuffer());
+      const r = readSugerido(wb);
+      if (r.error) return toast(r.error, 'error');
+      d.file = f.name;
+      d.cliente = r.cliente;
+      d.manual = {};
+      const m = r.cliente ? mejorCoincidencia(r.cliente, todas) : null;
+      d.clienteId = m?.p.id || '';
+      d.clienteApoId = vigenteUnico(m?.p);
+      d.clienteModo = 'catalogo';
+      d.empresas = r.empresas.map((emp) => {
+        const best = mejorCoincidencia(emp.nombre, grupo);
+        return { ...emp, partyId: best?.p.id || '', score: best?.score || 0, apoId: vigenteUnico(best?.p) };
+      });
+      renderServicios();
+    } catch (err) {
+      console.error(err);
+      toast(`No se pudo leer el Excel: ${err.message}`, 'error');
+    }
+  });
+  $$('[data-modo]').forEach((b) => b.addEventListener('click', () => { d.clienteModo = b.dataset.modo; renderServicios(); }));
+  $('#s-cli')?.addEventListener('change', (e) => { d.clienteId = e.target.value; d.clienteApoId = vigenteUnico(state.parties.find((p) => p.id === d.clienteId)); renderServicios(); });
+  $('#s-cli-apo')?.addEventListener('change', (e) => { d.clienteApoId = e.target.value; renderServicios(); });
+  $$('[data-man]').forEach((inp) => inp.addEventListener('input', () => {
+    d.manual[inp.dataset.man] = inp.value;
+    if (inp.dataset.man === 'cliente_nombre') $('#s-create').disabled = !(tpl && empresasOk && inp.value.trim());
+  }));
+  $$('[data-emp]').forEach((sel) => sel.addEventListener('change', () => {
+    const e = d.empresas[Number(sel.dataset.emp)];
+    e.partyId = sel.value;
+    e.score = sel.value ? 1 : 0;
+    e.apoId = vigenteUnico(state.parties.find((p) => p.id === sel.value));
+    renderServicios();
+  }));
+  $$('[data-apo]').forEach((sel) => sel.addEventListener('change', () => { d.empresas[Number(sel.dataset.apo)].apoId = sel.value; renderServicios(); }));
+  $('#s-cancel')?.addEventListener('click', () => { state.servDraft = null; });
+  $('#s-create')?.addEventListener('click', crearServicios);
+}
+
+async function crearServicios() {
+  const d = state.servDraft;
+  const tpl = allTemplates().find((t) => t.id === d.templateId);
+  const cliente = d.clienteModo === 'catalogo' ? state.parties.find((p) => p.id === d.clienteId) : null;
+  const cliApo = cliente?.apoderados.find((a) => a.id === d.clienteApoId) || null;
+  if (d.clienteModo === 'manual' && !d.manual.cliente_nombre) d.manual.cliente_nombre = d.cliente;
+  const clienteNombre = cliente?.nombre || d.manual.cliente_nombre;
+  const creados = [];
+  for (const e of d.empresas) {
+    const p = state.parties.find((x) => x.id === e.partyId);
+    const apo = p.apoderados.find((a) => a.id === e.apoId) || null;
+    const c = newContractFromTemplate(tpl);
+    applyParty(c, c.signers.find((s) => s.bind?.prefix === 'prestador'), p, apo);
+    const sgC = c.signers.find((s) => s.bind?.prefix === 'cliente');
+    if (cliente) applyParty(c, sgC, cliente, cliApo);
+    else for (const [k, v] of Object.entries(d.manual)) if (k.startsWith('cliente_')) c.variables[k] = v;
+    c.variables.servicios = listaServicios(e.conceptos);
+    if (d.fecha) c.variables.fecha_firma = d.fecha;
+    c.title = `${tpl.titulo || tpl.name} · ${p.nombre} · ${clienteNombre}`;
+    syncVarDefs(c);
+    logChange(c, `Creado desde el Sugerido de conceptos (${d.file}): ${e.conceptos.length} servicio${e.conceptos.length === 1 ? '' : 's'}`);
+    await saveContract(c);
+    creados.push(c);
+  }
+  state.servDraft = null;
+  state.homeFilter = 'todos';
+  toast(`${creados.length} contrato${creados.length === 1 ? '' : 's'} creado${creados.length === 1 ? '' : 's'} para ${clienteNombre}`, 'ok');
+  go('#/');
 }
 
 // ---------- Vencimientos ----------
@@ -362,7 +521,10 @@ function renderHome() {
         <p class="eyebrow">Crear Contratos</p>
         <h1>Mis contratos</h1>
       </div>
-      <a href="#/plantillas" class="btn primary hide-sm">${icon('plus')} Nuevo contrato</a>
+      <div class="row">
+        <a href="#/servicios" class="btn hide-sm" title="Un contrato de prestación de servicios por empresa del grupo">${icon('upload')} Desde Sugerido de conceptos</a>
+        <a href="#/plantillas" class="btn primary hide-sm">${icon('plus')} Nuevo contrato</a>
+      </div>
     </header>
     ${vencBanner()}
     ${state.contracts.length ? `
