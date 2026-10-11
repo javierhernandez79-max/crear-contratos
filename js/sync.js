@@ -4,6 +4,7 @@
 //   <carpeta>/expedientes/…               documentos de las partes (anexos)
 //   <carpeta>/datos-app/contratos/*.json  un archivo por contrato
 //   <carpeta>/datos-app/plantillas/*.json plantillas propias
+//   <carpeta>/datos-app/lotes/*.json      lotes de contratos de trabajo (con los datos de los trabajadores)
 //
 // Cada equipo recuerda la versión (rev) de Dropbox de cada elemento y qué cambió localmente.
 // Se sube con "rev" para no pisar cambios ajenos: si otro usuario modificó el mismo contrato,
@@ -14,7 +15,7 @@ import { uid } from './model.js';
 import { DROPBOX_EXPEDIENTES } from './config.js';
 
 export const CATALOG_FILE = 'catalogo-partes.xlsx';
-const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas' };
+const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas', lotes: 'datos-app/lotes' };
 
 let state = null; // { id:'sync', items:{contracts:{}, templates:{}}, catalog:{rev, known:[], dirty:[], deleted:[]}, lastSync }
 
@@ -87,7 +88,7 @@ export function syncAll(opts) {
       if (!rootMeta || rootMeta['.tag'] !== 'folder') {
         throw new dbx.DropboxError(`No se encontró la carpeta "${root}" en Dropbox (${dbx.rootLabel() || 'raíz desconocida'}). Revisa la ruta en Ajustes.`);
       }
-      const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set() }, conflicts: [] };
+      const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set() }, conflicts: [] };
       await syncCatalog(root, opts, report);
       for (const store of Object.keys(COLLECTIONS)) await syncCollection(store, dbx.joinPath(root, COLLECTIONS[store]), report, opts);
       state.lastSync = Date.now();
@@ -177,14 +178,14 @@ async function saveConflictCopy(store, item, report, opts) {
   const copy = structuredClone(item);
   copy.id = (store === 'templates' ? 'u-' : '') + uid();
   const who = opts.who?.() || 'este equipo';
-  if (store === 'contracts') {
+  if (store === 'contracts' || store === 'lotes') {
     copy.title = `${item.title} (copia en conflicto de ${who})`;
     copy.history = [{ date: Date.now(), text: 'Copia creada porque el contrato se editó en otro equipo al mismo tiempo' }, ...(copy.history || [])];
   } else copy.name = `${item.name} (copia en conflicto de ${who})`;
   await db.put(store, copy);
   state.items[store][copy.id] = { dirty: true };
   report.changed[store].add(copy.id);
-  report.conflicts.push({ store, title: store === 'contracts' ? item.title : item.name, copyId: copy.id });
+  report.conflicts.push({ store, title: store === 'templates' ? item.name : item.title, copyId: copy.id });
 }
 
 // ---------- Catálogo (Excel) ----------
