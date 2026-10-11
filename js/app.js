@@ -2705,7 +2705,7 @@ async function downloadP1Columns() {
   const ExcelJS = await loadExcel();
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('P1');
-  const cols = P1_COLUMNS.filter((c) => c.key !== 'nombreCompleto');
+  const cols = P1_COLUMNS.filter((c) => c.key !== 'nombreCompleto' && c.key !== 'sd');
   ws.addRow(cols.map((c) => c.label));
   cols.forEach((c, i) => {
     const cell = ws.getRow(1).getCell(i + 1);
