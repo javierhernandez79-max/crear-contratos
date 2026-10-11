@@ -304,6 +304,7 @@ function contractRow(c) {
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm" data-act="open" title="Editar" aria-label="Editar">${icon('pen')}</button>
             <button class="icon-btn sm danger" data-act="del" title="Eliminar" aria-label="Eliminar">${icon('trash')}</button>
             <button class="icon-btn sm" data-act="menu" title="Más acciones" aria-label="Más acciones">${icon('more')}</button>
           </span>
@@ -415,6 +416,7 @@ function renderTemplates() {
         <span class="small">${t.replaces ? 'Modificada' : t.custom ? 'Propia' : '<span class="muted">Incluida</span>'}</span>
         <span class="ll-acts">
           <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+          <button class="icon-btn sm" data-act="edit" title="Editar plantilla" aria-label="Editar">${icon('pen')}</button>
           ${t.custom && !t.replaces
             ? `<button class="icon-btn sm danger" data-act="del" title="Eliminar plantilla" aria-label="Eliminar">${icon('trash')}</button>`
             : `<button class="icon-btn sm" disabled title="${t.replaces ? 'Es una modificación de una plantilla incluida: restáurala desde el editor' : 'Las plantillas incluidas no se eliminan'}" aria-label="No se puede eliminar">${icon('trash')}</button>`}
@@ -435,6 +437,7 @@ function renderTemplates() {
     row.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'del') return deleteTemplate(t);
+      if (act === 'edit') return editTemplate(t);
       previewTemplate(t);
     });
     row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) previewTemplate(t); });
@@ -1412,6 +1415,7 @@ function renderCatalog() {
           <span>${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm" data-act="edit" title="Editar" aria-label="Editar">${icon('pen')}</button>
             <button class="icon-btn sm danger" data-act="del" title="Eliminar del catálogo" aria-label="Eliminar">${icon('trash')}</button>
           </span>
         </div>`;
