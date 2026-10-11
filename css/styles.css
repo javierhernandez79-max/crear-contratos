@@ -344,6 +344,7 @@ dialog::backdrop { background: rgba(10, 16, 28, .5); backdrop-filter: blur(2px);
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 14px 6px 20px; }
 .modal-head h2 { font-size: 18px; font-family: var(--serif); }
 .modal-body { padding: 6px 20px 16px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.modal-body > * { flex-shrink: 0; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .modal .paper { box-shadow: none; border: 1px solid var(--border); padding: 28px; font-size: 13.5px; }
 @media (max-width: 600px) {
