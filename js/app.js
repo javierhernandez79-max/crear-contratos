@@ -260,6 +260,8 @@ function renderServicios() {
   // Quien tenga apoderados en el catálogo debe tener elegido quién firma
   const firmaOk = (p, apoId) => !p || !p.apoderados.some((a) => a.nombre.trim()) || !!apoId;
   const empresasOk = d.empresas.length && d.empresas.every((e) => e.partyId && firmaOk(state.parties.find((p) => p.id === e.partyId), e.apoId));
+  // El nombre del Excel viene precargado en la captura manual aunque no se haya tocado el campo
+  if (d.clienteModo === 'manual') d.manual.cliente_nombre ??= d.cliente;
   const listo = tpl && empresasOk &&
     (d.clienteModo === 'catalogo' ? !!cliente && firmaOk(cliente, d.clienteApoId) : !!String(d.manual.cliente_nombre || '').trim());
   app.innerHTML = `
@@ -305,7 +307,7 @@ function renderServicios() {
           const p = state.parties.find((x) => x.id === e.partyId);
           return `
         <div class="ll-row">
-          <span><strong>${esc(e.nombre)}</strong>${e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
+          <span><strong>${esc(e.nombre)}</strong>${e.manual ? '<span class="muted small">Elegida a mano</span>' : e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
           <span><select data-emp="${i}"><option value="">Elige…</option>${grupo.map((g) => `<option value="${g.id}" ${g.id === e.partyId ? 'selected' : ''}>${esc(g.nombre)}</option>`).join('')}</select></span>
           <span>${apoSelect(p, e.apoId, `data-apo="${i}"`)}</span>
           <span class="small">${e.conceptos.map(esc).join('<br>')}</span>
@@ -356,7 +358,7 @@ function renderServicios() {
   $$('[data-emp]').forEach((sel) => sel.addEventListener('change', () => {
     const e = d.empresas[Number(sel.dataset.emp)];
     e.partyId = sel.value;
-    e.score = sel.value ? 1 : 0;
+    e.manual = !!sel.value;
     e.apoId = vigenteUnico(state.parties.find((p) => p.id === sel.value));
     renderServicios();
   }));
