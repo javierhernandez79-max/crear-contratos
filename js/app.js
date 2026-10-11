@@ -1371,22 +1371,26 @@ function renderCatalog() {
             `<button class="chip ${state.partyFilter === k ? 'on' : ''}" data-pf="${k}">${l} <span>${groups[k].length}</span></button>`).join('')}
         </div>
       </div>
-      <div class="grid">
+      ${list.length ? `
+      <div class="card lotes-list party-list">
+        <div class="ll-row ll-head"><span>Nombre</span><span>RFC</span><span>Clasificación</span><span>Apoderados</span><span>Datos</span><span></span></div>
         ${list.map((p) => {
           const gaps = partyGaps(p);
           const apos = p.apoderados.filter((a) => a.vigente).length;
           return `
-          <article class="card party-card" data-id="${p.id}" tabindex="0">
-            <div class="card-top"><span class="tpl-cat">${PARTY_KINDS[p.kind]}</span><span>${partyBadges(p)}</span></div>
-            <h3>${esc(p.nombre || 'Sin nombre')}</h3>
-            <p class="muted small mono">${esc(p.rfc || 'Sin RFC')}</p>
-            <div class="meta">
-              ${p.kind === 'pm' ? `<span>${apos} apoderado${apos === 1 ? '' : 's'} vigente${apos === 1 ? '' : 's'}</span>` : ''}
-              ${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Datos completos</span>'}
-            </div>
-          </article>`;
-        }).join('') || '<p class="empty-inline">Sin resultados.</p>'}
-      </div>` : `
+        <div class="ll-row" data-id="${p.id}" tabindex="0" role="link">
+          <span><strong>${esc(p.nombre || 'Sin nombre')}</strong><span class="muted small">${PARTY_KINDS[p.kind]}</span></span>
+          <span class="mono small">${esc(p.rfc || 'Sin RFC')}</span>
+          <span>${partyBadges(p)}</span>
+          <span>${p.kind === 'pm' ? `${apos} vigente${apos === 1 ? '' : 's'}` : '<span class="muted">—</span>'}</span>
+          <span>${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Completos</span>'}</span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm danger" data-act="del" title="Eliminar del catálogo" aria-label="Eliminar">${icon('trash')}</button>
+          </span>
+        </div>`;
+        }).join('')}
+      </div>` : '<p class="empty-inline">Sin resultados.</p>'}` : `
       <section class="empty">
         <div class="empty-art">${icon('users')}</div>
         <h2>Arma tu catálogo de partes</h2>
@@ -1401,10 +1405,57 @@ function renderCatalog() {
     const el = $('#cat-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-pf]').forEach((b) => b.addEventListener('click', () => { state.partyFilter = b.dataset.pf; renderCatalog(); }));
-  $$('.party-card').forEach((card) => card.addEventListener('click', () => go(`#/catalogo/${card.dataset.id}`)));
+  $$('.party-list .ll-row[data-id]').forEach((row) => {
+    const p = state.parties.find((x) => x.id === row.dataset.id);
+    row.addEventListener('click', async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'view') return viewParty(p);
+      if (act === 'del') { if (await deleteParty(p)) renderCatalog(); return; }
+      go(`#/catalogo/${p.id}`);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/catalogo/${p.id}`); });
+  });
   $('#cat-new').addEventListener('click', () => createParty());
   $('#cat-export').addEventListener('click', exportCatalog);
   $('#cat-import').addEventListener('change', (e) => importCatalog(e.target.files[0]));
+}
+
+/** Ficha de solo lectura con los datos de la parte. */
+async function viewParty(p) {
+  const row = (label, v) => `<tr><th>${label}</th><td>${v ? esc(v) : '<span class="muted">—</span>'}</td></tr>`;
+  const gaps = partyGaps(p);
+  const apos = p.apoderados;
+  const body = `
+    <p>${partyBadges(p)} <span class="muted small">${PARTY_KINDS[p.kind]}</span></p>
+    ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan: ${gaps.map(esc).join(', ')}</span></div>` : ''}
+    <table class="ficha">
+      ${row('Nombre', p.nombre)}${row('RFC', p.rfc)}
+      ${p.kind === 'pf' ? row('CURP', p.curp) + row('Nacionalidad', p.nacionalidad) + row('Estado civil', p.estadoCivil) + row('Ocupación', p.ocupacion) + row('Identificación', p.identificacion) : ''}
+      ${row('Domicilio', p.domicilio)}${row('Correo', p.correo)}${row('Teléfono', p.telefono)}
+      ${p.kind === 'pm' ? row('Escritura constitutiva', [p.escrituraNumero && `núm. ${p.escrituraNumero}`, fmtLongDate(p.escrituraFecha)].filter(Boolean).join(' del ')) +
+        row('Notario', [p.notario, p.notariaNumero && `Notaría ${p.notariaNumero}`, p.notariaCiudad].filter(Boolean).join(', ')) +
+        row('Folio mercantil', [p.folioMercantil, fmtLongDate(p.folioFecha)].filter(Boolean).join(' · ')) + row('Objeto social', p.objetoSocial) : ''}
+      ${row('Expediente', p.expediente)}${row('Notas', p.notas)}
+    </table>
+    ${p.kind === 'pm' ? `
+      <h4 class="sub">Apoderados (${apos.length})</h4>
+      ${apos.length ? `<ul class="ficha-list">${apos.map((a) => `<li><strong>${esc(a.nombre || 'Sin nombre')}</strong> ${a.vigente ? '' : '<span class="badge inactiva">No vigente</span>'}<br><span class="muted small">${esc(a.cargo || '')}${a.poderNumero ? ` · Escritura ${esc(a.poderNumero)}${a.poderFecha ? ` del ${esc(fmtLongDate(a.poderFecha))}` : ''}` : ''}${a.facultades ? ` · ${esc(a.facultades)}` : ''}</span></li>`).join('')}</ul>` : '<p class="muted small">Sin apoderados.</p>'}
+      ${p.accionistas.length ? `<h4 class="sub">Accionistas (${p.accionistas.length})</h4><ul class="ficha-list">${p.accionistas.map((a) => `<li>${esc(a.nombre)}${a.acciones ? ` <span class="muted small">· ${esc(a.acciones)} acciones${a.serie ? ` serie ${esc(a.serie)}` : ''}</span>` : ''}</li>`).join('')}</ul>` : ''}` : ''}
+    <h4 class="sub">Declaraciones</h4>
+    <p class="decl-preview">${esc(declaracionesText(p, apos.find((a) => a.vigente)))}</p>`;
+  const r = await modal({ title: p.nombre || 'Sin nombre', body, wide: true, actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Editar', value: 'edit', kind: 'primary' }] });
+  if (r.value === 'edit') go(`#/catalogo/${p.id}`);
+}
+
+async function deleteParty(p) {
+  const used = state.contracts.filter((c) => c.signers.some((s) => s.party?.id === p.id)).length;
+  if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa".`, 'Eliminar'))) return false;
+  await db.remove('parties', p.id);
+  await sync.markDeleted('parties', p.id);
+  scheduleSync();
+  state.parties = state.parties.filter((x) => x.id !== p.id);
+  toast('Eliminada del catálogo');
+  return true;
 }
 
 async function createParty(defaults = {}) {
@@ -1623,14 +1674,8 @@ function renderPartyEditor(id) {
         break;
       }
       case 'delete': {
-        const used = state.contracts.filter((c) => c.signers.some((s) => s.party?.id === p.id)).length;
-        if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa".`, 'Eliminar'))) return;
-        await db.remove('parties', p.id);
-        await sync.markDeleted('parties', p.id);
-        scheduleSync();
-        state.parties = state.parties.filter((x) => x.id !== p.id);
-        toast('Eliminada del catálogo');
-        return go('#/catalogo');
+        if (await deleteParty(p)) go('#/catalogo');
+        return;
       }
       default: return;
     }
