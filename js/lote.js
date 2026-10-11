@@ -16,7 +16,8 @@ export const P1_COLUMNS = [
   { key: 'nacionalidad', label: 'Nacionalidad (solo extranjeros)', aliases: ['nacionalidad', 'nacionalidad solo extranjeros'], opcional: true },
   { key: 'rfc', label: 'RFC con Homoclave', aliases: ['rfc con homoclave', 'rfc'] },
   { key: 'curp', label: 'CURP', aliases: ['curp'] },
-  { key: 'sexo', label: 'Sexo', aliases: ['sexo'] },
+  // El sexo sale de la CURP (posición 11: H/M); la columna solo se usa si la CURP no lo indica
+  { key: 'sexo', label: 'Sexo', aliases: ['sexo'], opcional: true },
   { key: 'estadoCivil', label: 'Estado Civil', aliases: ['estado civil'] },
   { key: 'calle', label: 'Calle', aliases: ['calle'] },
   { key: 'noExt', label: 'No. Ext.', aliases: ['no ext', 'numero exterior', 'num ext'] },
@@ -113,6 +114,13 @@ export function nacionalidadDe(curp, capturada) {
 }
 
 /** 'F' | 'M' | '' */
+/** Sexo según la CURP: la posición 11 es H (hombre) o M (mujer). '' si no se puede leer. */
+export function sexoDeCurp(curp) {
+  const m = /^[A-Z]{4}\d{6}([HM])/.exec(curp || '');
+  if (!m) return '';
+  return m[1] === 'M' ? 'F' : 'M';
+}
+
 export function sexoDe(v) {
   const s = norm(v).toUpperCase();
   if (/^(F|MUJ)/.test(s)) return 'F';
@@ -151,13 +159,13 @@ function domicilio(r) {
 
 /** Trabajador listo para el contrato. */
 export function normalizeRow(r) {
-  const sexo = sexoDe(r.sexo);
+  const curp = text(r.curp).toUpperCase().replace(/\s/g, '');
+  const sexo = sexoDeCurp(curp) || sexoDe(r.sexo);
   const nombre = [r.nombre, r.apPaterno, r.apMaterno].map(text).filter(Boolean).join(' ') || text(r.nombreCompleto);
   const num = (v) => (typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^0-9.]/g, '')));
   // Salario diario = sueldo mensual bruto / 30 (si no hay sueldo, se usa la columna SD)
   const sueldo = num(r.sueldo);
   const sd = Number.isFinite(sueldo) && sueldo > 0 ? sueldo / 30 : num(r.sd);
-  const curp = text(r.curp).toUpperCase().replace(/\s/g, '');
   return {
     fila: r.fila,
     nombre: nombre.toUpperCase(),
@@ -230,12 +238,11 @@ export function validateWorkers(workers, tpl, lote) {
     const errs = [];
     const vars = workerVariables(w, lote);
     for (const k of needed) if (!vars[k] && !(k === 'trabajador_nacionalidad' && w.extranjero)) errs.push(`Falta ${LABELS[k]}`);
-    if (!w.sexo) errs.push('Sexo no reconocido (usa FEM/MAS)');
+    if (!w.sexo) errs.push('No se pudo determinar el sexo: la CURP no lo indica (posición 11 H/M) y la columna Sexo está vacía');
     if (w.extranjero && !w.nacionalidad) errs.push('Nació en el extranjero (CURP con NE): captura su Nacionalidad');
     if (w.rfc && !RFC_PF.test(w.rfc)) errs.push(`RFC inválido (${w.rfc}): deben ser 13 caracteres`);
     if (w.curp && !CURP.test(w.curp)) errs.push(`CURP inválida (${w.curp})`);
     if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && w.rfc.slice(0, 10) !== w.curp.slice(0, 10)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
-    if (CURP.test(w.curp) && w.sexo && (w.curp[10] === 'M' ? 'F' : 'M') !== w.sexo) errs.push('El sexo no coincide con la CURP');
     if (w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
     if (tipo === 'DETERMINADO' && w.fin && w.ingreso && w.fin <= w.ingreso) errs.push('La fecha de terminación debe ser posterior a la de ingreso');
     if (w.curp) {
