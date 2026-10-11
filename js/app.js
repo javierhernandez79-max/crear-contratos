@@ -43,6 +43,8 @@ const state = {
 };
 
 const STATUS = { borrador: 'Borrador', revision: 'En revisión', aprobado: 'Aprobado', final: 'Firmado' };
+// Nombre para listas y archivos; el título (c.title) es el encabezado impreso del documento
+const nombreDe = (c) => c.etiqueta || fill(c, c.title);
 const statusBadge = (c) => `<span class="badge ${c.status}">${STATUS[c.status] || c.status}</span>`;
 
 const app = document.getElementById('app');
@@ -165,6 +167,14 @@ async function loadAll() {
   state.userTemplates = (await db.getAll('templates')).sort((a, b) => b.createdAt - a.createdAt);
   state.parties = await db.getAll('parties');
   state.lotes = await db.getAll('lotes');
+  // Contratos del Sugerido creados antes de separar etiqueta y título: el título largo salía como encabezado
+  for (const c of state.contracts) {
+    if (!c.etiqueta && /^Contrato de Prestación de Servicios · .+ · .+/.test(c.title)) {
+      c.etiqueta = c.title.replace(/^Contrato de Prestación de Servicios/, 'Prestación de servicios');
+      c.title = 'Contrato de Prestación de Servicios';
+      await saveContract(c);
+    }
+  }
   state.prefs = { anticipacion: DIAS_DEFAULT, ...((await db.get('meta', 'prefs')) || {}) };
 }
 
@@ -230,7 +240,7 @@ function routeView() {
   if (view === 'lotes') return id === 'nuevo' ? renderNuevoLote() : id ? renderLote(id) : renderLotes();
   if (view === 'ajustes') return renderSettings();
   if (view === 'vencimientos') return renderVencimientos();
-  if (view === 'servicios') return renderServicios();
+  if (view === 'servicios') return id ? renderServiciosRevision(id) : renderServicios();
   return renderHome();
 }
 
@@ -374,6 +384,7 @@ async function crearServicios() {
   const cliApo = cliente?.apoderados.find((a) => a.id === d.clienteApoId) || null;
   if (d.clienteModo === 'manual' && !d.manual.cliente_nombre) d.manual.cliente_nombre = d.cliente;
   const clienteNombre = cliente?.nombre || d.manual.cliente_nombre;
+  const grupo = { id: uid(), cliente: clienteNombre, archivo: d.file };
   const creados = [];
   for (const e of d.empresas) {
     const p = state.parties.find((x) => x.id === e.partyId);
@@ -385,16 +396,85 @@ async function crearServicios() {
     else for (const [k, v] of Object.entries(d.manual)) if (k.startsWith('cliente_')) c.variables[k] = v;
     c.variables.servicios = listaServicios(e.conceptos);
     if (d.fecha) c.variables.fecha_firma = d.fecha;
-    c.title = `${tpl.titulo || tpl.name} · ${p.nombre} · ${clienteNombre}`;
+    c.etiqueta = `Prestación de servicios · ${p.nombre} · ${clienteNombre}`;
+    c.grupoServicios = grupo;
     syncVarDefs(c);
     logChange(c, `Creado desde el Sugerido de conceptos (${d.file}): ${e.conceptos.length} servicio${e.conceptos.length === 1 ? '' : 's'}`);
     await saveContract(c);
     creados.push(c);
   }
   state.servDraft = null;
-  state.homeFilter = 'todos';
   toast(`${creados.length} contrato${creados.length === 1 ? '' : 's'} creado${creados.length === 1 ? '' : 's'} para ${clienteNombre}`, 'ok');
-  go('#/');
+  go(`#/servicios/${grupo.id}`);
+}
+
+/** Revisión de los contratos creados juntos desde un Sugerido: se leen completos y se aprueban todos. */
+function renderServiciosRevision(gid) {
+  setNav('home');
+  const list = state.contracts.filter((c) => c.grupoServicios?.id === gid).sort((a, b) => a.createdAt - b.createdAt);
+  if (!list.length) { toast('No se encontraron esos contratos', 'error'); return go('#/'); }
+  const g = list[0].grupoServicios;
+  const pendientes = list.filter((c) => !['aprobado', 'final'].includes(c.status));
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/">Contratos</a> · Sugerido de conceptos</p>
+        <h1>${list.length} contrato${list.length === 1 ? '' : 's'} para ${esc(g.cliente)}</h1>
+      </div>
+    </header>
+    ${pendientes.length
+      ? `<div class="banner info">${icon('doc')} <span>Revisa cada contrato completo. Si alguno necesita cambios, ábrelo con “Editar”; al final, cualquier usuario puede aprobarlos.</span></div>`
+      : `<div class="banner ok">${icon('check')} <span>Todos aprobados.${dbx.isConnected() ? ' El Word y el PDF finales están en la carpeta de cada contrato en Dropbox.' : ''}</span></div>`}
+    ${list.map((c, i) => {
+      const prest = c.variables.prestador_nombre || '';
+      const faltan = missingVariables(c).length;
+      return `
+      <section class="serv-doc">
+        <div class="serv-doc-head">
+          <div><strong>${i + 1}. ${esc(prest)}</strong>
+            <span class="muted small">Firma: ${esc(c.variables.prestador_representante || 'sin representante')}${faltan ? ` · <span class="warn-text">${faltan} dato${faltan === 1 ? '' : 's'} por completar</span>` : ''}</span></div>
+          <div class="row">${statusBadge(c)}<a class="btn sm" href="#/c/${c.id}/variables">${icon('pen')} Editar</a></div>
+        </div>
+        <div class="paper-wrap"><div class="paper full">${documentHTML(c)}</div></div>
+      </section>`;
+    }).join('')}
+    <div class="row wrap lote-actions">
+      <a class="btn ghost" href="#/">Volver a contratos</a>
+      ${list.some((c) => ['aprobado', 'final'].includes(c.status)) ? `<button class="btn" id="sr-zip">${icon('download')} Descargar .zip (Word y PDF)</button>` : ''}
+      ${pendientes.length ? `<button class="btn primary" id="sr-approve">${icon('check')} Aprobar ${pendientes.length === list.length ? (list.length === 1 ? 'el contrato' : `los ${list.length} contratos`) : `los ${pendientes.length} pendientes`}</button>` : ''}
+    </div>`;
+
+  $('#sr-approve')?.addEventListener('click', async (e) => {
+    const faltan = pendientes.reduce((n, c) => n + missingVariables(c).length, 0);
+    if (!(await confirmDialog('Aprobar contratos', `${faltan ? `Hay ${faltan} dato(s) sin completar en total; aparecerán entre corchetes. ` : ''}Se generarán el Word y el PDF finales de ${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'}${dbx.isConnected() ? ', se guardarán en Dropbox' : ''} y se descargará un .zip con todos.`, 'Aprobar', 'primary'))) return;
+    e.target.disabled = true;
+    const files = [];
+    try {
+      for (const c of pendientes) files.push(...(await approveContract(c, { descargar: false })));
+    } catch (err) {
+      console.error(err);
+      toast(`No se pudo aprobar: ${err.message}`, 'error');
+      return renderServiciosRevision(gid);
+    }
+    await descargarZipServicios(g, files);
+    toast(`${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'} aprobado${pendientes.length === 1 ? '' : 's'}`, 'ok');
+    renderServiciosRevision(gid);
+  });
+  $('#sr-zip')?.addEventListener('click', async () => {
+    const D = await loadDocx();
+    const files = [];
+    for (const c of list.filter((x) => ['aprobado', 'final'].includes(x.status))) {
+      const base = safeName(nombreDe(c));
+      files.push({ name: `${base} - APROBADO.docx`, blob: await buildDocxBlob(D, c, { label: '' }) }, { name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob });
+    }
+    await descargarZipServicios(g, files);
+  });
+}
+
+async function descargarZipServicios(g, files) {
+  const entries = [];
+  for (const f of files) entries.push({ name: f.name, data: new Uint8Array(await f.blob.arrayBuffer()) });
+  download(new Blob([buildZip(entries)], { type: 'application/zip' }), `${safeName(`Servicios - ${g.cliente}`)}.zip`);
 }
 
 // ---------- Vencimientos ----------
@@ -513,7 +593,7 @@ function renderHome() {
   const q = state.homeQuery.toLowerCase();
   const list = state.contracts.filter((c) =>
     (state.homeFilter === 'todos' || c.status === state.homeFilter) &&
-    (!q || fill(c, c.title).toLowerCase().includes(q)));
+    (!q || nombreDe(c).toLowerCase().includes(q)));
   const counts = { todos: state.contracts.length };
   for (const k of Object.keys(STATUS)) counts[k] = state.contracts.filter((c) => c.status === k).length;
 
@@ -574,7 +654,7 @@ function contractRow(c) {
   const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
         <div class="ll-row" data-id="${c.id}" tabindex="0" role="link">
-          <span><strong>${esc(fill(c, c.title))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
+          <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
           <span>${statusBadge(c)}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
@@ -592,7 +672,7 @@ function contractRow(c) {
 async function contractAction(act, c) {
   if (act === 'menu') {
     const r = await modal({
-      title: fill(c, c.title),
+      title: nombreDe(c),
       body: `<div class="menu-list">
         <button value="open" class="menu-item">${icon('pen')} Abrir y editar</button>
         <button value="pdf" class="menu-item">${icon('pdf')} Exportar PDF</button>
@@ -606,7 +686,7 @@ async function contractAction(act, c) {
   }
   if (act === 'open') return go(`#/c/${c.id}`);
   if (act === 'view') {
-    const r = await modal({ title: fill(c, c.title), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
+    const r = await modal({ title: nombreDe(c), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
       actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' }, { label: 'Abrir y editar', value: 'open', kind: 'primary' }] });
     if (r.value) return contractAction(r.value, c);
     return;
@@ -615,7 +695,7 @@ async function contractAction(act, c) {
   if (act === 'word') return downloadWord(c);
   if (act === 'download') {
     const r = await modal({
-      title: `Descargar: ${fill(c, c.title)}`,
+      title: `Descargar: ${nombreDe(c)}`,
       body: `<p class="muted small">${['aprobado', 'final'].includes(c.status) ? 'Versión final.' : 'Sale marcado como borrador hasta que el contrato se apruebe.'}</p>
         <div class="menu-list">
           <button value="word" class="menu-item">${icon('doc')} Word (.docx)</button>
@@ -643,7 +723,7 @@ async function contractAction(act, c) {
     return;
   }
   if (act === 'del') {
-    if (!(await confirmDialog('Eliminar contrato', `Se eliminará "${fill(c, c.title)}" con todas sus versiones y firmas. Esta acción no se puede deshacer.`, 'Eliminar'))) return;
+    if (!(await confirmDialog('Eliminar contrato', `Se eliminará "${nombreDe(c)}" con todas sus versiones y firmas. Esta acción no se puede deshacer.`, 'Eliminar'))) return;
     await db.remove('contracts', c.id);
     await sync.markDeleted('contracts', c.id);
     scheduleSync();
@@ -655,7 +735,7 @@ async function contractAction(act, c) {
 
 async function downloadWord(c) {
   const D = await loadDocx();
-  download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(fill(c, c.title))}.docx`);
+  download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(nombreDe(c))}.docx`);
   toast('Word descargado', 'ok');
 }
 
@@ -668,7 +748,7 @@ async function exportPdf(c) {
   }
   try {
     const { blob, filename } = buildPdf(c);
-    const res = await shareOrDownload(blob, filename, fill(c, c.title));
+    const res = await shareOrDownload(blob, filename, nombreDe(c));
     if (res !== 'cancelled') {
       if (state.current?.id === c.id) touched({ log: 'Exportó el PDF', content: false });
       toast(res === 'shared' ? 'PDF compartido' : 'PDF descargado', 'ok');
@@ -2547,7 +2627,7 @@ function loadDocx() {
   return docxReady;
 }
 
-const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Documento';
+const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
 /** Empresa a cuya carpeta va el contrato: la primera del grupo vinculada; si no, la primera parte vinculada. */
 function clientParty(c) {
@@ -2560,11 +2640,11 @@ function contractFolder(c) {
   if (c.carpeta) return c.carpeta;
   const p = clientParty(c);
   const base = p ? expedienteOf(p) : dbx.joinPath(sync.expedientesRoot(), 'SIN EMPRESA');
-  return dbx.joinPath(base, 'CONTRATOS', safeName(fill(c, c.title)));
+  return dbx.joinPath(base, 'CONTRATOS', safeName(nombreDe(c)));
 }
 
 /** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
-async function deliverFile(c, blob, filename, kind) {
+async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
   let path = null;
   if (dbx.isConnected()) {
     await loadExpedienteFolders();
@@ -2575,7 +2655,7 @@ async function deliverFile(c, blob, filename, kind) {
     const p = clientParty(c);
     if (p && !p.expediente && !c.carpeta) { p.expediente = expedienteOf(p); await saveParty(p); }
   }
-  download(blob, filename);
+  if (descargar) download(blob, filename);
   const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: dbx.config()?.account?.name || '', status: c.status };
   c.documentos = [rec, ...(c.documentos || [])];
   return rec;
@@ -2688,7 +2768,7 @@ async function sendToReview(c, btn) {
   const blob = await buildDocxBlob(D, c, { label: `EN REVISIÓN · v${n}` });
   c.revision = n;
   c.status = 'revision';
-  await deliverFile(c, blob, `${safeName(fill(c, c.title))} - v${n} revision.docx`, 'docx');
+  await deliverFile(c, blob, `${safeName(nombreDe(c))} - v${n} revision.docx`, 'docx');
   addVersion(c, `Revisión v${n}`);
   logChange(c, `Generó el Word de revisión v${n}`);
   await saveContract(c);
@@ -2701,14 +2781,25 @@ async function approve(c, btn) {
   const missing = missingVariables(c).length;
   if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}Se generarán el Word y el PDF finales (sin leyendas) y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
+  await approveContract(c);
+  renderEditorHeader();
+  renderDocumento();
+  toast(`Contrato aprobado${dbx.isConnected() ? '; Word y PDF guardados en Dropbox' : ''}`, 'ok');
+}
+
+/** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
+async function approveContract(c, { descargar = true } = {}) {
   const prev = c.status;
   c.status = 'aprobado';
+  const files = [];
   try {
     const D = await loadDocx();
-    const base = safeName(fill(c, c.title));
-    await deliverFile(c, await buildDocxBlob(D, c, { label: '' }), `${base} - APROBADO.docx`, 'docx');
+    const base = safeName(nombreDe(c));
+    const docx = await buildDocxBlob(D, c, { label: '' });
+    await deliverFile(c, docx, `${base} - APROBADO.docx`, 'docx', { descargar });
     const { blob } = buildPdf(c);
-    await deliverFile(c, blob, `${base} - APROBADO.pdf`, 'pdf');
+    await deliverFile(c, blob, `${base} - APROBADO.pdf`, 'pdf', { descargar });
+    files.push({ name: `${base} - APROBADO.docx`, blob: docx }, { name: `${base} - APROBADO.pdf`, blob });
   } catch (err) {
     c.status = prev;
     throw err;
@@ -2717,9 +2808,7 @@ async function approve(c, btn) {
   addVersion(c, 'Aprobado');
   logChange(c, `Aprobó el contrato${c.aprobado.by ? ` (${c.aprobado.by})` : ''}`);
   await saveContract(c);
-  renderEditorHeader();
-  renderDocumento();
-  toast(`Contrato aprobado${dbx.isConnected() ? '; Word y PDF guardados en Dropbox' : ''}`, 'ok');
+  return files;
 }
 
 // ---------- Editor de plantillas ----------
