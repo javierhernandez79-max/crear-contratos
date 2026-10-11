@@ -61,6 +61,8 @@ const ICONS = {
   down: '<path d="M6 9l6 6 6-6"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  print: '<path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/>',
   grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
   braces: '<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1"/>',
   pdf: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M12 18v-6M9 15l3 3 3-3"/>',
@@ -2679,25 +2681,40 @@ function renderLotes() {
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </div>
     </header>
-    ${list.length ? `<div class="grid">${list.map((l) => `
-      <article class="card lote-card" data-id="${l.id}" tabindex="0">
-        <div class="card-top"><span class="tpl-cat">${esc(l.tipo === 'DETERMINADO' ? 'Tiempo determinado' : 'Tiempo indeterminado')}</span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span></div>
-        <h3>${esc(l.title)}</h3>
-        <div class="meta">
-          <span>${l.trabajadores.length} contrato${l.trabajadores.length === 1 ? '' : 's'}</span>
-          ${l.excluidos?.length ? `<span class="warn-text">${l.excluidos.length} sin contrato por errores</span>` : ''}
-          <span>${esc(l.empresa?.nombre || '')}</span>
-          <span>Creado por ${esc(l.createdBy || '')} · ${fmtRelative(l.createdAt)}</span>
-          ${l.status === 'aprobado' ? `<span class="ok-text">Aprobó ${esc(l.approvedBy || '')}</span>` : ''}
-        </div>
-      </article>`).join('')}</div>` : `
+    ${list.length ? `
+      <div class="card lotes-list">
+        <div class="ll-row ll-head"><span>Lote</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
+        ${list.map((l) => `
+        <div class="ll-row" data-id="${l.id}" tabindex="0" role="link">
+          <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
+          <span>${l.tipo === 'DETERMINADO' ? 'Determinado' : 'Indeterminado'}</span>
+          <span>${l.trabajadores.length}${l.excluidos?.length ? `<span class="warn-text small">${l.excluidos.length} con errores</span>` : ''}</span>
+          <span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span>${l.status === 'aprobado' ? `<span class="muted small">${esc(l.approvedBy || '')}</span>` : ''}</span>
+          <span class="small">${esc(l.createdBy || '')}<span class="muted">${fmtRelative(l.createdAt)}</span></span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Visualizar resumen y contratos" aria-label="Visualizar">${icon('eye')}</button>
+            <button class="icon-btn sm" data-act="print" title="Imprimir resumen y contratos" aria-label="Imprimir">${icon('print')}</button>
+            <button class="icon-btn sm danger" data-act="del" title="Eliminar lote" aria-label="Eliminar">${icon('trash')}</button>
+          </span>
+        </div>`).join('')}
+      </div>` : `
       <section class="empty">
         <div class="empty-art">${icon('users')}</div>
         <h2>Contratos de trabajo en lote</h2>
         <p>Sube tu Excel P1 (una fila por trabajador), elige la empresa, quién firma y la plantilla. La app revisa los datos, genera un contrato por trabajador y, cuando alguien del equipo aprueba el lote, descargas todos en un .zip.</p>
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </section>`}`;
-  $$('.lote-card').forEach((card) => card.addEventListener('click', () => go(`#/lotes/${card.dataset.id}`)));
+  $$('.ll-row[data-id]').forEach((row) => {
+    const l = state.lotes.find((x) => x.id === row.dataset.id);
+    row.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'view') return viewLote(l);
+      if (act === 'print') return printLote(l);
+      if (act === 'del') return deleteLote(l).then((ok) => ok && renderLotes());
+      go(`#/lotes/${l.id}`);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/lotes/${l.id}`); });
+  });
   $('#p1-blank').addEventListener('click', downloadP1);
 }
 
@@ -2944,6 +2961,8 @@ function renderLote(id) {
         ${l.status === 'revision'
           ? `<button class="btn primary" id="lote-approve">${icon('check')} Aprobar lote</button>`
           : `<button class="btn primary" id="lote-zip">${icon('download')} Descargar .zip</button>`}
+        <button class="icon-btn" id="lote-view" title="Visualizar resumen y contratos" aria-label="Visualizar">${icon('eye')}</button>
+        <button class="icon-btn" id="lote-print" title="Imprimir resumen y contratos" aria-label="Imprimir">${icon('print')}</button>
         <button class="icon-btn" id="lote-del" title="Eliminar lote" aria-label="Eliminar lote">${icon('trash')}</button>
       </div>
     </header>
@@ -3004,15 +3023,102 @@ function renderLote(id) {
     const D = await loadDocx();
     download(await buildErroresDocxBlob(D, l), erroresFileName(l));
   });
-  $('#lote-del').addEventListener('click', async () => {
-    if (!(await confirmDialog('Eliminar lote', `Se eliminará "${l.title}" con los datos de sus ${l.trabajadores.length} trabajadores, en este equipo y en Dropbox.`, 'Eliminar'))) return;
-    await db.remove('lotes', l.id);
-    await sync.markDeleted('lotes', l.id);
-    scheduleSync();
-    state.lotes = state.lotes.filter((x) => x.id !== l.id);
-    toast('Lote eliminado');
-    go('#/lotes');
-  });
+  $('#lote-view').addEventListener('click', () => viewLote(l));
+  $('#lote-print').addEventListener('click', () => printLote(l));
+  $('#lote-del').addEventListener('click', async () => { if (await deleteLote(l)) go('#/lotes'); });
+}
+
+async function deleteLote(l) {
+  const aviso = l.status === 'aprobado' ? ' El lote ya está aprobado; si necesitas los contratos, descarga antes el .zip.' : '';
+  if (!(await confirmDialog('Eliminar lote', `Se eliminará "${l.title}" con los datos de sus ${l.trabajadores.length} trabajadores, en este equipo y en Dropbox.${aviso}`, 'Eliminar'))) return false;
+  await db.remove('lotes', l.id);
+  await sync.markDeleted('lotes', l.id);
+  scheduleSync();
+  state.lotes = state.lotes.filter((x) => x.id !== l.id);
+  toast('Lote eliminado');
+  return true;
+}
+
+/** Documento HTML con una hoja de resumen del lote y después cada contrato en página nueva. */
+function loteHTML(l, { toolbar = false } = {}) {
+  const enRevision = l.status !== 'aprobado';
+  const filas = l.trabajadores.map((w, i) => `<tr><td>${i + 1}</td><td>${esc(w.nombre)}</td><td>${esc(w.curp)}</td><td>${esc(w.puesto)}</td><td>${esc(fmtLongDate(w.firma))}</td></tr>`).join('');
+  const resumen = `
+    <section class="pg">
+      <h1>${esc(l.title)}</h1>
+      <table class="kv">
+        <tr><th>Patrón</th><td>${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ''}</td></tr>
+        <tr><th>Tipo</th><td>Tiempo ${l.tipo === 'DETERMINADO' ? 'determinado' : 'indeterminado'}</td></tr>
+        <tr><th>Plantilla</th><td>${esc(l.plantilla?.name || '')}</td></tr>
+        <tr><th>Periodicidad de pago</th><td>${esc(l.periodicidad || '')}</td></tr>
+        <tr><th>Excel</th><td>${esc(l.archivo || '')}${l.p1?.corregido ? ' (corregido en la plataforma)' : ''}</td></tr>
+        <tr><th>Estado</th><td>${LOTE_STATUS[l.status]}</td></tr>
+        <tr><th>Creado</th><td>${esc(l.createdBy || '')}, ${fmtDateTime(l.createdAt)}</td></tr>
+        ${l.status === 'aprobado' ? `<tr><th>Aprobado</th><td>${esc(l.approvedBy || '')}, ${fmtDateTime(l.approvedAt)}</td></tr>` : ''}
+      </table>
+      <h2>Contratos (${l.trabajadores.length})</h2>
+      <table class="grid"><thead><tr><th>#</th><th>Trabajador</th><th>CURP</th><th>Puesto</th><th>Firma</th></tr></thead><tbody>${filas}</tbody></table>
+      ${l.excluidos?.length ? `
+        <h2>Sin contrato por errores (${l.excluidos.length})</h2>
+        <table class="grid"><thead><tr><th>Fila</th><th>Trabajador</th><th>CURP</th><th>Error</th></tr></thead><tbody>
+          ${l.excluidos.map((x) => `<tr><td>${x.fila}</td><td>${esc(x.nombre || '(sin nombre)')}</td><td>${esc(x.curp)}</td><td>${x.errores.map(esc).join('<br>')}</td></tr>`).join('')}
+        </tbody></table>` : ''}
+    </section>`;
+  const contratos = l.trabajadores.map((w) => `
+    <section class="pg doc">${enRevision ? '<p class="label">EN REVISIÓN</p>' : ''}${documentHTML(workerContract(l, w))}</section>`).join('');
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(l.title)}</title><style>
+    @page { size: letter; margin: 2.5cm 3cm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 10pt/1.4 Arial, Helvetica, sans-serif; color: #000; }
+    .pg + .pg { break-before: page; }
+    h1 { font-size: 13pt; margin: 0 0 12pt; }
+    h2 { font-size: 11pt; margin: 14pt 0 6pt; }
+    table { border-collapse: collapse; width: 100%; }
+    .kv th { text-align: left; width: 34%; padding: 3pt 6pt 3pt 0; vertical-align: top; }
+    .kv td { padding: 3pt 0; }
+    .grid th, .grid td { border: .5pt solid #999; padding: 3pt 5pt; text-align: left; vertical-align: top; font-size: 9pt; }
+    .grid thead { display: table-header-group; } .grid tr { break-inside: avoid; }
+    .label { text-align: right; font-weight: bold; letter-spacing: .1em; margin: 0 0 8pt; }
+    .watermark { display: none; }
+    .doc .doc-h1 { text-align: center; font-size: 11pt; text-transform: uppercase; letter-spacing: .12em; margin: 0 0 14pt; }
+    .doc h2 { font-size: 10pt; text-transform: uppercase; margin: 12pt 0 6pt; } .doc h2.center { text-align: center; }
+    .doc p { text-align: justify; margin: 0 0 6pt; }
+    .doc .v { font-weight: bold; } .doc .v.missing { font-style: italic; }
+    .doc-signs { display: grid; grid-template-columns: 1fr 1fr; gap: 28pt 40pt; margin-top: 36pt; break-inside: avoid; }
+    .doc-sign { display: flex; flex-direction: column; align-items: center; text-align: center; }
+    .sig-img { height: 50pt; display: flex; align-items: flex-end; } .sig-img img { max-height: 50pt; }
+    .sig-line { width: 100%; border-top: .75pt solid #000; margin-bottom: 4pt; }
+    @media screen {
+      html { background: #e5e7eb; }
+      body { padding: 64px 12px 24px; }
+      .pg { background: #fff; max-width: 21.59cm; margin: 0 auto 16px; padding: 2.5cm 3cm; box-shadow: 0 1px 6px rgba(0,0,0,.2); }
+      .bar { position: fixed; inset: 0 0 auto; display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: #111827; color: #fff; font-size: 14px; }
+      .bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bar button { font: 600 14px Arial, sans-serif; padding: 8px 16px; border: 0; border-radius: 8px; background: #93c5fd; color: #111827; cursor: pointer; }
+    }
+    @media screen and (max-width: 700px) { .pg { padding: 24px 16px; } }
+    @media print { .bar { display: none; } }
+  </style></head><body>${toolbar ? `<div class="bar"><span>${esc(l.title)}</span><button onclick="print()">Imprimir</button></div>` : ''}${resumen}${contratos}</body></html>`;
+  return html;
+}
+
+/** Abre el resumen y los contratos en una pestaña nueva para revisarlos en pantalla. */
+function viewLote(l) {
+  const url = URL.createObjectURL(new Blob([loteHTML(l, { toolbar: true })], { type: 'text/html' }));
+  if (!window.open(url, '_blank')) toast('El navegador bloqueó la ventana; permite ventanas emergentes para esta página', 'error');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function printLote(l) {
+  const html = loteHTML(l);
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  document.body.append(frame);
+  frame.contentWindow.addEventListener('afterprint', () => setTimeout(() => frame.remove(), 500));
+  frame.contentDocument.open();
+  frame.contentDocument.write(html);
+  frame.contentDocument.close();
+  setTimeout(() => { frame.contentWindow.focus(); frame.contentWindow.print(); }, 200);
 }
 
 const erroresFileName = (l) => `00 - Errores (${l.excluidos.length} sin contrato).docx`;
