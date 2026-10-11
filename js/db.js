@@ -1,7 +1,7 @@
 // Almacenamiento local en IndexedDB. Nada sale del dispositivo.
 const DB_NAME = 'crear-contratos';
-const DB_VERSION = 3;
-export const STORES = ['contracts', 'templates', 'parties', 'meta'];
+const DB_VERSION = 4;
+export const STORES = ['contracts', 'templates', 'parties', 'lotes', 'meta'];
 
 let dbPromise;
 

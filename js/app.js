@@ -15,12 +15,16 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
+import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
+import { buildZip } from './zip.js';
 
 // ---------- Estado ----------
 const state = {
   contracts: [],
   userTemplates: [],
   parties: [],
+  lotes: [],
+  loteDraft: null,
   partyFilter: 'todas',
   partyQuery: '',
   returnTo: null, // { contractId, signerId } al capturar una parte nueva desde un contrato
@@ -151,6 +155,7 @@ async function loadAll() {
   state.contracts = (await db.getAll('contracts')).sort((a, b) => b.updatedAt - a.updatedAt);
   state.userTemplates = (await db.getAll('templates')).sort((a, b) => b.createdAt - a.createdAt);
   state.parties = await db.getAll('parties');
+  state.lotes = await db.getAll('lotes');
 }
 
 async function saveContract(c) {
@@ -212,6 +217,7 @@ function routeView() {
   if (view === 'plantillas') return renderTemplates();
   if (view === 'plantilla' && id) return renderTemplateEditor(id);
   if (view === 'catalogo') return id ? renderPartyEditor(id) : renderCatalog();
+  if (view === 'lotes') return id === 'nuevo' ? renderNuevoLote() : id ? renderLote(id) : renderLotes();
   if (view === 'ajustes') return renderSettings();
   return renderHome();
 }
@@ -1829,7 +1835,7 @@ async function runSync({ manual = false } = {}) {
 }
 
 async function applySyncReport({ changed, conflicts }) {
-  const any = changed.contracts.size || changed.templates.size || changed.parties.size;
+  const any = changed.contracts.size || changed.templates.size || changed.parties.size || changed.lotes?.size;
   if (!any) return;
   const openId = state.current?.id;
   await loadAll();
@@ -2627,6 +2633,7 @@ async function renderSettings() {
     await db.clear('contracts');
     await db.clear('templates');
     await db.clear('parties');
+    await db.clear('lotes');
     await loadAll();
     toast('Datos eliminados');
     renderSettings();
@@ -2639,6 +2646,278 @@ window.addEventListener('hashchange', route);
 window.addEventListener('online', () => $('#offline')?.setAttribute('hidden', ''));
 window.addEventListener('offline', () => $('#offline')?.removeAttribute('hidden'));
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
+
+// ---------- Lotes: contratos de trabajo desde el Excel P1 ----------
+// Una empresa y una plantilla (determinado o indeterminado) por lote. El lote queda "En revisión"
+// hasta que cualquiera de los usuarios lo aprueba; ya aprobado se descarga un .zip con un Word por trabajador.
+const LOTE_STATUS = { revision: 'En revisión', aprobado: 'Aprobado' };
+const loteTemplates = () => allTemplates().filter(isLoteTemplate);
+const whoAmI = () => dbx.config()?.account?.name || 'este equipo';
+
+async function saveLote(l, log) {
+  l.updatedAt = Date.now();
+  l.updatedBy = whoAmI();
+  if (log) l.history = [{ date: Date.now(), by: l.updatedBy, text: log }, ...(l.history || [])];
+  await db.put('lotes', structuredClone(l));
+  await sync.markDirty('lotes', l.id);
+  scheduleSync();
+  const i = state.lotes.findIndex((x) => x.id === l.id);
+  if (i >= 0) state.lotes[i] = l; else state.lotes.unshift(l);
+}
+
+function renderLotes() {
+  setNav('lotes');
+  const list = [...state.lotes].sort((a, b) => b.createdAt - a.createdAt);
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Contratos individuales de trabajo</p>
+        <h1>Lotes</h1>
+      </div>
+      <div class="row">
+        <button class="btn" id="p1-blank">${icon('download')}<span class="hide-xs">Columnas del P1</span></button>
+        <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
+      </div>
+    </header>
+    ${list.length ? `<div class="grid">${list.map((l) => `
+      <article class="card lote-card" data-id="${l.id}" tabindex="0">
+        <div class="card-top"><span class="tpl-cat">${esc(l.tipo === 'DETERMINADO' ? 'Tiempo determinado' : 'Tiempo indeterminado')}</span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span></div>
+        <h3>${esc(l.title)}</h3>
+        <div class="meta">
+          <span>${l.trabajadores.length} contrato${l.trabajadores.length === 1 ? '' : 's'}</span>
+          <span>${esc(l.empresa?.nombre || '')}</span>
+          <span>Creado por ${esc(l.createdBy || '')} · ${fmtRelative(l.createdAt)}</span>
+          ${l.status === 'aprobado' ? `<span class="ok-text">Aprobó ${esc(l.approvedBy || '')}</span>` : ''}
+        </div>
+      </article>`).join('')}</div>` : `
+      <section class="empty">
+        <div class="empty-art">${icon('users')}</div>
+        <h2>Contratos de trabajo en lote</h2>
+        <p>Sube tu Excel P1 (una fila por trabajador), elige la empresa, quién firma y la plantilla. La app revisa los datos, genera un contrato por trabajador y, cuando alguien del equipo aprueba el lote, descargas todos en un .zip.</p>
+        <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
+      </section>`}`;
+  $$('.lote-card').forEach((card) => card.addEventListener('click', () => go(`#/lotes/${card.dataset.id}`)));
+  $('#p1-blank').addEventListener('click', downloadP1Columns);
+}
+
+/** Excel vacío con las columnas que lee la app (las nuevas resaltadas). */
+async function downloadP1Columns() {
+  const ExcelJS = await loadExcel();
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('P1');
+  const cols = P1_COLUMNS.filter((c) => c.key !== 'nombreCompleto');
+  ws.addRow(cols.map((c) => c.label));
+  cols.forEach((c, i) => {
+    const cell = ws.getRow(1).getCell(i + 1);
+    cell.font = { bold: true };
+    if (c.nueva) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    ws.getColumn(i + 1).width = Math.max(14, c.label.length + 2);
+  });
+  download(new Blob([await wb.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'P1 - columnas.xlsx');
+}
+
+// --- Nuevo lote ---
+function renderNuevoLote() {
+  setNav('lotes');
+  const d = (state.loteDraft ||= { templateId: '', empresaId: '', apoderadoId: '', periodicidad: '', file: null, workers: null, errors: null, rawMissing: [] });
+  const tpls = loteTemplates();
+  const empresas = sortParties(state.parties.filter((p) => p.activa && p.propia && p.kind === 'pm'));
+  const emp = empresas.find((p) => p.id === d.empresaId);
+  const apos = emp ? emp.apoderados.filter((a) => a.nombre.trim()) : [];
+  const tpl = tpls.find((t) => t.id === d.templateId);
+  // Fecha de terminación solo hace falta en contratos por tiempo determinado
+  d.missing = d.rawMissing.filter((c) => c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO'));
+  const ok = d.workers && d.workers.length && d.errors.every((e) => !e.length) && !d.missing.length;
+  const nErr = d.errors ? d.errors.filter((e) => e.length).length : 0;
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/lotes">Lotes</a></p>
+        <h1>Nuevo lote</h1>
+      </div>
+    </header>
+    <section class="card settings-block lote-form">
+      <div class="row wrap">
+        <label class="field"><span>Plantilla</span>
+          <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${t.id}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Periodicidad de pago</span>
+          <select id="l-per"><option value="">Elige…</option>${PERIODICIDADES.map((p) => `<option ${p === d.periodicidad ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+      </div>
+      ${tpls.length ? '' : '<p class="warn-text small">No hay plantillas de trabajo con firmantes “patrón” y “trabajador”. Sincroniza para traer las plantillas marco.</p>'}
+      <div class="row wrap">
+        <label class="field"><span>Empresa (patrón)</span>
+          <select id="l-emp"><option value="">Elige…</option>${empresas.map((p) => `<option value="${p.id}" ${p.id === d.empresaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></label>
+        <label class="field"><span>Firma por la empresa</span>
+          <select id="l-apo" ${emp ? '' : 'disabled'}><option value="">${emp ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : 'Primero elige la empresa'}</option>
+          ${apos.map((a) => `<option value="${a.id}" ${a.id === d.apoderadoId ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select></label>
+      </div>
+      <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Excel P1'}<input type="file" id="l-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+      <p class="muted small">Una fila por trabajador. Además de las columnas de siempre, el P1 debe traer <strong>Lugar de Trabajo</strong>, <strong>Fecha de Firma</strong> y, para tiempo determinado, <strong>Fecha de Terminación</strong>. El género de nacionalidad y estado civil se ajusta según el sexo.</p>
+    </section>
+    ${d.missing.length ? `<div class="banner danger">${icon('alert')} <span>Al Excel le faltan columnas: ${d.missing.map((c) => esc(c.label)).join(', ')}.</span></div>` : ''}
+    ${d.workers ? `
+      ${tpl ? '' : `<div class="banner warn">${icon('alert')} <span>Elige la plantilla para revisar los datos.</span></div>`}
+      ${d.workers.length ? `
+        <div class="banner ${nErr ? 'danger' : 'info'}">${icon(nErr ? 'alert' : 'check')} <span>${d.workers.length} trabajador${d.workers.length === 1 ? '' : 'es'}${nErr ? ` · ${nErr} con errores: corrígelos en el Excel y vuelve a subirlo` : ' · datos completos'}</span></div>
+        <div class="card lote-table">
+          <div class="lt-row lt-head"><span>Fila</span><span>Trabajador</span><span>Puesto</span><span>Salario diario</span><span>Revisión</span></div>
+          ${d.workers.map((w, i) => `
+            <div class="lt-row ${d.errors[i].length ? 'bad' : ''}">
+              <span class="muted">${w.fila}</span>
+              <span><strong>${esc(w.nombre || '(sin nombre)')}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
+              <span>${esc(w.puesto)}</span>
+              <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>
+              <span>${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : '<span class="ok-text">Listo</span>'}</span>
+            </div>`).join('')}
+        </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
+    <div class="row wrap lote-actions">
+      <a class="btn ghost" href="#/lotes">Cancelar</a>
+      <button class="btn primary" id="l-create" ${ok && tpl && emp && d.periodicidad ? '' : 'disabled'}>${icon('check')} Enviar a revisión</button>
+    </div>`;
+
+  const revalidate = () => {
+    const t = loteTemplates().find((x) => x.id === d.templateId);
+    if (d.workers) d.errors = t ? validateWorkers(d.workers, t, { periodicidad: d.periodicidad || 'X' }) : d.workers.map(() => []);
+    renderNuevoLote();
+  };
+  $('#l-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; revalidate(); });
+  $('#l-per').addEventListener('change', (e) => { d.periodicidad = e.target.value; renderNuevoLote(); });
+  $('#l-emp').addEventListener('change', (e) => {
+    d.empresaId = e.target.value;
+    const p = state.parties.find((x) => x.id === d.empresaId);
+    const vig = p?.apoderados.filter((a) => a.nombre.trim() && a.vigente) || [];
+    d.apoderadoId = vig.length === 1 ? vig[0].id : '';
+    renderNuevoLote();
+  });
+  $('#l-apo').addEventListener('change', (e) => { d.apoderadoId = e.target.value; });
+  $('#l-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const ExcelJS = await loadExcel();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(await f.arrayBuffer());
+      const { rows, missing } = readP1(wb);
+      d.rawMissing = missing;
+      d.file = f.name;
+      d.workers = rows.map(normalizeRow);
+      revalidate();
+    } catch (err) {
+      console.error(err);
+      toast(`No se pudo leer el Excel: ${err.message}`, 'error');
+    }
+  });
+  $('#l-create').addEventListener('click', createLote);
+}
+
+async function createLote() {
+  const d = state.loteDraft;
+  const tpl = loteTemplates().find((t) => t.id === d.templateId);
+  const emp = state.parties.find((p) => p.id === d.empresaId);
+  const apo = emp?.apoderados.find((a) => a.id === d.apoderadoId) || null;
+  if (!apo && !(await confirmDialog('Sin representante', `No elegiste quién firma por ${emp.nombre}. Los contratos saldrán sin representante del patrón. ¿Continuar?`, 'Continuar', 'primary'))) return;
+  const tipo = tipoDePlantilla(tpl);
+  const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+  // Se guardan copias de la plantilla y de la empresa: lo que se aprueba es exactamente lo que se revisó
+  const l = {
+    id: uid(),
+    title: `${emp.nombre} · ${d.workers.length} contrato${d.workers.length === 1 ? '' : 's'} · ${fecha}`,
+    tipo,
+    status: 'revision',
+    periodicidad: d.periodicidad,
+    archivo: d.file,
+    plantilla: structuredClone(tpl),
+    empresa: structuredClone(emp),
+    apoderado: apo ? structuredClone(apo) : null,
+    trabajadores: d.workers,
+    createdAt: Date.now(),
+    createdBy: whoAmI(),
+    history: [],
+  };
+  await saveLote(l, `Creó el lote con ${d.workers.length} trabajadores (${d.file})`);
+  state.loteDraft = null;
+  toast('Lote enviado a revisión', 'ok');
+  go(`#/lotes/${l.id}`);
+}
+
+// --- Detalle del lote ---
+function renderLote(id) {
+  setNav('lotes');
+  const l = state.lotes.find((x) => x.id === id);
+  if (!l) { toast('Lote no encontrado', 'error'); return go('#/lotes'); }
+  const gaps = contractGaps(workerContract(l, l.trabajadores[0] || {}));
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow"><a href="#/lotes">Lotes</a> · <span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span></p>
+        <h1>${esc(l.title)}</h1>
+      </div>
+      <div class="row">
+        ${l.status === 'revision'
+          ? `<button class="btn primary" id="lote-approve">${icon('check')} Aprobar lote</button>`
+          : `<button class="btn primary" id="lote-zip">${icon('download')} Descargar .zip</button>`}
+        <button class="icon-btn" id="lote-del" title="Eliminar lote" aria-label="Eliminar lote">${icon('trash')}</button>
+      </div>
+    </header>
+    <section class="card settings-block">
+      <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
+      <p><strong>Patrón:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
+      <p><strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · <strong>Excel:</strong> ${esc(l.archivo || '')}</p>
+      <p class="muted small">Creado por ${esc(l.createdBy || '')} el ${fmtDateTime(l.createdAt)}${l.status === 'aprobado' ? ` · Aprobado por ${esc(l.approvedBy || '')} el ${fmtDateTime(l.approvedAt)}` : ''}</p>
+    </section>
+    ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
+    ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (cada uno sale marcado “EN REVISIÓN”). Cuando estén bien, cualquiera del equipo puede aprobar el lote.</span></div>` : ''}
+    <div class="card lote-table">
+      <div class="lt-row lt-head"><span>#</span><span>Trabajador</span><span>Puesto</span><span>Firma</span><span></span></div>
+      ${l.trabajadores.map((w, i) => `
+        <div class="lt-row">
+          <span class="muted">${i + 1}</span>
+          <span><strong>${esc(w.nombre)}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
+          <span>${esc(w.puesto)}</span>
+          <span>${esc(fmtLongDate(w.firma))}</span>
+          <span><button class="btn sm" data-word="${i}">${icon('doc')} Word</button></span>
+        </div>`).join('')}
+    </div>
+    ${l.history?.length ? `<h4 class="sub">Historial</h4><ul class="history">${l.history.map((h) => `<li><span class="muted small">${fmtDateTime(h.date)}</span> ${esc(h.by || '')}: ${esc(h.text)}</li>`).join('')}</ul>` : ''}`;
+
+  $$('[data-word]').forEach((b) => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.word);
+    const D = await loadDocx();
+    const c = workerContract(l, l.trabajadores[i]);
+    download(await buildDocxBlob(D, c, { label: l.status === 'aprobado' ? '' : 'EN REVISIÓN' }), fileNameFor(i, l.trabajadores[i]));
+  }));
+  $('#lote-approve')?.addEventListener('click', async () => {
+    if (gaps.length && !(await confirmDialog('Faltan datos', `Los contratos tienen datos vacíos (${gaps.join(', ')}). ¿Aprobar de todos modos?`, 'Aprobar', 'primary'))) return;
+    if (!gaps.length && !(await confirmDialog('Aprobar lote', `Se aprobarán ${l.trabajadores.length} contratos. Después podrás descargar el .zip con las versiones finales.`, 'Aprobar', 'primary'))) return;
+    l.status = 'aprobado';
+    l.approvedBy = whoAmI();
+    l.approvedAt = Date.now();
+    await saveLote(l, 'Aprobó el lote');
+    toast('Lote aprobado', 'ok');
+    renderLote(l.id);
+  });
+  $('#lote-zip')?.addEventListener('click', () => downloadLoteZip(l));
+  $('#lote-del').addEventListener('click', async () => {
+    if (!(await confirmDialog('Eliminar lote', `Se eliminará "${l.title}" con los datos de sus ${l.trabajadores.length} trabajadores, en este equipo y en Dropbox.`, 'Eliminar'))) return;
+    await db.remove('lotes', l.id);
+    await sync.markDeleted('lotes', l.id);
+    scheduleSync();
+    state.lotes = state.lotes.filter((x) => x.id !== l.id);
+    toast('Lote eliminado');
+    go('#/lotes');
+  });
+}
+
+async function downloadLoteZip(l) {
+  if (l.status !== 'aprobado') return toast('El lote aún no está aprobado', 'error');
+  const D = await loadDocx();
+  const files = [];
+  for (const [i, w] of l.trabajadores.entries()) {
+    const blob = await buildDocxBlob(D, workerContract(l, w), { label: '' });
+    files.push({ name: fileNameFor(i, w), data: new Uint8Array(await blob.arrayBuffer()) });
+  }
+  download(new Blob([buildZip(files)], { type: 'application/zip' }), `${safeName(l.title)}.zip`);
+}
 
 (async function init() {
   await loadAll();
