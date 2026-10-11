@@ -15,7 +15,7 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
-import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
+import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
 
 // ---------- Estado ----------
@@ -2822,8 +2822,11 @@ function renderNuevoLote() {
     try {
       const ExcelJS = await loadExcel();
       const wb = new ExcelJS.Workbook();
-      await wb.xlsx.load(await f.arrayBuffer());
-      const { rows, missing } = readP1(wb);
+      const buf = await f.arrayBuffer();
+      await wb.xlsx.load(buf);
+      const { rows, missing, sheetIndex, header } = readP1(wb);
+      // Se guardan el archivo y los valores originales para armar el P1 final con las correcciones
+      Object.assign(d, { fileBuf: buf, sheetIndex, header, raw0: structuredClone(rows) });
       d.rawMissing = missing;
       d.file = f.name;
       d.raw = rows;
@@ -2908,6 +2911,7 @@ async function createLote() {
     status: 'revision',
     periodicidad: d.periodicidad,
     archivo: d.file,
+    p1: await p1DelLote(d),
     plantilla: structuredClone(tpl),
     empresa: structuredClone(emp),
     apoderado: apo ? structuredClone(apo) : null,
@@ -2946,7 +2950,7 @@ function renderLote(id) {
     <section class="card settings-block">
       <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
       <p><strong>Patrón:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
-      <p><strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · <strong>Excel:</strong> ${esc(l.archivo || '')}</p>
+      <p><strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · <strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
       <p class="muted small">Creado por ${esc(l.createdBy || '')} el ${fmtDateTime(l.createdAt)}${l.status === 'aprobado' ? ` · Aprobado por ${esc(l.approvedBy || '')} el ${fmtDateTime(l.approvedAt)}` : ''}</p>
     </section>
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
@@ -2995,6 +2999,7 @@ function renderLote(id) {
     renderLote(l.id);
   });
   $('#lote-zip')?.addEventListener('click', () => downloadLoteZip(l));
+  $('#lote-p1')?.addEventListener('click', () => download(p1Blob(l), l.p1.name));
   $('#lote-err-word')?.addEventListener('click', async () => {
     const D = await loadDocx();
     download(await buildErroresDocxBlob(D, l), erroresFileName(l));
@@ -3023,6 +3028,22 @@ function alertExcluidos(l) {
   });
 }
 
+/** P1 que se usó en el lote: el original o, si se corrigió en la plataforma, con las correcciones. */
+async function p1DelLote(d) {
+  if (!d.fileBuf) return null;
+  try {
+    const bytes = await p1Final(await loadExcel(), d.fileBuf, d);
+    const base = d.file.replace(/\.xlsx$/i, '');
+    return { name: `${base}${d.editadas?.size ? ' (corregido)' : ''}.xlsx`, corregido: !!d.editadas?.size, data: toBase64(bytes) };
+  } catch (err) {
+    // Si no se pudieron aplicar las correcciones, se guarda el original y se avisa
+    console.error(err);
+    toast(`No se pudieron aplicar las correcciones al P1 (${err.message}); se guarda el original`, 'error');
+    return { name: d.file.replace(/\.xlsx$/i, ' (original, sin correcciones).xlsx'), corregido: false, data: toBase64(new Uint8Array(d.fileBuf)) };
+  }
+}
+const p1Blob = (l) => new Blob([fromBase64(l.p1.data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
 async function downloadLoteZip(l) {
   if (l.status !== 'aprobado') return toast('El lote aún no está aprobado', 'error');
   const D = await loadDocx();
@@ -3035,6 +3056,7 @@ async function downloadLoteZip(l) {
     const blob = await buildErroresDocxBlob(D, l);
     files.push({ name: erroresFileName(l), data: new Uint8Array(await blob.arrayBuffer()) });
   }
+  if (l.p1) files.push({ name: `00 - P1 - ${l.p1.name}`, data: fromBase64(l.p1.data) });
   download(new Blob([buildZip(files)], { type: 'application/zip' }), `${safeName(l.title)}.zip`);
 }
 

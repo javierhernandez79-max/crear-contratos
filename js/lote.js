@@ -96,7 +96,7 @@ export function readP1(workbook) {
     const missing = P1_COLUMNS.filter((c) => !header[c.key] && !c.opcional && !['nombreCompleto', 'noInt', 'tipo'].includes(c.key)
       && !(c.key === 'sueldo' && header.sd)
       && !(c.key === 'nombre' && header.nombreCompleto) && !(['apPaterno', 'apMaterno'].includes(c.key) && header.nombreCompleto));
-    return { rows, missing, sheet: ws.name.trim() };
+    return { rows, missing, sheet: ws.name.trim(), sheetIndex: workbook.worksheets.indexOf(ws), header };
   }
   return { rows: [], missing: P1_COLUMNS.filter((c) => ['curp', 'rfc'].includes(c.key)), sheet: null };
 }
@@ -270,3 +270,48 @@ export function workerContract(lote, w) {
 export const contractGaps = (c) => missingVariables(c);
 
 export const fileNameFor = (i, w) => `${String(i + 1).padStart(2, '0')} - ${w.nombre.replace(/[\\/:*?"<>|]/g, '').slice(0, 80)}.docx`;
+
+// ---------- P1 final (con las correcciones hechas en la plataforma) ----------
+const sameValue = (a, b) => {
+  const k = (v) => (v instanceof Date ? toISODate(v) : v === null || v === undefined ? '' : String(v).trim());
+  return k(a) === k(b);
+};
+
+/**
+ * Aplica al Excel original las correcciones hechas en la plataforma. Las celdas cambiadas quedan
+ * resaltadas en amarillo. `editadas` = índices de filas; `raw`/`raw0` = valores corregidos/originales.
+ */
+export async function p1Final(ExcelJS, buffer, { sheetIndex, header, raw, raw0, editadas }) {
+  if (!editadas?.size) return new Uint8Array(buffer);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const ws = wb.worksheets[sheetIndex];
+  for (const i of editadas) {
+    const now = raw[i];
+    const before = raw0[i];
+    const row = ws.getRow(now.fila);
+    for (const [key, col] of Object.entries(header)) {
+      if (!(key in now) || sameValue(now[key], before[key])) continue;
+      const cell = row.getCell(col);
+      const v = now[key];
+      const iso = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      cell.value = v === '' ? null : iso ? new Date(`${v}T00:00:00Z`) : v;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    }
+  }
+  // Tablas guardadas por algunos programas (p. ej. LibreOffice) no traen estilo y ExcelJS no las puede escribir
+  for (const sheet of wb.worksheets) {
+    for (const t of Object.values(sheet.tables || {})) {
+      const model = t.table || t.model;
+      if (model && !model.style) model.style = { theme: 'TableStyleMedium2', showRowStripes: true };
+    }
+  }
+  return new Uint8Array(await wb.xlsx.writeBuffer());
+}
+
+export const toBase64 = (bytes) => {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+export const fromBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
