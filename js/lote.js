@@ -12,10 +12,12 @@ export const P1_COLUMNS = [
   { key: 'apPaterno', label: 'Apellido Paterno', aliases: ['apellido paterno'] },
   { key: 'apMaterno', label: 'Apellido Materno', aliases: ['apellido materno'] },
   { key: 'nombreCompleto', label: 'NOMBRE COMPLETO', aliases: ['nombre completo'] },
-  { key: 'nacionalidad', label: 'Nacionalidad', aliases: ['nacionalidad'] },
+  // Nacionalidad y salario diario los calcula la app (CURP y sueldo mensual); la columna de nacionalidad solo hace falta para extranjeros
+  { key: 'nacionalidad', label: 'Nacionalidad (solo extranjeros)', aliases: ['nacionalidad', 'nacionalidad solo extranjeros'], opcional: true },
   { key: 'rfc', label: 'RFC con Homoclave', aliases: ['rfc con homoclave', 'rfc'] },
   { key: 'curp', label: 'CURP', aliases: ['curp'] },
-  { key: 'sexo', label: 'Sexo', aliases: ['sexo'] },
+  // El sexo sale de la CURP (posición 11: H/M); la columna solo se usa si la CURP no lo indica
+  { key: 'sexo', label: 'Sexo', aliases: ['sexo'], opcional: true },
   { key: 'estadoCivil', label: 'Estado Civil', aliases: ['estado civil'] },
   { key: 'calle', label: 'Calle', aliases: ['calle'] },
   { key: 'noExt', label: 'No. Ext.', aliases: ['no ext', 'numero exterior', 'num ext'] },
@@ -23,7 +25,8 @@ export const P1_COLUMNS = [
   { key: 'colonia', label: 'Colonia', aliases: ['colonia'] },
   { key: 'municipio', label: 'Alcaldía/municipio', aliases: ['alcaldia municipio', 'municipio', 'alcaldia'] },
   { key: 'cp', label: 'CP', aliases: ['cp', 'c p', 'codigo postal'] },
-  { key: 'sd', label: 'SD', aliases: ['sd', 'salario diario'] },
+  { key: 'sueldo', label: 'Sueldo Mensual Bruto', aliases: ['sueldo mensual bruto', 'sueldo mensual'] },
+  { key: 'sd', label: 'SD', aliases: ['sd', 'salario diario'], opcional: true },
   { key: 'puesto', label: 'Puesto', aliases: ['puesto'] },
   { key: 'antiguedad', label: 'Fecha de Antigüedad', aliases: ['fecha de antiguedad'] },
   { key: 'tipo', label: 'Tipo de Contrato', aliases: ['tipo de contrato'] },
@@ -85,12 +88,13 @@ export function readP1(workbook) {
       const raw = { fila: n };
       for (const [key, col] of Object.entries(header)) {
         const v = cellValue(row.getCell(col).value);
-        raw[key] = DATE_KEYS.has(key) ? v : (key === 'sd' ? v : text(v));
+        raw[key] = DATE_KEYS.has(key) || key === 'sd' || key === 'sueldo' ? v : text(v);
       }
       // Solo cuentan los renglones con trabajador (debajo puede haber tablas auxiliares)
       if (text(raw.curp) || text(raw.rfc) || text(raw.nombre) || text(raw.nombreCompleto)) rows.push(raw);
     });
-    const missing = P1_COLUMNS.filter((c) => !header[c.key] && !['nombreCompleto', 'noInt', 'tipo'].includes(c.key)
+    const missing = P1_COLUMNS.filter((c) => !header[c.key] && !c.opcional && !['nombreCompleto', 'noInt', 'tipo'].includes(c.key)
+      && !(c.key === 'sueldo' && header.sd)
       && !(c.key === 'nombre' && header.nombreCompleto) && !(['apPaterno', 'apMaterno'].includes(c.key) && header.nombreCompleto));
     return { rows, missing, sheet: ws.name.trim() };
   }
@@ -98,7 +102,25 @@ export function readP1(workbook) {
 }
 
 // ---------- Normalización ----------
+/** Clave de la entidad de nacimiento en la CURP (posiciones 12-13); "NE" = nacido en el extranjero. */
+export const entidadNacimiento = (curp) => (/^[A-Z]{4}\d{6}[HM]([A-Z]{2})/.exec(curp || '') || [])[1] || '';
+
+/** Nacidos en México: MEXICANO(A). Nacidos en el extranjero: la nacionalidad capturada en el P1. */
+export function nacionalidadDe(curp, capturada) {
+  const ent = entidadNacimiento(curp);
+  const cap = text(capturada).toUpperCase();
+  if (ent && ent !== 'NE') return 'MEXICANO(A)';
+  return /^EXTRANJER/.test(cap) ? '' : cap;
+}
+
 /** 'F' | 'M' | '' */
+/** Sexo según la CURP: la posición 11 es H (hombre) o M (mujer). '' si no se puede leer. */
+export function sexoDeCurp(curp) {
+  const m = /^[A-Z]{4}\d{6}([HM])/.exec(curp || '');
+  if (!m) return '';
+  return m[1] === 'M' ? 'F' : 'M';
+}
+
 export function sexoDe(v) {
   const s = norm(v).toUpperCase();
   if (/^(F|MUJ)/.test(s)) return 'F';
@@ -137,17 +159,22 @@ function domicilio(r) {
 
 /** Trabajador listo para el contrato. */
 export function normalizeRow(r) {
-  const sexo = sexoDe(r.sexo);
+  const curp = text(r.curp).toUpperCase().replace(/\s/g, '');
+  const sexo = sexoDeCurp(curp) || sexoDe(r.sexo);
   const nombre = [r.nombre, r.apPaterno, r.apMaterno].map(text).filter(Boolean).join(' ') || text(r.nombreCompleto);
-  const sd = typeof r.sd === 'number' ? r.sd : Number(String(r.sd ?? '').replace(/[^0-9.]/g, ''));
+  const num = (v) => (typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^0-9.]/g, '')));
+  // Salario diario = sueldo mensual bruto / 30 (si no hay sueldo, se usa la columna SD)
+  const sueldo = num(r.sueldo);
+  const sd = Number.isFinite(sueldo) && sueldo > 0 ? sueldo / 30 : num(r.sd);
   return {
     fila: r.fila,
     nombre: nombre.toUpperCase(),
     sexo,
-    nacionalidad: nacionalidadSegunSexo(r.nacionalidad, sexo),
+    nacionalidad: nacionalidadSegunSexo(nacionalidadDe(curp, r.nacionalidad), sexo),
+    extranjero: entidadNacimiento(curp) === 'NE',
     estadoCivil: estadoCivilSegunSexo(r.estadoCivil, sexo),
     domicilio: domicilio(r).toUpperCase(),
-    curp: text(r.curp).toUpperCase().replace(/\s/g, ''),
+    curp,
     rfc: text(r.rfc).toUpperCase().replace(/[\s-]/g, ''),
     puesto: text(r.puesto).toUpperCase(),
     lugar: text(r.lugar).toUpperCase(),
@@ -195,7 +222,7 @@ export function workerVariables(w, lote) {
 const LABELS = {
   trabajador_nombre: 'Nombre', trabajador_nacionalidad: 'Nacionalidad', trabajador_sexo: 'Sexo', trabajador_estado_civil: 'Estado Civil',
   trabajador_domicilio: 'Domicilio (Calle, Colonia, Alcaldía/municipio, CP)', trabajador_curp: 'CURP', trabajador_rfc: 'RFC con Homoclave',
-  puesto: 'Puesto', lugar_trabajo: 'Lugar de Trabajo', salario_diario: 'SD', periodicidad_pago: 'Periodicidad de pago', dias_pago: 'Días de Pago',
+  puesto: 'Puesto', lugar_trabajo: 'Lugar de Trabajo', salario_diario: 'Sueldo Mensual Bruto', periodicidad_pago: 'Periodicidad de pago', dias_pago: 'Días de Pago',
   fecha_antiguedad: 'Fecha de Antigüedad', fecha_inicio: 'Fecha de Ingreso', fecha_fin: 'Fecha de Terminación', fecha_firma: 'Fecha de Firma',
 };
 
@@ -210,12 +237,12 @@ export function validateWorkers(workers, tpl, lote) {
   return workers.map((w) => {
     const errs = [];
     const vars = workerVariables(w, lote);
-    for (const k of needed) if (!vars[k]) errs.push(`Falta ${LABELS[k]}`);
-    if (!w.sexo) errs.push('Sexo no reconocido (usa FEM/MAS)');
+    for (const k of needed) if (!vars[k] && !(k === 'trabajador_nacionalidad' && w.extranjero)) errs.push(`Falta ${LABELS[k]}`);
+    if (!w.sexo) errs.push('No se pudo determinar el sexo: la CURP no lo indica (posición 11 H/M) y la columna Sexo está vacía');
+    if (w.extranjero && !w.nacionalidad) errs.push('Nació en el extranjero (CURP con NE): captura su Nacionalidad');
     if (w.rfc && !RFC_PF.test(w.rfc)) errs.push(`RFC inválido (${w.rfc}): deben ser 13 caracteres`);
     if (w.curp && !CURP.test(w.curp)) errs.push(`CURP inválida (${w.curp})`);
     if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && w.rfc.slice(0, 10) !== w.curp.slice(0, 10)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
-    if (CURP.test(w.curp) && w.sexo && (w.curp[10] === 'M' ? 'F' : 'M') !== w.sexo) errs.push('El sexo no coincide con la CURP');
     if (w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
     if (tipo === 'DETERMINADO' && w.fin && w.ingreso && w.fin <= w.ingreso) errs.push('La fecha de terminación debe ser posterior a la de ingreso');
     if (w.curp) {

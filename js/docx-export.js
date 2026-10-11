@@ -125,3 +125,39 @@ function signatureMark(c, sg) {
 export async function buildDocxBlob(D, c, opts) {
   return D.Packer.toBlob(buildDocxDocument(D, c, opts));
 }
+
+/** Word con los trabajadores que quedaron fuera de un lote y el error de cada uno. */
+export async function buildErroresDocxBlob(D, lote) {
+  const { Document, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell, WidthType, ShadingType } = D;
+  const run = (text, opts = {}) => new TextRun({ text, font: FONT, size: SIZE, ...opts });
+  const cell = (text, { bold = false, head = false, width } = {}) => new TableCell({
+    width: { size: width, type: WidthType.PERCENTAGE },
+    shading: head ? { type: ShadingType.CLEAR, fill: 'E8ECF2', color: 'auto' } : undefined,
+    children: String(text).split('\n').map((t) => new Paragraph({ children: [run(t, { bold: bold || head })] })),
+  });
+  const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  const rows = [
+    new TableRow({ tableHeader: true, children: [cell('Fila', { head: true, width: 8 }), cell('Trabajador', { head: true, width: 30 }), cell('CURP', { head: true, width: 22 }), cell('Error', { head: true, width: 40 })] }),
+    ...lote.excluidos.map((x) => new TableRow({ cantSplit: true, children: [
+      cell(x.fila, { width: 8 }), cell(x.nombre || '(sin nombre)', { bold: true, width: 30 }), cell(x.curp || '—', { width: 22 }), cell(x.errores.join('\n'), { width: 40 }),
+    ] })),
+  ];
+  const doc = new Document({
+    creator: 'Crear Contratos',
+    title: 'Trabajadores sin contrato',
+    styles: { default: { document: { run: { font: FONT, size: SIZE } } } },
+    sections: [{
+      properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 2.5 * TWIP_CM, bottom: 2.5 * TWIP_CM, left: 2 * TWIP_CM, right: 2 * TWIP_CM } } },
+      children: [
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 240 }, children: [run('TRABAJADORES SIN CONTRATO POR ERRORES EN EL P1', { bold: true, size: 24 })] }),
+        new Paragraph({ spacing: { after: 80 }, children: [run('Lote: ', { bold: true }), run(lote.title)] }),
+        new Paragraph({ spacing: { after: 80 }, children: [run('Patrón: ', { bold: true }), run(lote.empresa?.nombre || '')] }),
+        new Paragraph({ spacing: { after: 80 }, children: [run('Archivo: ', { bold: true }), run(lote.archivo || '')] }),
+        new Paragraph({ spacing: { after: 240 }, children: [run('Fecha: ', { bold: true }), run(fecha), run(`   ·   ${lote.trabajadores.length} contratos generados, ${lote.excluidos.length} sin contrato`)] }),
+        new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }),
+        new Paragraph({ spacing: { before: 240 }, children: [run('Corrige estos datos en el P1 y genera un lote nuevo solo con estos trabajadores.', { italics: true })] }),
+      ],
+    }],
+  });
+  return D.Packer.toBlob(doc);
+}
