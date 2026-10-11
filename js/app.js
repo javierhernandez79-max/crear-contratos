@@ -401,7 +401,7 @@ function renderTemplates() {
     </header>
     <div class="toolbar">
       <label class="search">${icon('search')}<input id="tpl-q" type="search" placeholder="Buscar plantilla" value="${esc(state.tplQuery)}"></label>
-      <div class="chips scroll">
+      <div class="chips">
         ${cats.map((c) => `<button class="chip ${state.tplCategory === c.id ? 'on' : ''}" data-cat="${c.id}">${esc(c.label)}</button>`).join('')}
       </div>
     </div>
