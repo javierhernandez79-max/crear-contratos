@@ -1,17 +1,21 @@
 // Contratos de prestación de servicios desde el Excel "Sugerido de conceptos":
 // arriba el nombre del cliente (o parte de él) y una tabla EMPRESA | CONCEPTO (| MONTO).
 // Se genera un contrato por empresa del grupo con todos sus conceptos como objeto.
+import { cellValue } from './lote.js';
 
-const SUFIJOS = new Set(['S', 'A', 'SA', 'DE', 'C', 'V', 'CV', 'R', 'L', 'RL', 'P', 'I', 'SAPI', 'B', 'SAB', 'SC', 'AC', 'SRL', 'SPR', 'SOCIEDAD', 'ANONIMA', 'CAPITAL', 'VARIABLE']);
+const SUFIJOS = new Set(['S', 'A', 'SA', 'DE', 'C', 'V', 'CV', 'R', 'L', 'RL', 'P', 'I', 'SAPI', 'B', 'SAB', 'SAS', 'SC', 'AC', 'SRL', 'SPR', 'SOCIEDAD', 'ANONIMA', 'CAPITAL', 'VARIABLE']);
 
 const base = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
 
-/** Nombre sin acentos, signos ni tipo de sociedad: "IA TECH-SYSTEMS S.A DE C.V." → "IATECHSYSTEMS". */
-export function nucleo(nombre) {
+/** Palabras del nombre sin acentos, signos ni tipo de sociedad. */
+function palabras(nombre) {
   const t = base(nombre).replace(/[^A-Z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
   while (t.length > 1 && SUFIJOS.has(t[t.length - 1])) t.pop();
-  return t.join('');
+  return t;
 }
+
+/** "IA TECH-SYSTEMS S.A DE C.V." → "IATECHSYSTEMS". */
+const nucleo = (nombre) => palabras(nombre).join('');
 
 const bigramas = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const b = s.slice(i, i + 2); m.set(b, (m.get(b) || 0) + 1); } return m; };
 
@@ -20,7 +24,11 @@ export function parecido(a, b) {
   const x = nucleo(a), y = nucleo(b);
   if (!x || !y) return 0;
   if (x === y) return 1;
-  if (x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x))) return 0.9;
+  // Un nombre que empieza con las mismas palabras completas que el otro ("GRUPO X" / "GRUPO X LOGÍSTICA")
+  // vale según cuánto del nombre largo cubre. Antes cualquier subcadena daba 0.9 y "TECH" se tomaba por
+  // "BIOTECHNOLOGIA AVANZADA"
+  const [pc, pl] = [palabras(a), palabras(b)].sort((m, n) => m.join('').length - n.join('').length);
+  if (pc.every((w, i) => pl[i] === w)) return 0.9 * (pc.join('').length / pl.join('').length);
   const A = bigramas(x), B = bigramas(y);
   let comun = 0;
   for (const [k, n] of A) comun += Math.min(n, B.get(k) || 0);
@@ -45,15 +53,7 @@ export function mejorCoincidencia(nombre, partes) {
 /** "92121700 - Servicios de sistemas de seguridad." → "Servicios de sistemas de seguridad" */
 export const limpiarConcepto = (s) => String(s ?? '').replace(/^\s*\d{4,}\s*[-–—.:]*\s*/, '').replace(/\s+/g, ' ').replace(/[.;,\s]+$/, '').trim();
 
-const texto = (v) => {
-  if (v == null) return '';
-  if (typeof v === 'object') {
-    if (v.richText) return v.richText.map((r) => r.text).join('');
-    if ('result' in v) return texto(v.result);
-    if (v.text) return String(v.text);
-  }
-  return String(v).trim();
-};
+const texto = (v) => String(cellValue(v) ?? '').trim();
 
 /** Lee la primera hoja con encabezados EMPRESA y CONCEPTO. */
 export function readSugerido(wb) {
@@ -75,7 +75,9 @@ export function readSugerido(wb) {
     ws.eachRow({ includeEmpty: false }, (row, n) => {
       if (n <= head.n) return;
       const vals = row.values.map(texto);
-      if (vals.some((v) => /^TOTAL/.test(base(v)))) { actual = null; return; }
+      // Renglones "Total por empresa": solo si la celda dice "Total…" y no hay concepto (una empresa
+      // llamada "TOTAL PLAY" o un concepto "Totalidad de…" no son totales)
+      if (vals.some((v) => /^TOTAL(ES)?\b/.test(base(v))) && !limpiarConcepto(vals[head.iC])) { actual = null; return; }
       const emp = vals[head.iE];
       const concepto = limpiarConcepto(vals[head.iC]);
       if (emp && (!actual || actual.nombre !== emp)) {

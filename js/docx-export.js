@@ -79,7 +79,7 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
 
   if (c.anexos?.length) {
     children.push(new Paragraph({ keepNext: true, spacing: { before: 360, after: 120 }, children: [run('ANEXOS', { bold: true })] }));
-    c.anexos.forEach((a, i) => children.push(para(`Anexo ${i + 1}. ${a.title || a.name}`, { para: { alignment: AlignmentType.LEFT } })));
+    c.anexos.forEach((a, i) => children.push(para(`Anexo ${i + 1}. ${a.title || a.name || ''}`, { para: { alignment: AlignmentType.LEFT } })));
   }
 
   const small = { font: FONT, size: 16, color: '888888' };
@@ -119,7 +119,7 @@ export function buildDocxDocument(D, c, { label = '' } = {}) {
 function signatureMark(c, sg) {
   const sig = c.signatures?.[sg.id];
   if (!sig) return ' ';
-  return sig.type === 'efirma' ? `Firmado con e.firma · Cert. ${sig.info.certNumber}` : 'Firma autógrafa registrada en la app';
+  return sig.type === 'efirma' ? `Firmado con e.firma · Cert. ${sig.info?.certNumber || ''}` : 'Firma autógrafa registrada en la app';
 }
 
 export async function buildDocxBlob(D, c, opts) {

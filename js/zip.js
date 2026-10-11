@@ -17,12 +17,17 @@ function crc32(bytes) {
 
 function dosDateTime(d) {
   const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
-  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  // El formato DOS solo cubre 1980–2107: un reloj fuera de rango daría fechas absurdas
+  const y = Math.min(Math.max(d.getFullYear(), 1980), 2107);
+  const date = ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
   return { time, date };
 }
 
 /** files = [{ name, data: Uint8Array }] → Uint8Array con el .zip */
 export function buildZip(files, now = new Date()) {
+  // Sin ZIP64: los contadores son de 16 bits y los tamaños de 32
+  if (files.length > 0xffff) throw new Error('Demasiados archivos para un .zip');
+  if (files.reduce((n, f) => n + f.data.length, 0) > 0xfffffff0) throw new Error('El .zip superaría 4 GB');
   const enc = new TextEncoder();
   const { time, date } = dosDateTime(now);
   const locals = [];

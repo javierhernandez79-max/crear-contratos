@@ -5,17 +5,25 @@ export function createSignaturePad(canvas) {
   let dirty = false;
   let last = null;
 
+  let cssW = 0, cssH = 0;
+  // Ajusta el lienzo a su tamaño en pantalla; si ya hay trazos (p. ej. al girar el teléfono) se conservan
+  // escalados, en lugar de quedar desfasados respecto al dedo
   const resize = () => {
     const ratio = window.devicePixelRatio || 1;
     const { width, height } = canvas.getBoundingClientRect();
+    if (!width || !height || (width === cssW && height === cssH)) return;
+    const prev = dirty && cssW ? Object.assign(document.createElement('canvas'), { width: canvas.width, height: canvas.height }) : null;
+    prev?.getContext('2d').drawImage(canvas, 0, 0);
     canvas.width = width * ratio;
     canvas.height = height * ratio;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    if (prev) ctx.drawImage(prev, 0, 0, width, height);
     ctx.lineWidth = 2.4;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#111827';
-    dirty = false;
+    cssW = width;
+    cssH = height;
   };
 
   const point = (e) => {
@@ -49,6 +57,7 @@ export function createSignaturePad(canvas) {
   canvas.addEventListener('pointercancel', end);
 
   requestAnimationFrame(resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
 
   return {
     clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; },
