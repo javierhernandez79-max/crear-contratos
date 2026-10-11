@@ -2741,6 +2741,12 @@ function renderNuevoLote() {
   const emp = empresas.find((p) => p.id === d.empresaId);
   const apos = emp ? emp.apoderados.filter((a) => a.nombre.trim()) : [];
   const tpl = tpls.find((t) => t.id === d.templateId);
+  // Si no hay empresas que elegir, se explica por qué en lugar de dejar la lista vacía
+  const sinEmpresas = empresas.length ? '' : !state.parties.length
+    ? (dbx.isConnected()
+      ? 'El catálogo está vacío en este equipo. Pulsa sincronizar (arriba) o captura las empresas en Catálogo.'
+      : 'Este equipo no está conectado a Dropbox, por eso no tiene el catálogo. Conéctalo en <a href="#/ajustes">Ajustes</a>.')
+    : 'Ninguna empresa del catálogo es persona moral activa marcada como “Empresa del grupo”. Márcala así en <a href="#/catalogo">Catálogo</a>.';
   // Fecha de terminación solo hace falta en contratos por tiempo determinado
   d.missing = d.rawMissing.filter((c) => c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO'));
   const nErr = d.errors ? d.errors.filter((e) => e.length).length : 0;
@@ -2762,6 +2768,7 @@ function renderNuevoLote() {
           <select id="l-per"><option value="">Elige…</option>${PERIODICIDADES.map((p) => `<option ${p === d.periodicidad ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
       </div>
       ${tpls.length ? '' : '<p class="warn-text small">No hay plantillas de trabajo con firmantes “patrón” y “trabajador”. Sincroniza para traer las plantillas marco.</p>'}
+      ${sinEmpresas ? `<div class="banner warn">${icon('alert')} <span>${sinEmpresas}</span></div>` : ''}
       <div class="row wrap">
         <label class="field"><span>Empresa (patrón)</span>
           <select id="l-emp"><option value="">Elige…</option>${empresas.map((p) => `<option value="${p.id}" ${p.id === d.empresaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></label>
