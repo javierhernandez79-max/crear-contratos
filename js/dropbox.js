@@ -124,7 +124,8 @@ export async function disconnect() {
 // Dropbox-API-Arg va en un encabezado HTTP: los caracteres no ASCII (acentos, ñ) deben escaparse.
 const headerJson = (obj) => JSON.stringify(obj).replace(/[\u007f-￿]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
 
-async function call(url, { args, body, headers = {}, argsInHeader = false, raw = false } = {}, retry = true) {
+// Reintentos independientes: un token vencido (401) no debe gastar el reintento por saturación (429)
+async function call(url, { args, body, headers = {}, argsInHeader = false, raw = false } = {}, tries = { auth: 1, rate: 2 }) {
   const h = { Authorization: `Bearer ${await accessToken()}`, ...headers };
   if (cfg.pathRoot) h['Dropbox-API-Path-Root'] = JSON.stringify({ '.tag': 'root', root: cfg.pathRoot });
   let reqBody = body;
@@ -136,10 +137,11 @@ async function call(url, { args, body, headers = {}, argsInHeader = false, raw =
   } catch {
     throw new DropboxError('Sin conexión con Dropbox.', { status: 0 });
   }
-  if (res.status === 401 && retry) { await accessToken(true); return call(url, { args, body, headers, argsInHeader, raw }, false); }
-  if (res.status === 429 && retry) {
+  const again = (t) => call(url, { args, body, headers, argsInHeader, raw }, t);
+  if (res.status === 401 && tries.auth > 0) { await accessToken(true); return again({ ...tries, auth: tries.auth - 1 }); }
+  if (res.status === 429 && tries.rate > 0) {
     await new Promise((r) => setTimeout(r, (Number(res.headers.get('Retry-After')) || 2) * 1000));
-    return call(url, { args, body, headers, argsInHeader, raw }, false);
+    return again({ ...tries, rate: tries.rate - 1 });
   }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -203,8 +205,8 @@ export async function download(path) {
 }
 
 /** `rev` → solo sobrescribe si nadie lo cambió (si no, lanza conflicto). Sin `rev` → archivo nuevo. */
-export function upload(path, data, { rev, overwrite = false, autorename = false } = {}) {
-  const mode = rev ? { '.tag': 'update', update: rev } : overwrite ? { '.tag': 'overwrite' } : { '.tag': 'add' };
+export function upload(path, data, { rev, autorename = false } = {}) {
+  const mode = rev ? { '.tag': 'update', update: rev } : { '.tag': 'add' };
   return call(`${CONTENT}/files/upload`, {
     args: { path: normalizePath(path), mode, autorename, mute: true, strict_conflict: !!rev },
     argsInHeader: true, body: data, headers: { 'Content-Type': 'application/octet-stream' },
@@ -216,14 +218,6 @@ export async function remove(path) {
     await call(`${API}/files/delete_v2`, { args: { path: normalizePath(path) } });
   } catch (err) {
     if (!err.notFound) throw err;
-  }
-}
-
-export async function createFolder(path) {
-  try {
-    await call(`${API}/files/create_folder_v2`, { args: { path: normalizePath(path), autorename: false } });
-  } catch (err) {
-    if (!err.conflict) throw err;
   }
 }
 

@@ -137,6 +137,15 @@ export function applyParty(c, sg, party, apoderado) {
     written.push(key);
   };
   const defs = [...PARTY_VARS, ...(party.kind === 'pm' ? PM_VARS : PF_VARS)];
+  // Al cambiar de empresa a persona (o al revés) se vacían los datos del tipo anterior: si no, el
+  // contrato seguiría mostrando, p. ej., el representante de la empresa que ya no firma
+  for (const [suffix] of party.kind === 'pm' ? PF_VARS : PM_VARS) {
+    const key = `${prefix}_${suffix}`;
+    if (key in c.variables && !defs.some(([s]) => s === suffix)) c.variables[key] = '';
+  }
+  for (const [field, key] of Object.entries(sg.bind || {})) {
+    if (field !== 'prefix' && !defs.some(([s]) => s === field) && key in c.variables) c.variables[key] = '';
+  }
   for (const [suffix, label, type, fn] of defs) {
     set(`${prefix}_${suffix}`, `${label} (${sg.role})`, type, fn(party, apoderado));
   }

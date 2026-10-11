@@ -128,7 +128,9 @@ export async function verifySignature(sig, currentText) {
   const hashOk = md.digest().toHex() === sig.hash;
   const unchanged = sig.signedText === currentText;
   const certValidAtSigning = sig.date >= cert.validity.notBefore.getTime() && sig.date <= cert.validity.notAfter.getTime();
-  return { signatureOk: signatureOk && hashOk, unchanged, certValidAtSigning, valid: signatureOk && hashOk && unchanged && certValidAtSigning };
+  // Los datos del titular se leen del certificado mismo, no de lo guardado junto a la firma (que se puede editar)
+  const info = certInfo(forge, cert);
+  return { signatureOk: signatureOk && hashOk, unchanged, certValidAtSigning, info, valid: signatureOk && hashOk && unchanged && certValidAtSigning };
 }
 
 export const base64ToBlob = (b64, type) => {

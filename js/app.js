@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { TEMPLATES, CLAUSES, CATEGORIES } from './templates.js';
 import {
   uid, VAR_TYPES, slugify, humanize, newContractFromTemplate, syncVarDefs, usedVariables, fill,
-  missingVariables, contentHash, addVersion, layoutSections, ordinal, restoreVersion, logChange, duplicateContract,
+  missingVariables, contentHash, changedSinceSigned, addVersion, layoutSections, ordinal, restoreVersion, logChange, duplicateContract,
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
@@ -15,7 +15,7 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
-import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
+import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
@@ -45,12 +45,26 @@ const state = {
 const STATUS = { borrador: 'Borrador', revision: 'En revisión', aprobado: 'Aprobado', final: 'Firmado' };
 // Nombre para listas y archivos; el título (c.title) es el encabezado impreso del documento
 const nombreDe = (c) => c.etiqueta || fill(c, c.title);
-const statusBadge = (c) => `<span class="badge ${c.status}">${STATUS[c.status] || c.status}</span>`;
+const statusBadge = (c) => `<span class="badge ${esc(c.status)}">${esc(STATUS[c.status] || c.status)}</span>`;
 
 const app = document.getElementById('app');
 const nav = document.getElementById('bottom-nav');
 
 // ---------- Utilidades ----------
+/** Envuelve un manejador asíncrono para que un error (p. ej. sin conexión al cargar un módulo) se avise y no quede mudo. */
+/** Usuario de Dropbox conectado ('' si no hay); whoAmI lo nombra para historiales y mensajes. */
+const cuenta = () => dbx.config()?.account?.name || '';
+const whoAmI = () => cuenta() || 'este equipo';
+const conAviso = (fn) => async (...args) => {
+  try { return await fn(...args); } catch (err) { console.error(err); toast(err.message || 'Ocurrió un error', 'error'); }
+};
+/** Evita que un doble clic ejecute dos veces una acción que crea cosas (contratos, lotes). */
+const enCurso = new Set();
+const sinRepetir = (key, fn) => async (...args) => {
+  if (enCurso.has(key)) return;
+  enCurso.add(key);
+  try { return await fn(...args); } finally { enCurso.delete(key); }
+};
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -180,7 +194,7 @@ async function loadAll() {
 
 async function saveContract(c) {
   c.updatedAt = Date.now();
-  if (dbx.isConnected()) c.updatedBy = dbx.config().account?.name;
+  if (dbx.isConnected()) c.updatedBy = cuenta();
   await db.put('contracts', structuredClone(c));
   await sync.markDirty('contracts', c.id);
   scheduleSync();
@@ -214,7 +228,9 @@ function touched({ log, groupKey, content = true } = {}) {
     logChange(c, `El contrato pasó de "${STATUS[c.status]}" a borrador por una edición`);
     c.status = 'borrador';
     toast('El contrato volvió a borrador: genera una nueva versión para revisión');
-    renderEditorHeader();
+    // Solo la etiqueta de estado: redibujar el encabezado sacaría el cursor del título si se está escribiendo ahí
+    const badge = $('#editor-head .title-meta .badge');
+    if (badge) badge.outerHTML = statusBadge(c); else renderEditorHeader();
   }
   setSaveStatus('Guardando…');
   scheduleSave();
@@ -262,13 +278,14 @@ function renderServicios() {
   const apoSelect = (p, sel, attr) => {
     const apos = p ? p.apoderados.filter((a) => a.nombre.trim()) : [];
     return `<select ${attr} ${p ? '' : 'disabled'}><option value="">${p ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : '—'}</option>
-      ${apos.map((a) => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select>`;
+      ${apos.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select>`;
   };
   const clienteCands = d.cliente ? candidatos(d.cliente, todas, 0.3) : [];
   const clienteOpts = [...clienteCands.map((x) => x.p), ...todas.filter((p) => !clienteCands.some((x) => x.p === p))];
   const manualVars = tpl ? tpl.vars.filter(([k]) => k.startsWith('cliente_')) : [];
   // Quien tenga apoderados en el catálogo debe tener elegido quién firma
   const firmaOk = (p, apoId) => !p || !p.apoderados.some((a) => a.nombre.trim()) || !!apoId;
+  const nCrear = new Set(d.empresas.map((e) => e.partyId || e.nombre)).size;
   const empresasOk = d.empresas.length && d.empresas.every((e) => e.partyId && firmaOk(state.parties.find((p) => p.id === e.partyId), e.apoId));
   // El nombre del Excel viene precargado en la captura manual aunque no se haya tocado el campo
   if (d.clienteModo === 'manual') d.manual.cliente_nombre ??= d.cliente;
@@ -284,7 +301,7 @@ function renderServicios() {
     <section class="card settings-block lote-form">
       <div class="row wrap">
         <label class="field"><span>Plantilla</span>
-          <select id="s-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${t.id}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+          <select id="s-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${esc(t.id)}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Fecha de firma</span><input id="s-fecha" type="date" value="${esc(d.fecha)}"></label>
       </div>
       ${tpls.length ? '' : '<p class="warn-text small">No hay plantilla de servicios con la variable {{servicios}}. Sincroniza para traer la plantilla marco actualizada.</p>'}
@@ -301,7 +318,7 @@ function renderServicios() {
         ${d.clienteModo === 'catalogo' ? `
           <div class="row wrap">
             <label class="field"><span>Cliente</span>
-              <select id="s-cli"><option value="">Elige…</option>${clienteOpts.map((p) => `<option value="${p.id}" ${p.id === d.clienteId ? 'selected' : ''}>${esc(p.nombre)}${p.propia ? ' (empresa del grupo)' : ''}</option>`).join('')}</select></label>
+              <select id="s-cli"><option value="">Elige…</option>${clienteOpts.map((p) => `<option value="${esc(p.id)}" ${p.id === d.clienteId ? 'selected' : ''}>${esc(p.nombre)}${p.propia ? ' (empresa del grupo)' : ''}</option>`).join('')}</select></label>
             <label class="field"><span>Firma por el cliente</span>${apoSelect(cliente, d.clienteApoId, 'id="s-cli-apo"')}</label>
           </div>
           ${!clienteCands.length && d.cliente ? `<p class="warn-text small">No encontré en el catálogo nada parecido a “${esc(d.cliente)}”. Elígelo de la lista o captúralo aquí.</p>` : ''}` : `
@@ -309,7 +326,7 @@ function renderServicios() {
             <label class="field"><span>${esc(label.replace(/\s*\(El “?Cliente”?\)\s*$/i, ''))}</span>
               <input data-man="${k}" ${type === 'date' ? 'type="date"' : ''} value="${esc(d.manual[k] ?? (k === 'cliente_nombre' ? d.cliente : ''))}"></label>`).join('')}</div>`}
       </section>
-      <h4 class="sub">Contratos a crear (${d.empresas.length})</h4>
+      <h4 class="sub">Contratos a crear (${nCrear})</h4>
       ${d.empresas.length ? `
       <div class="card lotes-list serv-list">
         <div class="ll-row ll-head"><span>En el Excel</span><span>Empresa del grupo (prestador)</span><span>Firma</span><span>Servicios</span></div>
@@ -317,8 +334,8 @@ function renderServicios() {
           const p = state.parties.find((x) => x.id === e.partyId);
           return `
         <div class="ll-row">
-          <span><strong>${esc(e.nombre)}</strong>${e.manual ? '<span class="muted small">Elegida a mano</span>' : e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
-          <span><select data-emp="${i}"><option value="">Elige…</option>${grupo.map((g) => `<option value="${g.id}" ${g.id === e.partyId ? 'selected' : ''}>${esc(g.nombre)}</option>`).join('')}</select></span>
+          <span><strong>${esc(e.nombre)}</strong>${d.empresas.findIndex((x) => x.partyId && x.partyId === e.partyId) < i ? '<span class="warn-text small">Misma empresa que otra fila: sus servicios van en un solo contrato</span>' : ''}${e.manual ? '<span class="muted small">Elegida a mano</span>' : e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
+          <span><select data-emp="${i}"><option value="">Elige…</option>${grupo.map((g) => `<option value="${esc(g.id)}" ${g.id === e.partyId ? 'selected' : ''}>${esc(g.nombre)}</option>`).join('')}</select></span>
           <span>${apoSelect(p, e.apoId, `data-apo="${i}"`)}</span>
           <span class="small">${e.conceptos.map(esc).join('<br>')}</span>
         </div>`;
@@ -326,7 +343,7 @@ function renderServicios() {
       </div>` : '<div class="banner warn">No encontré empresas con conceptos en el Excel.</div>'}
       <div class="row wrap lote-actions">
         <a class="btn ghost" href="#/" id="s-cancel">Cancelar</a>
-        <button class="btn primary" id="s-create" ${listo ? '' : 'disabled'}>${icon('check')} Crear ${d.empresas.length} contrato${d.empresas.length === 1 ? '' : 's'}</button>
+        <button class="btn primary" id="s-create" ${listo ? '' : 'disabled'}>${icon('check')} Crear ${nCrear} contrato${nCrear === 1 ? '' : 's'}</button>
       </div>` : ''}`;
 
   const vigenteUnico = (p) => { const v = p?.apoderados.filter((a) => a.nombre.trim() && a.vigente) || []; return v.length === 1 ? v[0].id : ''; };
@@ -374,11 +391,23 @@ function renderServicios() {
   }));
   $$('[data-apo]').forEach((sel) => sel.addEventListener('change', () => { d.empresas[Number(sel.dataset.apo)].apoId = sel.value; renderServicios(); }));
   $('#s-cancel')?.addEventListener('click', () => { state.servDraft = null; });
-  $('#s-create')?.addEventListener('click', crearServicios);
+  $('#s-create')?.addEventListener('click', sinRepetir('servicios', crearServicios));
+}
+
+/** Filas del Excel que apuntan a la misma empresa del grupo se juntan en un solo contrato. */
+function porEmpresa(empresas) {
+  const m = new Map();
+  for (const e of empresas) {
+    const prev = m.get(e.partyId);
+    if (!prev) m.set(e.partyId, { ...e, conceptos: [...e.conceptos] });
+    else for (const c of e.conceptos) if (!prev.conceptos.includes(c)) prev.conceptos.push(c);
+  }
+  return [...m.values()];
 }
 
 async function crearServicios() {
   const d = state.servDraft;
+  if (!d) return;
   const tpl = allTemplates().find((t) => t.id === d.templateId);
   const cliente = d.clienteModo === 'catalogo' ? state.parties.find((p) => p.id === d.clienteId) : null;
   const cliApo = cliente?.apoderados.find((a) => a.id === d.clienteApoId) || null;
@@ -386,7 +415,7 @@ async function crearServicios() {
   const clienteNombre = cliente?.nombre || d.manual.cliente_nombre;
   const grupo = { id: uid(), cliente: clienteNombre, archivo: d.file };
   const creados = [];
-  for (const e of d.empresas) {
+  for (const e of porEmpresa(d.empresas)) {
     const p = state.parties.find((x) => x.id === e.partyId);
     const apo = p.apoderados.find((a) => a.id === e.apoId) || null;
     const c = newContractFromTemplate(tpl);
@@ -448,32 +477,27 @@ function renderServiciosRevision(gid) {
     const faltan = pendientes.reduce((n, c) => n + missingVariables(c).length, 0);
     if (!(await confirmDialog('Aprobar contratos', `${faltan ? `Hay ${faltan} dato(s) sin completar en total; aparecerán entre corchetes. ` : ''}Se generarán el Word y el PDF finales de ${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'}${dbx.isConnected() ? ', se guardarán en Dropbox' : ''} y se descargará un .zip con todos.`, 'Aprobar', 'primary'))) return;
     e.target.disabled = true;
-    const files = [];
+    let ok = 0;
     try {
-      for (const c of pendientes) files.push(...(await approveContract(c, { descargar: false })));
+      for (const c of pendientes) { await approveContract(c, { descargar: false }); ok++; }
+      toast(`${ok} contrato${ok === 1 ? '' : 's'} aprobado${ok === 1 ? '' : 's'}`, 'ok');
     } catch (err) {
       console.error(err);
-      toast(`No se pudo aprobar: ${err.message}`, 'error');
-      return renderServiciosRevision(gid);
+      toast(`No se pudo aprobar${ok ? ` (se aprobaron ${ok})` : ''}: ${err.message}`, 'error');
     }
-    await descargarZipServicios(g, files);
-    toast(`${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'} aprobado${pendientes.length === 1 ? '' : 's'}`, 'ok');
+    // El .zip lleva todos los aprobados del grupo, también los de un intento anterior que falló a medias
+    if (ok) await conAviso(zipAprobados)(g, list);
     renderServiciosRevision(gid);
   });
-  $('#sr-zip')?.addEventListener('click', async () => {
-    const D = await loadDocx();
-    const files = [];
-    for (const c of list.filter((x) => ['aprobado', 'final'].includes(x.status))) {
-      const base = safeName(nombreDe(c));
-      files.push({ name: `${base} - APROBADO.docx`, blob: await buildDocxBlob(D, c, { label: '' }) }, { name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob });
-    }
-    await descargarZipServicios(g, files);
-  });
+  $('#sr-zip')?.addEventListener('click', conAviso(() => zipAprobados(g, list)));
 }
 
-async function descargarZipServicios(g, files) {
+async function zipAprobados(g, list) {
+  const D = await loadDocx();
   const entries = [];
-  for (const f of files) entries.push({ name: f.name, data: new Uint8Array(await f.blob.arrayBuffer()) });
+  for (const c of list.filter((x) => ['aprobado', 'final'].includes(x.status))) {
+    for (const f of await finalFiles(c, D)) entries.push({ name: f.name, data: new Uint8Array(await f.blob.arrayBuffer()) });
+  }
   download(new Blob([buildZip(entries)], { type: 'application/zip' }), `${safeName(`Servicios - ${g.cliente}`)}.zip`);
 }
 
@@ -653,7 +677,7 @@ function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
   const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
-        <div class="ll-row" data-id="${c.id}" tabindex="0" role="link">
+        <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
           <span>${statusBadge(c)}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
@@ -734,9 +758,14 @@ async function contractAction(act, c) {
 }
 
 async function downloadWord(c) {
-  const D = await loadDocx();
-  download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(nombreDe(c))}.docx`);
-  toast('Word descargado', 'ok');
+  try {
+    const D = await loadDocx();
+    download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(nombreDe(c))}.docx`);
+    toast('Word descargado', 'ok');
+  } catch (err) {
+    console.error(err);
+    toast(`No se pudo generar el Word: ${err.message}`, 'error');
+  }
 }
 
 async function exportPdf(c) {
@@ -764,8 +793,10 @@ function renderTemplates() {
   setNav('templates');
   const q = state.tplQuery.toLowerCase();
   const cats = [{ id: 'todas', label: 'Todas' }, ...(state.userTemplates.length ? [{ id: 'mis', label: 'Mis plantillas' }] : []), ...CATEGORIES];
+  if (!cats.some((c) => c.id === state.tplCategory)) state.tplCategory = 'todas';
+  // "Mis plantillas" son las propias (incluidas las marco), sea cual sea su categoría
   const list = allTemplates().filter((t) =>
-    (state.tplCategory === 'todas' || t.category === state.tplCategory) &&
+    (state.tplCategory === 'todas' || (state.tplCategory === 'mis' ? t.custom : t.category === state.tplCategory)) &&
     (!q || (t.name + ' ' + t.description).toLowerCase().includes(q)));
 
   app.innerHTML = `
@@ -778,14 +809,14 @@ function renderTemplates() {
     <div class="toolbar">
       <label class="search">${icon('search')}<input id="tpl-q" type="search" placeholder="Buscar plantilla" value="${esc(state.tplQuery)}"></label>
       <div class="chips">
-        ${cats.map((c) => `<button class="chip ${state.tplCategory === c.id ? 'on' : ''}" data-cat="${c.id}">${esc(c.label)}</button>`).join('')}
+        ${cats.map((c) => `<button class="chip ${state.tplCategory === c.id ? 'on' : ''}" data-cat="${esc(c.id)}">${esc(c.label)}</button>`).join('')}
       </div>
     </div>
     ${list.length ? `
     <div class="card lotes-list tpl-list">
       <div class="ll-row ll-head"><span>Plantilla</span><span>Categoría</span><span>Secciones</span><span>Variables</span><span>Origen</span><span></span></div>
       ${list.map((t) => `
-      <div class="ll-row" data-id="${t.id}" tabindex="0" role="button">
+      <div class="ll-row" data-id="${esc(t.id)}" tabindex="0" role="button">
         <span><strong>${esc(t.name)}</strong><span class="muted small clamp">${esc(t.description)}</span></span>
         <span>${esc(CATEGORIES.find((c) => c.id === t.category)?.label || 'Mis plantillas')}</span>
         <span>${t.sections.length}</span>
@@ -912,7 +943,7 @@ function renderEditorHeader() {
         <span id="save-status" class="muted small">Guardado</span>
       </div>
     </div>
-    <a class="btn primary" href="#/c/${c.id}/documento">${icon('doc')}<span class="hide-xs">Word y PDF</span></a>
+    <a class="btn primary" href="#/c/${esc(c.id)}/documento">${icon('doc')}<span class="hide-xs">Word y PDF</span></a>
     <button class="icon-btn" id="btn-more" aria-label="Más acciones">${icon('more')}</button>`;
   $('#doc-title').addEventListener('input', (e) => {
     c.title = e.target.value;
@@ -1082,7 +1113,7 @@ function numberingControls(t) {
 
 function sectionCard(s, i, n, num = String(i + 1)) {
   return `
-    <article class="card sec-card ${s.kind === 'texto' ? 'is-texto' : ''}" data-id="${s.id}">
+    <article class="card sec-card ${s.kind === 'texto' ? 'is-texto' : ''}" data-id="${esc(s.id)}">
       <div class="sec-head">
         <span class="grip" title="Arrastra para reordenar" aria-hidden="true">${icon('grip')}</span>
         <span class="sec-num">${esc(num)}</span>
@@ -1127,7 +1158,7 @@ function moveSection(from, to) {
   c.sections.splice(to, 0, sec);
   touched({ log: `Movió la sección "${sec.title}" a la posición ${to + 1}` });
   renderSections();
-  $(`.sec-card[data-id="${sec.id}"]`)?.classList.add('flash');
+  $(`.sec-card[data-id="${esc(sec.id)}"]`)?.classList.add('flash');
 }
 
 function enableDrag(list) {
@@ -1136,18 +1167,22 @@ function enableDrag(list) {
     const card = e.target.closest('.sec-card');
     if (card) card.draggable = !!e.target.closest('.grip');
   });
+  // Solo se arrastran secciones tomadas del asa; arrastrar texto seleccionado debe comportarse normal
   list.addEventListener('dragstart', (e) => {
-    const card = e.target.closest('.sec-card');
+    const card = e.target.closest?.('.sec-card');
+    if (!card?.draggable) return;
     dragId = card.dataset.id;
     card.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
   });
   list.addEventListener('dragover', (e) => {
+    if (!dragId) return;
     e.preventDefault();
     const over = e.target.closest('.sec-card');
     $$('.sec-card', list).forEach((c) => c.classList.toggle('drop-target', c === over && over.dataset.id !== dragId));
   });
   list.addEventListener('drop', (e) => {
+    if (!dragId) return;
     e.preventDefault();
     const over = e.target.closest('.sec-card');
     const secs = state.current.sections;
@@ -1307,6 +1342,7 @@ function renderVariables(focusKey) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const label = fd.get('label').trim();
+    if (!label) return toast('Escribe el nombre de la variable', 'error');
     const key = uniqueKey(slugify(label));
     c.varDefs.push({ key, label, type: fd.get('type') });
     c.variables[key] = '';
@@ -1370,7 +1406,7 @@ function signedChangedBanner(c) {
     return `<div class="banner danger">${icon('alert')} <span>El contenido cambió después de firmarse con e.firma. La firma electrónica de ${broken.map((sg) => esc(fill(c, sg.name) || sg.role)).join(', ')} ya no es válida para este texto: deshaz el cambio (restaurando una versión) o firma de nuevo.</span></div>`;
   }
   const hasSigs = Object.keys(c.signatures).length > 0;
-  if (!hasSigs || !c.signedHash || c.signedHash === contentHash(c)) return '';
+  if (!hasSigs || !changedSinceSigned(c)) return '';
   return `<div class="banner danger">${icon('alert')} <span>El contenido cambió después de que se firmó. Considera solicitar las firmas de nuevo.</span></div>`;
 }
 
@@ -1402,7 +1438,7 @@ function renderSigners() {
       ${c.signers.map((sg) => {
         const sig = c.signatures[sg.id];
         return `
-        <div class="card signer" data-id="${sg.id}">
+        <div class="card signer" data-id="${esc(sg.id)}">
           <div class="row">
             <label class="field role"><span>Rol</span><input data-f="role" value="${esc(sg.role)}"></label>
             <label class="field grow"><span>Nombre (admite variables)</span><input data-f="name" value="${esc(sg.name)}" placeholder="{{nombre}} o texto"></label>
@@ -1523,6 +1559,7 @@ async function signFor(sg) {
     },
   });
   if (r.value !== 'ok') return;
+  if (state.current !== c) return toast('El contrato se actualizó desde otro equipo mientras firmabas; vuelve a firmar', 'error');
   if (!Object.keys(c.signatures).length) c.signedHash = contentHash(c);
   c.signatures[sg.id] = { image: pad.toDataURL(), date: Date.now() };
   touched({ log: `Firmó ${fill(c, sg.name) || sg.role}`, content: false });
@@ -1614,6 +1651,8 @@ async function signWithEfirma(sg) {
         btn.textContent = 'Firmando…';
         try {
           const key = await readPrivateKey($('input[name=key]', dlg).files[0], $('input[name=pass]', dlg).value, loaded.cert);
+          // El nombre del firmante forma parte del texto firmado: se fija antes de firmar, no después
+          if (!sg.name.trim()) sg.name = loaded.info.name;
           const text = canonicalText(c);
           const result = await signText(text, loaded.cert, key);
           dlg.signed = { type: 'efirma', date: Date.now(), signedText: text, ...result };
@@ -1629,8 +1668,8 @@ async function signWithEfirma(sg) {
   });
   const signed = r.value === 'ok' && r.dlg.signed;
   if (!signed) return;
+  if (state.current !== c) return toast('El contrato se actualizó desde otro equipo mientras firmabas; vuelve a firmar', 'error');
   c.signatures[sg.id] = signed;
-  if (!sg.name.trim()) sg.name = signed.info.name;
   touched({ log: `Firmó con e.firma ${signed.info.name}${signed.info.rfc ? ` (RFC ${signed.info.rfc})` : ''}, certificado ${signed.info.certNumber}`, content: false });
   renderSigners();
   toast('Firma electrónica avanzada agregada', 'ok');
@@ -1639,7 +1678,8 @@ async function signWithEfirma(sg) {
 async function verifyEfirma(sg) {
   const c = state.current;
   const sig = c.signatures[sg.id];
-  const v = await verifySignature(sig, canonicalText(c));
+  let v;
+  try { v = await verifySignature(sig, canonicalText(c)); } catch (err) { return toast(`No se pudo verificar: ${err.message}`, 'error'); }
   const line = (ok, yes, no) => `<li class="${ok ? 'ok-text' : 'warn-text'}">${icon(ok ? 'check' : 'alert', 'xs')} ${ok ? yes : no}</li>`;
   await modal({
     title: v.valid ? 'Firma válida' : 'La firma no es válida',
@@ -1649,8 +1689,8 @@ async function verifyEfirma(sg) {
         ${line(v.unchanged, 'El contrato no ha cambiado desde que se firmó.', 'El contrato cambió después de la firma.')}
         ${line(v.certValidAtSigning, 'El certificado estaba vigente al momento de firmar.', 'El certificado no estaba vigente al momento de firmar.')}
       </ul>
-      <p class="muted small">Titular: <b>${esc(sig.info.name)}</b>${sig.info.rfc ? ` · RFC ${esc(sig.info.rfc)}` : ''} · Certificado ${esc(sig.info.certNumber)}</p>
-      <p class="muted small">Esta verificación no consulta si el SAT revocó el certificado después de su emisión. Para una validación oficial usa el servicio de verificación del SAT o un prestador de servicios de certificación.</p>`,
+      <p class="muted small">Titular según el certificado: <b>${esc(v.info.name)}</b>${v.info.rfc ? ` · RFC ${esc(v.info.rfc)}` : ''} · Certificado ${esc(v.info.certNumber)} · Emisor: ${esc(v.info.issuer || '—')}</p>
+      <p class="muted small">Esta verificación no valida la cadena del certificado ante el SAT (un certificado hecho por cualquiera pasaría la prueba criptográfica), no comprueba la fecha de firma ni consulta revocaciones. Para una validación oficial usa el servicio de verificación del SAT o un prestador de servicios de certificación.</p>`,
     actions: [{ label: 'Cerrar', value: '', kind: 'primary' }],
   });
 }
@@ -1666,7 +1706,7 @@ function renderVersions() {
     </form>
     <h4 class="sub">Versiones (${c.versions.length})</h4>
     ${c.versions.length ? `<div class="list">${c.versions.map((v) => `
-      <div class="list-item card" data-id="${v.id}">
+      <div class="list-item card" data-id="${esc(v.id)}">
         <div>
           <strong>${esc(v.note)}</strong>
           <p class="muted small">${fmtDateTime(v.date)} · ${v.data.sections.length} secciones</p>
@@ -1784,7 +1824,7 @@ function renderCatalog() {
           const gaps = partyGaps(p);
           const apos = p.apoderados.filter((a) => a.vigente).length;
           return `
-        <div class="ll-row" data-id="${p.id}" tabindex="0" role="link">
+        <div class="ll-row" data-id="${esc(p.id)}" tabindex="0" role="link">
           <span><strong>${esc(p.nombre || 'Sin nombre')}</strong><span class="muted small">${PARTY_KINDS[p.kind]}</span></span>
           <span class="mono small">${esc(p.rfc || 'Sin RFC')}</span>
           <span>${partyBadges(p)}</span>
@@ -1824,7 +1864,11 @@ function renderCatalog() {
   });
   $('#cat-new').addEventListener('click', () => createParty());
   $('#cat-export').addEventListener('click', exportCatalog);
-  $('#cat-import').addEventListener('change', (e) => importCatalog(e.target.files[0]));
+  $('#cat-import').addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    e.target.value = ''; // para poder elegir otra vez el mismo archivo
+    if (f) importCatalog(f);
+  });
 }
 
 /** Ficha de solo lectura con los datos de la parte. */
@@ -1874,7 +1918,7 @@ async function createParty(defaults = {}) {
       <button value="pf" class="menu-item">${icon('user')} Contraparte: persona física</button>
     </div>`,
   });
-  if (!r.value) return null;
+  if (!r.value) { state.returnTo = null; return null; }
   const p = newParty(r.value.startsWith('pm') ? 'pm' : 'pf', r.value === 'pm-grupo');
   Object.assign(p, defaults);
   await saveParty(p);
@@ -2118,7 +2162,7 @@ function partiesBlock(c) {
         const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
         const apo = p?.apoderados.find((a) => a.id === sg.party.apoderadoId);
         return `
-        <div class="party-slot" data-sid="${sg.id}">
+        <div class="party-slot" data-sid="${esc(sg.id)}">
           <div class="party-slot-info">
             <span class="muted small">${esc(sg.role)}</span>
             <strong>${sg.party ? esc(p?.nombre || 'Parte eliminada del catálogo') : '<span class="muted">Sin vincular</span>'}</strong>
@@ -2142,7 +2186,7 @@ async function pickParty(sg) {
   const c = state.current;
   const list = sortParties(state.parties.filter((p) => p.activa));
   const item = (p) => `
-    <button value="${p.id}" class="menu-item party-pick" data-search="${esc(`${p.nombre} ${p.rfc}`.toLowerCase())}">
+    <button value="${esc(p.id)}" class="menu-item party-pick" data-search="${esc(`${p.nombre} ${p.rfc}`.toLowerCase())}">
       ${icon(p.kind === 'pm' ? 'building' : 'user')}
       <span><strong>${esc(p.nombre || 'Sin nombre')}</strong><span class="muted small mono">${esc(p.rfc)}</span></span>
     </button>`;
@@ -2185,7 +2229,7 @@ async function linkPartyToSigner(sg, p, apoderadoId) {
         title: `¿Quién firma por ${p.nombre}?`,
         body: apos.length ? `<div class="radio-list">${apos.map((a, i) => `
           <label class="radio-item ${a.vigente ? '' : 'off'}">
-            <input type="radio" name="apo" value="${a.id}" ${i === 0 && a.vigente ? 'checked' : ''} required>
+            <input type="radio" name="apo" value="${esc(a.id)}" ${i === 0 && a.vigente ? 'checked' : ''} required>
             <span><span><strong>${esc(a.nombre)}</strong> · ${esc(a.cargo)}${a.vigente ? '' : ' · <span class="warn-text">poder no vigente</span>'}</span>
             <span class="muted small">${a.poderNumero ? `Escritura ${esc(a.poderNumero)}${a.poderFecha ? ` del ${esc(fmtLongDate(a.poderFecha))}` : ''}` : 'Sin datos del poder'}${a.facultades ? ` · ${esc(a.facultades)}` : ''}</span></span>
           </label>`).join('')}
@@ -2237,7 +2281,7 @@ async function partyAction(act, sg) {
 const syncOpts = {
   loadExcel,
   catalog: { toXlsx: catalogToXlsx, fromXlsx: xlsxToCatalog },
-  who: () => dbx.config()?.account?.name || 'este equipo',
+  who: whoAmI,
   onPartyRenamed: remapPartyId,
 };
 
@@ -2280,6 +2324,8 @@ async function runSync({ manual = false } = {}) {
     setSyncPill('ok', `Última sincronización: ${fmtDateTime(Date.now())}`);
     await applySyncReport(report);
     if (manual) toast('Sincronizado con Dropbox', 'ok');
+    // Lo editado mientras corría la sincronización (y las copias por conflicto) se sube en la siguiente vuelta
+    if ((await sync.syncInfo()).pending) scheduleSync();
   } catch (err) {
     console.error(err);
     syncError = err.message || 'Error al sincronizar';
@@ -2310,7 +2356,8 @@ async function applySyncReport({ changed, conflicts }) {
     toast(`"${cf.title}" se editó en otro equipo al mismo tiempo; tu versión quedó como copia`, 'error');
   }
   // Redibuja la vista actual salvo que el usuario esté escribiendo en una ficha del catálogo
-  const typing = document.activeElement?.matches?.('input, textarea, select') && location.hash.startsWith('#/catalogo/');
+  const typing = document.activeElement?.matches?.('input, textarea, select') &&
+    (location.hash.startsWith('#/catalogo/') || (location.hash.startsWith('#/c/') && !changed.contracts.has(openId)));
   if (!typing) route({ keepScroll: true });
 }
 
@@ -2504,7 +2551,7 @@ async function uploadAnexos(linked) {
     body: `
       <p class="muted small">El archivo se guarda en el expediente de la parte y queda como anexo del contrato.</p>
       <div class="radio-list">
-        ${linked.map(({ sg, p }, i) => `<label class="radio-item"><input type="radio" name="dest" value="${p.id}" ${i === 0 ? 'checked' : ''} required><span><strong>${esc(p.nombre)}</strong><span class="muted small">${esc(sg.role)} · ${esc(expedienteOf(p))}</span></span></label>`).join('')}
+        ${linked.map(({ sg, p }, i) => `<label class="radio-item"><input type="radio" name="dest" value="${esc(p.id)}" ${i === 0 ? 'checked' : ''} required><span><strong>${esc(p.nombre)}</strong><span class="muted small">${esc(sg.role)} · ${esc(expedienteOf(p))}</span></span></label>`).join('')}
         <label class="radio-item"><input type="radio" name="dest" value="__other" ${linked.length ? '' : 'checked'}><span><strong>Otra carpeta…</strong></span></label>
       </div>`,
     actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Elegir archivo', value: 'ok', kind: 'primary' }],
@@ -2527,21 +2574,27 @@ async function uploadAnexos(linked) {
   });
   if (!files.length) return;
   toast(`Subiendo ${files.length} archivo(s)…`);
+  let subidos = 0;
   try {
     for (const f of files) {
       const meta = await dbx.upload(dbx.joinPath(folder, f.name), f, { autorename: true });
       c.anexos.push({ id: uid(), name: meta.name, title: meta.name.replace(/\.[^.]+$/, ''), path: meta.path_display, size: meta.size, addedAt: Date.now() });
+      subidos++;
     }
     if (party && !party.expediente) {
       party.expediente = folder;
       await saveParty(party);
     }
-    touched({ log: `Subió ${files.length} anexo(s) a Dropbox` });
     toast('Archivo(s) subido(s) y agregado(s) como anexo', 'ok');
-    renderAnexos();
   } catch (err) {
     console.error(err);
-    toast(err.message || 'No se pudo subir el archivo', 'error');
+    toast(`${err.message || 'No se pudo subir el archivo'}${subidos ? ` (se subieron ${subidos} de ${files.length})` : ''}`, 'error');
+  } finally {
+    // Lo que sí se subió queda guardado y a la vista aunque otro archivo haya fallado
+    if (subidos) {
+      touched({ log: `Subió ${subidos} anexo(s) a Dropbox` });
+      renderAnexos();
+    }
   }
 }
 
@@ -2597,8 +2650,12 @@ function bindDropboxSettings() {
       const folder = $('#dbx-folder').value;
       if (!appKey) return toast('Escribe la App key de Dropbox', 'error');
       if (!dbx.normalizePath(folder)) return toast('Escribe la carpeta compartida', 'error');
+      // Solo se olvida el estado de sincronización si cambia la app o la carpeta; al reconectar
+      // a lo mismo se conservan los borrados y cambios pendientes (si no, lo borrado volvería)
+      const prev = dbx.config() || {};
+      const changed = prev.appKey !== appKey || dbx.normalizePath(prev.folder) !== dbx.normalizePath(folder);
       await dbx.setOptions({ appKey, folder });
-      await sync.resetState();
+      if (changed) await sync.resetState();
       try { await dbx.startAuth(); } catch (err) { toast(err.message, 'error'); }
     } else if (act === 'sync') {
       await runSync({ manual: true });
@@ -2656,7 +2713,7 @@ async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
     if (p && !p.expediente && !c.carpeta) { p.expediente = expedienteOf(p); await saveParty(p); }
   }
   if (descargar) download(blob, filename);
-  const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: dbx.config()?.account?.name || '', status: c.status };
+  const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: cuenta(), status: c.status };
   c.documentos = [rec, ...(c.documentos || [])];
   return rec;
 }
@@ -2715,7 +2772,7 @@ function renderDocumento() {
     <section class="card form-block">
       <h3>Documentos generados</h3>
       ${c.documentos.length ? `<div class="doc-list">${c.documentos.map((d) => `
-        <div class="doc-item" data-id="${d.id}">
+        <div class="doc-item" data-id="${esc(d.id)}">
           <span class="badge ${d.kind === 'pdf' ? 'final' : 'revision'}">${d.kind === 'pdf' ? 'PDF' : 'Word'}</span>
           <div class="anexo-main"><strong>${esc(d.name)}</strong><span class="muted small">${fmtDateTime(d.date)}${d.by ? ` · ${esc(d.by)}` : ''}${d.path ? '' : ' · solo descargado'}</span></div>
           ${d.path && connected ? '<button class="btn sm" data-wf="open">Abrir</button>' : ''}
@@ -2766,9 +2823,16 @@ async function sendToReview(c, btn) {
   const D = await loadDocx();
   const n = (c.revision || 0) + 1;
   const blob = await buildDocxBlob(D, c, { label: `EN REVISIÓN · v${n}` });
+  // Si la entrega falla (sin conexión, token vencido) el contrato vuelve a como estaba: sin "v2" fantasma
+  const prev = { revision: c.revision, status: c.status, documentos: c.documentos };
   c.revision = n;
   c.status = 'revision';
-  await deliverFile(c, blob, `${safeName(nombreDe(c))} - v${n} revision.docx`, 'docx');
+  try {
+    await deliverFile(c, blob, `${safeName(nombreDe(c))} - v${n} revision.docx`, 'docx');
+  } catch (err) {
+    Object.assign(c, prev);
+    throw err;
+  }
   addVersion(c, `Revisión v${n}`);
   logChange(c, `Generó el Word de revisión v${n}`);
   await saveContract(c);
@@ -2788,27 +2852,31 @@ async function approve(c, btn) {
 }
 
 /** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
+/** Word y PDF finales (sin leyendas) de un contrato aprobado. */
+async function finalFiles(c, D) {
+  const base = safeName(nombreDe(c));
+  return [
+    { name: `${base} - APROBADO.docx`, blob: await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
+    { name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' },
+  ];
+}
+
 async function approveContract(c, { descargar = true } = {}) {
-  const prev = c.status;
+  const prev = { status: c.status, documentos: c.documentos };
   c.status = 'aprobado';
-  const files = [];
+  let files;
   try {
-    const D = await loadDocx();
-    const base = safeName(nombreDe(c));
-    const docx = await buildDocxBlob(D, c, { label: '' });
-    await deliverFile(c, docx, `${base} - APROBADO.docx`, 'docx', { descargar });
-    const { blob } = buildPdf(c);
-    await deliverFile(c, blob, `${base} - APROBADO.pdf`, 'pdf', { descargar });
-    files.push({ name: `${base} - APROBADO.docx`, blob: docx }, { name: `${base} - APROBADO.pdf`, blob });
+    // Primero se generan ambos archivos; así un error en el PDF no deja un Word "aprobado" huérfano
+    files = await finalFiles(c, await loadDocx());
+    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar });
   } catch (err) {
-    c.status = prev;
+    Object.assign(c, prev);
     throw err;
   }
-  c.aprobado = { by: dbx.config()?.account?.name || '', date: Date.now() };
+  c.aprobado = { by: cuenta(), date: Date.now() };
   addVersion(c, 'Aprobado');
   logChange(c, `Aprobó el contrato${c.aprobado.by ? ` (${c.aprobado.by})` : ''}`);
   await saveContract(c);
-  return files;
 }
 
 // ---------- Editor de plantillas ----------
@@ -2867,7 +2935,7 @@ function renderTemplateEditor(id) {
         <div class="form-grid">
           <label class="field"><span>Nombre</span><input data-k="name" value="${esc(t.name)}"></label>
           <label class="field"><span>Categoría</span><select data-k="category">
-            ${[...CATEGORIES, { id: 'mis', label: 'Mis plantillas' }].map((c) => `<option value="${c.id}" ${t.category === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+            ${[...CATEGORIES, { id: 'mis', label: 'Mis plantillas' }].map((c) => `<option value="${esc(c.id)}" ${t.category === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
           </select></label>
         </div>
         <label class="field"><span>Descripción</span><input data-k="description" value="${esc(t.description || '')}"></label>
@@ -2943,13 +3011,15 @@ function renderTemplateEditor(id) {
   const holder = (el) => el.dataset.list ? el : el.closest('[data-list]');
 
   form.addEventListener('change', (e) => {
+    // Al terminar de editar una clave o un texto se recalculan las variables detectadas.
+    // Un solo escucha: antes había dos y los select guardaban y redibujaban dos veces.
     const num = e.target.dataset.num;
-    if (num) { t[num] = e.target.value; rerender(); }
+    if (num) t[num] = e.target.value;
     if (e.target.dataset.k === 'kind') {
       const sec = t.sections[Number(holder(e.target).dataset.i)];
       if (e.target.value === 'texto') sec.kind = 'texto'; else delete sec.kind;
-      rerender();
     }
+    if (num || e.target.dataset.k === '0' || e.target.tagName === 'SELECT') rerender();
   });
   form.addEventListener('input', (e) => {
     const k = e.target.dataset.k;
@@ -2961,10 +3031,6 @@ function renderTemplateEditor(id) {
     if (e.target.tagName === 'TEXTAREA') autosize(e.target);
     status('Guardando…');
     persist();
-  });
-  form.addEventListener('change', (e) => {
-    // Al terminar de editar una clave o un texto se recalculan las variables detectadas
-    if (e.target.dataset.k === '0' || e.target.tagName === 'SELECT') rerender();
   });
   form.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');
@@ -3050,7 +3116,7 @@ async function renderSettings() {
     <section class="card settings-block">
       <h3>Tus datos</h3>
       <p class="muted">${dbx.isConnected() ? 'Tus contratos se guardan en este dispositivo y se sincronizan con la carpeta de Dropbox.' : 'Tus contratos se guardan solo en este dispositivo (no hay servidor ni cuenta).'} ${usage ? esc(usage) + '.' : ''} ${persisted ? 'El almacenamiento está protegido contra limpieza automática.' : ''}</p>
-      <p class="muted small">${state.contracts.length} contratos · ${state.userTemplates.length} plantillas propias · ${state.parties.length} partes en el catálogo</p>
+      <p class="muted small">${state.contracts.length} contratos · ${state.userTemplates.length} plantillas propias · ${state.parties.length} partes en el catálogo · ${state.lotes.length} lotes</p>
       <div class="row wrap">
         <button class="btn" id="export">${icon('pdf')} Exportar respaldo (.json)</button>
         <label class="btn">Importar respaldo<input type="file" id="import" accept="application/json,.json" hidden></label>
@@ -3078,7 +3144,7 @@ async function renderSettings() {
     renderSettings();
   });
   $('#export').addEventListener('click', () => {
-    const data = { app: 'crear-contratos', version: 1, exportedAt: new Date().toISOString(), contracts: state.contracts, templates: state.userTemplates, parties: state.parties };
+    const data = { app: 'crear-contratos', version: 1, exportedAt: new Date().toISOString(), contracts: state.contracts, templates: state.userTemplates, parties: state.parties, lotes: state.lotes };
     download(new Blob([JSON.stringify(data)], { type: 'application/json' }), `respaldo-contratos-${new Date().toISOString().slice(0, 10)}.json`);
     toast('Respaldo descargado', 'ok');
   });
@@ -3089,8 +3155,9 @@ async function renderSettings() {
       const data = JSON.parse(await file.text());
       if (data.app !== 'crear-contratos') throw new Error('formato');
       const n = (data.contracts || []).length;
-      if (!(await confirmDialog('Importar respaldo', `Se importarán ${n} contratos, ${(data.templates || []).length} plantillas y ${(data.parties || []).length} partes del catálogo. Los que tengan el mismo identificador se reemplazarán.`, 'Importar', 'primary'))) return;
+      if (!(await confirmDialog('Importar respaldo', `Se importarán ${n} contratos, ${(data.templates || []).length} plantillas, ${(data.parties || []).length} partes del catálogo y ${(data.lotes || []).length} lotes. Los que tengan el mismo identificador se reemplazarán.`, 'Importar', 'primary'))) return;
       for (const c of data.contracts || []) { await db.put('contracts', c); await sync.markDirty('contracts', c.id); }
+      for (const l of data.lotes || []) { await db.put('lotes', l); await sync.markDirty('lotes', l.id); }
       for (const t of data.templates || []) { await db.put('templates', t); await sync.markDirty('templates', t.id); }
       for (const p of data.parties || []) { await db.put('parties', p); await sync.markDirty('parties', p.id); }
       scheduleSync();
@@ -3102,13 +3169,14 @@ async function renderSettings() {
     }
   });
   $('#wipe').addEventListener('click', async () => {
-    if (!(await confirmDialog('Borrar todos los datos', `Se eliminarán todos los contratos, versiones, firmas, plantillas propias y el catálogo de partes de este dispositivo.${dbx.isConnected() ? ' También se desconectará Dropbox; lo que está en Dropbox no se borra.' : ''} Exporta un respaldo antes si lo necesitas.`, 'Borrar todo'))) return;
+    if (!(await confirmDialog('Borrar todos los datos', `Se eliminarán todos los contratos, versiones, firmas, plantillas propias, el catálogo de partes y los lotes de este dispositivo.${dbx.isConnected() ? ' También se desconectará Dropbox; lo que está en Dropbox no se borra.' : ''} Exporta un respaldo antes si lo necesitas.`, 'Borrar todo'))) return;
     if (dbx.isConnected()) await dbx.disconnect();
     await sync.resetState();
     await db.clear('contracts');
     await db.clear('templates');
     await db.clear('parties');
     await db.clear('lotes');
+    Object.assign(state, { current: null, loteDraft: null, servDraft: null, returnTo: null });
     await loadAll();
     toast('Datos eliminados');
     renderSettings();
@@ -3127,7 +3195,6 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveN
 // hasta que cualquiera de los usuarios lo aprueba; ya aprobado se descarga un .zip con un Word por trabajador.
 const LOTE_STATUS = { revision: 'En revisión', aprobado: 'Aprobado' };
 const loteTemplates = () => allTemplates().filter(isLoteTemplate);
-const whoAmI = () => dbx.config()?.account?.name || 'este equipo';
 
 async function saveLote(l, log) {
   l.updatedAt = Date.now();
@@ -3165,7 +3232,7 @@ function renderLotes() {
       <div class="card lotes-list lote-list">
         <div class="ll-row ll-head"><span>Cliente</span><span>Empresa (patrón)</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
         ${list.map((l) => `
-        <div class="ll-row" data-id="${l.id}" tabindex="0" role="link">
+        <div class="ll-row" data-id="${esc(l.id)}" tabindex="0" role="link">
           <span><strong>${l.cliente ? esc(l.cliente) : '<span class="muted">—</span>'}</strong></span>
           <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
           <span>${l.tipo === 'DETERMINADO' ? 'Determinado' : 'Indeterminado'}</span>
@@ -3261,6 +3328,8 @@ function renderNuevoLote() {
   const nOk = d.workers ? d.workers.length - nErr : 0;
   // Se genera con los trabajadores correctos; los que tienen errores quedan fuera y se reportan
   const ok = nOk > 0 && !d.missing.length;
+  // Todo listo salvo, quizá, el cliente (que se escribe sin redibujar la pantalla)
+  const listo = ok && !!tpl && !!emp && !!d.periodicidad;
   app.innerHTML = `
     <header class="page-head">
       <div>
@@ -3274,7 +3343,7 @@ function renderNuevoLote() {
         <datalist id="l-cli-list">${[...new Set(state.lotes.map((l) => l.cliente).filter(Boolean))].sort().map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       <div class="row wrap">
         <label class="field"><span>Plantilla</span>
-          <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${t.id}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+          <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${esc(t.id)}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Periodicidad de pago</span>
           <select id="l-per"><option value="">Elige…</option>${PERIODICIDADES.map((p) => `<option ${p === d.periodicidad ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
       </div>
@@ -3282,10 +3351,10 @@ function renderNuevoLote() {
       ${sinEmpresas ? `<div class="banner warn">${icon('alert')} <span>${sinEmpresas}</span></div>` : ''}
       <div class="row wrap">
         <label class="field"><span>Empresa (patrón)</span>
-          <select id="l-emp"><option value="">Elige…</option>${empresas.map((p) => `<option value="${p.id}" ${p.id === d.empresaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></label>
+          <select id="l-emp"><option value="">Elige…</option>${empresas.map((p) => `<option value="${esc(p.id)}" ${p.id === d.empresaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></label>
         <label class="field"><span>Firma por la empresa</span>
           <select id="l-apo" ${emp ? '' : 'disabled'}><option value="">${emp ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : 'Primero elige la empresa'}</option>
-          ${apos.map((a) => `<option value="${a.id}" ${a.id === d.apoderadoId ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select></label>
+          ${apos.map((a) => `<option value="${esc(a.id)}" ${a.id === d.apoderadoId ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select></label>
       </div>
       <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Excel P1'}<input type="file" id="l-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
       <p class="muted small">Una fila por trabajador. Además de las columnas de siempre, el P1 debe traer <strong>Lugar de Trabajo</strong>, <strong>Fecha de Firma</strong> y, para tiempo determinado, <strong>Fecha de Terminación</strong>. El género de nacionalidad y estado civil se ajusta según el sexo.</p>
@@ -3309,7 +3378,7 @@ function renderNuevoLote() {
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
     <div class="row wrap lote-actions">
       <a class="btn ghost" href="#/lotes">Cancelar</a>
-      <button class="btn primary" id="l-create" ${ok && tpl && emp && d.periodicidad && d.cliente?.trim() ? '' : 'disabled'} data-ready="${ok && tpl && emp && d.periodicidad ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
+      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() ? '' : 'disabled'} data-ready="${listo ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
     </div>`;
 
   const revalidate = () => {
@@ -3355,14 +3424,13 @@ function renderNuevoLote() {
       toast(`No se pudo leer el Excel: ${err.message}`, 'error');
     }
   });
-  $('#l-create').addEventListener('click', createLote);
+  $('#l-create').addEventListener('click', sinRepetir('lote', createLote));
   $$('[data-edit]').forEach((b) => b.addEventListener('click', () => editLoteRow(Number(b.dataset.edit))));
 }
 
 // Campos del P1 que se pueden corregir en la plataforma (los demás no los usa el contrato)
 const P1_EDIT = ['nombre', 'apPaterno', 'apMaterno', 'nombreCompleto', 'curp', 'rfc', 'nacionalidad', 'sexo', 'estadoCivil', 'calle', 'noExt', 'noInt',
   'colonia', 'municipio', 'cp', 'sueldo', 'sd', 'puesto', 'lugar', 'diasPago', 'tipo', 'antiguedad', 'ingreso', 'fin', 'firma'];
-const P1_DATES = new Set(['antiguedad', 'ingreso', 'fin', 'firma']);
 const normP1 = (v) => String(v ?? '').trim().toUpperCase();
 
 /** Corrige una fila del P1 sin salir de la plataforma; el Excel original no se modifica. */
@@ -3376,10 +3444,18 @@ async function editLoteRow(i) {
     && (c.key in raw || !['nombreCompleto', 'sd', 'sexo'].includes(c.key))
     && !(c.key === 'nombreCompleto' && 'nombre' in raw)
     && !(c.key === 'fin' && !determinado));
-  const val = (c) => (P1_DATES.has(c.key) ? toISODate(raw[c.key]) : raw[c.key] ?? '');
+  // Lo que muestra cada campo: los montos sin "$" ni comas (un input numérico borraría "$12,500.00")
+  const val = (c) => {
+    if (DATE_KEYS.has(c.key)) return toISODate(raw[c.key]);
+    if (['sueldo', 'sd'].includes(c.key)) {
+      const n = typeof raw[c.key] === 'number' ? raw[c.key] : Number(String(raw[c.key] ?? '').replace(/[^0-9.]/g, ''));
+      return raw[c.key] === undefined || raw[c.key] === '' || !Number.isFinite(n) ? '' : String(n);
+    }
+    return raw[c.key] ?? '';
+  };
   const field = (c) => {
     const id = `p1-${c.key}`;
-    const type = P1_DATES.has(c.key) ? 'date' : ['sueldo', 'sd'].includes(c.key) ? 'number' : 'text';
+    const type = DATE_KEYS.has(c.key) ? 'date' : ['sueldo', 'sd'].includes(c.key) ? 'number' : 'text';
     const input = c.key === 'tipo'
       ? `<select name="${c.key}" id="${id}"><option value=""></option>${['INDETERMINADO', 'DETERMINADO'].map((o) => `<option ${normP1(val(c)) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
       : `<input name="${c.key}" id="${id}" type="${type}" ${type === 'number' ? 'step="0.01" min="0"' : ''} value="${esc(val(c))}">`;
@@ -3398,6 +3474,8 @@ async function editLoteRow(i) {
   const next = { ...raw };
   for (const c of cols) {
     const v = (r.data[c.key] ?? '').trim();
+    // Solo se reemplaza lo que el usuario cambió; lo demás conserva el valor original del Excel
+    if (v === String(val(c)).trim()) continue;
     next[c.key] = ['sueldo', 'sd'].includes(c.key) ? (v === '' ? '' : Number(v)) : v;
   }
   d.raw[i] = next;
@@ -3412,6 +3490,7 @@ async function editLoteRow(i) {
 
 async function createLote() {
   const d = state.loteDraft;
+  if (!d) return;
   const tpl = loteTemplates().find((t) => t.id === d.templateId);
   const emp = state.parties.find((p) => p.id === d.empresaId);
   const apo = emp?.apoderados.find((a) => a.id === d.apoderadoId) || null;
@@ -3452,7 +3531,7 @@ function renderLote(id) {
   setNav('lotes');
   const l = state.lotes.find((x) => x.id === id);
   if (!l) { toast('Lote no encontrado', 'error'); return go('#/lotes'); }
-  const gaps = contractGaps(workerContract(l, l.trabajadores[0] || {}));
+  const gaps = missingVariables(workerContract(l, l.trabajadores[0] || {}));
   app.innerHTML = `
     <header class="page-head">
       <div>
@@ -3504,12 +3583,12 @@ function renderLote(id) {
       <button class="btn" id="lote-err-word">${icon('doc')} Word con la lista de errores</button>` : ''}
     ${l.history?.length ? `<h4 class="sub">Historial</h4><ul class="history">${l.history.map((h) => `<li><span class="muted small">${fmtDateTime(h.date)}</span> ${esc(h.by || '')}: ${esc(h.text)}</li>`).join('')}</ul>` : ''}`;
 
-  $$('[data-word]').forEach((b) => b.addEventListener('click', async () => {
+  $$('[data-word]').forEach((b) => b.addEventListener('click', conAviso(async () => {
     const i = Number(b.dataset.word);
     const D = await loadDocx();
     const c = workerContract(l, l.trabajadores[i]);
     download(await buildDocxBlob(D, c, { label: l.status === 'aprobado' ? '' : 'EN REVISIÓN' }), fileNameFor(i, l.trabajadores[i]));
-  }));
+  })));
   $('#lote-approve')?.addEventListener('click', async () => {
     if (gaps.length && !(await confirmDialog('Faltan datos', `Los contratos tienen datos vacíos (${gaps.join(', ')}). ¿Aprobar de todos modos?`, 'Aprobar', 'primary'))) return;
     if (!gaps.length && !(await confirmDialog('Aprobar lote', `Se aprobarán ${l.trabajadores.length} contratos. Después podrás descargar el .zip con las versiones finales.`, 'Aprobar', 'primary'))) return;
@@ -3618,11 +3697,17 @@ function printLote(l) {
   const frame = document.createElement('iframe');
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
   document.body.append(frame);
-  frame.contentWindow.addEventListener('afterprint', () => setTimeout(() => frame.remove(), 500));
-  frame.contentDocument.open();
-  frame.contentDocument.write(html);
-  frame.contentDocument.close();
-  setTimeout(() => { frame.contentWindow.focus(); frame.contentWindow.print(); }, 200);
+  // El escucha de afterprint se agrega ya cargado el documento (document.open() lo borraría) y el
+  // marco se quita al terminar, para no dejar copias ocultas del lote en la página
+  frame.addEventListener('load', () => {
+    const w = frame.contentWindow;
+    const quitar = () => setTimeout(() => frame.remove(), 500);
+    w.addEventListener('afterprint', quitar);
+    w.focus();
+    w.print();
+    setTimeout(() => frame.isConnected && frame.remove(), 60000);
+  }, { once: true });
+  frame.srcdoc = html;
 }
 
 const erroresFileName = (l) => `00 - Errores (${l.excluidos.length} sin contrato).docx`;
@@ -3654,7 +3739,7 @@ async function p1DelLote(d) {
 }
 const p1Blob = (l) => new Blob([fromBase64(l.p1.data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
-async function downloadLoteZip(l) {
+const downloadLoteZip = conAviso(async (l) => {
   if (l.status !== 'aprobado') return toast('El lote aún no está aprobado', 'error');
   const D = await loadDocx();
   const files = [];
@@ -3668,7 +3753,7 @@ async function downloadLoteZip(l) {
   }
   if (l.p1) files.push({ name: `00 - P1 - ${l.p1.name}`, data: fromBase64(l.p1.data) });
   download(new Blob([buildZip(files)], { type: 'application/zip' }), `${safeName(l.title)}.zip`);
-}
+});
 
 (async function init() {
   await loadAll();

@@ -1,6 +1,6 @@
 // Contratos individuales de trabajo en lote a partir del Excel "P1" (una fila = un trabajador).
 // Los trabajadores no entran al catálogo: viven solo en el lote.
-import { newContractFromTemplate, missingVariables } from './model.js';
+import { newContractFromTemplate } from './model.js';
 import { applyParty } from './parties.js';
 
 const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -36,7 +36,7 @@ export const P1_COLUMNS = [
   { key: 'fin', label: 'Fecha de Terminación', aliases: ['fecha de terminacion'], nueva: true },
   { key: 'firma', label: 'Fecha de Firma', aliases: ['fecha de firma'], nueva: true },
 ];
-const DATE_KEYS = new Set(['antiguedad', 'ingreso', 'fin', 'firma']);
+export const DATE_KEYS = new Set(['antiguedad', 'ingreso', 'fin', 'firma']);
 
 export const PERIODICIDADES = ['SEMANAL', 'CATORCENAL', 'QUINCENAL', 'MENSUAL'];
 
@@ -44,12 +44,14 @@ export const PERIODICIDADES = ['SEMANAL', 'CATORCENAL', 'QUINCENAL', 'MENSUAL'];
 const pad = (n) => String(n).padStart(2, '0');
 const isoOf = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 
-function cellValue(v) {
+/** Valor útil de una celda de ExcelJS: fórmulas (su resultado), texto enriquecido, ligas; errores (#N/A) → null. */
+export function cellValue(v) {
   if (v && typeof v === 'object' && !(v instanceof Date)) {
-    if ('result' in v) return cellValue(v.result); // fórmula
-    if (v.richText) return v.richText.map((t) => t.text).join('');
-    if ('text' in v) return v.text;
     if (v.error) return null;
+    if ('formula' in v || 'sharedFormula' in v || 'result' in v) return v.result === undefined ? null : cellValue(v.result);
+    if (v.richText) return v.richText.map((t) => t.text).join('');
+    if ('text' in v) return cellValue(v.text);
+    return null; // objeto desconocido: mejor vacío que "[object Object]" en un contrato
   }
   return v;
 }
@@ -61,10 +63,17 @@ export function toISODate(v) {
   if (typeof v === 'number') return isoOf(new Date(Math.round((v - 25569) * 86400000)));
   const s = String(v).trim();
   let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  if (m) return valida(m[1], m[2], m[3]);
   m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
-  if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  if (m) return valida(m[3], m[2], m[1]);
   return '';
+}
+
+// Rechaza fechas imposibles (31/02) y las capturadas mes/día (12/25/2024): antes pasaban y en el
+// contrato aparecía otra fecha
+function valida(y, mo, d) {
+  const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  return dt.getUTCMonth() === Number(mo) - 1 && dt.getUTCDate() === Number(d) ? isoOf(dt) : '';
 }
 
 const text = (v) => (v === null || v === undefined ? '' : String(v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim());
@@ -113,7 +122,6 @@ export function nacionalidadDe(curp, capturada) {
   return /^EXTRANJER/.test(cap) ? '' : cap;
 }
 
-/** 'F' | 'M' | '' */
 /** Sexo según la CURP: la posición 11 es H (hombre) o M (mujer). '' si no se puede leer. */
 export function sexoDeCurp(curp) {
   const m = /^[A-Z]{4}\d{6}([HM])/.exec(curp || '');
@@ -166,8 +174,12 @@ export function normalizeRow(r) {
   // Salario diario = sueldo mensual bruto / 30 (si no hay sueldo, se usa la columna SD)
   const sueldo = num(r.sueldo);
   const sd = Number.isFinite(sueldo) && sueldo > 0 ? sueldo / 30 : num(r.sd);
+  // Fechas que vienen capturadas pero no se entienden: se reportan en lugar de quedar vacías sin aviso
+  const fechasInvalidas = [...DATE_KEYS].filter((k) => text(r[k]) && !toISODate(r[k]))
+    .map((k) => `${P1_COLUMNS.find((c) => c.key === k).label} no válida (${text(r[k])})`);
   return {
     fila: r.fila,
+    fechasInvalidas,
     nombre: nombre.toUpperCase(),
     sexo,
     nacionalidad: nacionalidadSegunSexo(nacionalidadDe(curp, r.nacionalidad), sexo),
@@ -229,6 +241,20 @@ const LABELS = {
 const RFC_PF = /^[A-ZÑ&]{4}\d{6}[A-Z0-9]{3}$/;
 const CURP = /^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/;
 
+/**
+ * Los 10 primeros caracteres de RFC y CURP coinciden, salvo por palabras altisonantes: RENAPO cambia la
+ * 2ª letra por X y el SAT la 4ª; además la Ñ se escribe X en la CURP. Esas diferencias no son error.
+ */
+function rfcCoincideCurp(rfc, curp) {
+  for (let i = 0; i < 10; i++) {
+    const a = rfc[i], b = curp[i];
+    if (a === b) continue;
+    if (i < 4 && (a === 'X' || b === 'X')) continue;
+    return false;
+  }
+  return true;
+}
+
 /** Errores de cada trabajador para la plantilla elegida (lista vacía = listo). */
 export function validateWorkers(workers, tpl, lote) {
   const needed = new Set(tpl.vars.map(([k]) => k).filter((k) => k in LABELS));
@@ -242,7 +268,8 @@ export function validateWorkers(workers, tpl, lote) {
     if (w.extranjero && !w.nacionalidad) errs.push('Nació en el extranjero (CURP con NE): captura su Nacionalidad');
     if (w.rfc && !RFC_PF.test(w.rfc)) errs.push(`RFC inválido (${w.rfc}): deben ser 13 caracteres`);
     if (w.curp && !CURP.test(w.curp)) errs.push(`CURP inválida (${w.curp})`);
-    if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && w.rfc.slice(0, 10) !== w.curp.slice(0, 10)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
+    for (const f of w.fechasInvalidas || []) errs.push(`${f}: usa día/mes/año`);
+    if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && !rfcCoincideCurp(w.rfc, w.curp)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
     if (w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
     if (tipo === 'DETERMINADO' && w.fin && w.ingreso && w.fin <= w.ingreso) errs.push('La fecha de terminación debe ser posterior a la de ingreso');
     if (w.curp) {
@@ -266,8 +293,6 @@ export function workerContract(lote, w) {
   return c;
 }
 
-/** Variables que el contrato usa y siguen vacías (p. ej. datos faltantes de la empresa en el catálogo). */
-export const contractGaps = (c) => missingVariables(c);
 
 export const fileNameFor = (i, w) => `${String(i + 1).padStart(2, '0')} - ${w.nombre.replace(/[\\/:*?"<>|]/g, '').slice(0, 80)}.docx`;
 
@@ -296,6 +321,7 @@ export async function p1Final(ExcelJS, buffer, { sheetIndex, header, raw, raw0, 
       const v = now[key];
       const iso = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
       cell.value = v === '' ? null : iso ? new Date(`${v}T00:00:00Z`) : v;
+      if (iso) cell.numFmt = 'dd/mm/yyyy'; // ExcelJS usaría el formato de EE. UU. (mm-dd-yy)
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
     }
   }

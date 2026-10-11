@@ -80,19 +80,29 @@ export function usedVariables(c) {
   return used;
 }
 
+/** Redondeo a centavos igual al de la cifra con formato (1.005 → 1.01), para que cifra y letra coincidan. */
+const aCentavos = (n) => Math.sign(n) * Math.round(Number(`${Math.abs(n)}e2`)) / 100;
+
 export function formatValue(def, raw, currency = 'MXN') {
-  if (raw === undefined || raw === null || raw === '') return null;
+  // Un valor de puros espacios cuenta como vacío (si no, no se avisaba como dato faltante)
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
   switch (def?.type) {
     case 'date': {
       const [y, m, d] = String(raw).split('-').map(Number);
       if (!y || !m || !d) return String(raw);
-      return new Date(y, m - 1, d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+      const dt = new Date(y, m - 1, d);
+      // Fechas imposibles (31 de febrero) no se "corrigen" en silencio a otro día
+      if (dt.getMonth() !== m - 1 || dt.getDate() !== d) return String(raw);
+      return dt.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
     }
     case 'money': {
-      const n = Number(String(raw).replace(/[^0-9.-]/g, ''));
-      if (Number.isNaN(n)) return String(raw);
-      // "$150,000.00 (CIENTO CINCUENTA MIL PESOS 00/100 M.N.)"
-      return `${n.toLocaleString('es-MX', { style: 'currency', currency })}${currency === 'MXN' ? '' : ` ${currency}`} (${montoEnLetra(n, currency)})`;
+      const clean = String(raw).replace(/[^0-9.-]/g, '');
+      const n = Number(clean);
+      // Texto que no es cantidad ("N/A", "por definir") se deja tal cual en lugar de convertirse en $0.00
+      if (!/\d/.test(clean) || Number.isNaN(n)) return String(raw);
+      const v = aCentavos(n);
+      // "$150,000.00 (CIENTO CINCUENTA MIL PESOS 00/100 M.N.)"; en otras monedas el formato ya incluye el código
+      return `${v.toLocaleString('es-MX', { style: 'currency', currency })} (${montoEnLetra(v, currency)})`;
     }
     default:
       return String(raw);
@@ -112,8 +122,9 @@ export function fill(c, text, mode = 'text') {
     const key = m[1];
     const def = c.varDefs.find((d) => d.key === key);
     let val = formatValue(def, c.variables[key], c.currency);
-    // En párrafos escritos todo en mayúsculas (proemios de los documentos marco), el dato también
-    if (val !== null && upperLine(text, m.index)) val = val.toLocaleUpperCase('es-MX');
+    // En párrafos escritos todo en mayúsculas (proemios de los documentos marco), el dato también,
+    // salvo correos (en mayúsculas dejan de verse como dirección)
+    if (val !== null && def?.type !== 'email' && upperLine(text, m.index)) val = val.toLocaleUpperCase('es-MX');
     parts.push(val === null
       ? { text: `[${def?.label || humanize(key)}]`, var: key, missing: true }
       : { text: val, var: key });
@@ -136,12 +147,24 @@ export function missingVariables(c) {
   return [...usedVariables(c)].filter((k) => formatValue(c.varDefs.find((d) => d.key === k), c.variables[k]) === null);
 }
 
-/** Huella del contenido final; si cambia después de firmar se avisa al usuario. */
-export function contentHash(c) {
-  const txt = [fill(c, c.title), ...c.sections.map((s) => fill(c, s.title) + '\n' + fill(c, s.body))].join('\n');
+const djb2 = (txt) => {
   let h = 5381;
   for (let i = 0; i < txt.length; i++) h = ((h << 5) + h + txt.charCodeAt(i)) | 0;
   return (h >>> 0).toString(16);
+};
+
+/**
+ * Huella del contenido final; si cambia después de firmar se avisa al usuario. Cubre lo mismo que se
+ * imprime (numeración y firmantes incluidos), por eso usa el texto canónico.
+ */
+export const contentHash = (c) => `v2:${djb2(canonicalText(c))}`;
+
+/** ¿Cambió el contrato desde la primera firma autógrafa? Las firmas viejas usan la huella anterior. */
+export function changedSinceSigned(c) {
+  if (!c.signedHash) return false;
+  if (c.signedHash.startsWith('v2:')) return c.signedHash !== contentHash(c);
+  const legacy = [fill(c, c.title), ...c.sections.map((s) => fill(c, s.title) + '\n' + fill(c, s.body))].join('\n');
+  return c.signedHash !== djb2(legacy);
 }
 
 // ---------- Numeración de cláusulas ----------
@@ -175,7 +198,8 @@ export function layoutSections(c, f = (t) => t) {
     if (c.numeracion !== 'ordinal') return { s, heading: `${n}. ${upper(title)}`, prefix: '' };
     const ord = ordinal(n);
     if (!title) return { s, heading: '', prefix: `${ord}.- ` };
-    if (c.tituloClausula === 'en_linea') return { s, heading: `${ord}. - ${title}${/[.:]$/.test(title) ? '' : '.'}`, prefix: '' };
+    // El punto final se decide con el texto ya llenado: "{{empresa}}" puede terminar en "S.A."
+    if (c.tituloClausula === 'en_linea') return { s, heading: `${ord}. - ${title}${/[.:]$/.test(fill(c, title).trim()) ? '' : '.'}`, prefix: '' };
     return { s, heading: upper(title), prefix: `${ord}.- ` };
   });
 }
@@ -237,10 +261,15 @@ export function logChange(c, text, groupKey) {
 export function duplicateContract(c) {
   const copy = structuredClone(c);
   copy.id = uid();
-  copy.title = `${c.title} (copia)`;
+  // La etiqueta (si existe) es el nombre en las listas; el título es el encabezado impreso
+  if (copy.etiqueta) copy.etiqueta = `${c.etiqueta} (copia)`; else copy.title = `${c.title} (copia)`;
   copy.status = 'borrador';
   copy.signatures = {};
   copy.signedHash = null;
+  delete copy.aprobado;
+  delete copy.grupoServicios;
+  copy.documentos = [];
+  copy.revision = 0;
   copy.versions = [];
   copy.history = [];
   copy.createdAt = copy.updatedAt = Date.now();

@@ -1,6 +1,7 @@
 // Catálogo de partes ⇄ Excel (.xlsx). Recibe ExcelJS como parámetro para usarse en el
 // navegador (vendor/exceljs.min.js, carga diferida) y en Node (generar la plantilla).
 import { newParty, newApoderado, newAccionista, partyKey } from './parties.js';
+import { cellValue, toISODate } from './lote.js';
 
 const SI = 'Sí';
 const NO = 'No';
@@ -116,28 +117,19 @@ export async function catalogToXlsx(ExcelJS, parties) {
 }
 
 // ---------- Lectura ----------
+// Lectura de celdas y fechas compartida con el P1 (lote.js): fórmulas, errores (#N/A) y fechas imposibles
 const cellText = (v) => {
-  if (v === null || v === undefined) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  if (typeof v === 'object') {
-    if ('result' in v) return cellText(v.result); // fórmula
-    if (v.richText) return v.richText.map((t) => t.text).join('');
-    if ('text' in v) return String(v.text); // hipervínculo
-  }
-  return String(v).trim();
+  const x = cellValue(v);
+  if (x === null || x === undefined) return '';
+  return x instanceof Date ? toISODate(x) : String(x).trim();
 };
+// Si la fecha no se entiende se conserva el texto tal cual, para no perder el dato
+const parseDate = (v) => toISODate(cellValue(v)) || cellText(v);
 
-const parseDate = (v) => {
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  const t = cellText(v);
-  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-  m = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
-  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-  return t;
-};
-
-const fromExcel = (type, v) => {
+const fromExcel = (type, v, key) => {
+  // "Empresa del grupo" vacía es No (una contraparte capturada a mano no debe volverse del grupo);
+  // "Activa" y "Vigente" vacías siguen siendo Sí
+  if (type === 'bool' && key === 'propia') return /^(s|si|sí|true|1|x)$/i.test(cellText(v));
   if (type === 'bool') return !/^(no|n|false|0)$/i.test(cellText(v));
   if (type === 'kind') return /^f/i.test(cellText(v)) ? 'pf' : 'pm';
   if (type === 'date') return parseDate(v);
@@ -159,7 +151,7 @@ function readSheet(wb, name, cols) {
       const col = headers[header.toLowerCase()];
       const raw = col ? row.getCell(col).value : null;
       if (cellText(raw)) any = true;
-      obj[key] = col ? fromExcel(type, raw) : undefined;
+      obj[key] = col ? fromExcel(type, raw, key) : undefined;
     }
     if (any) out.push(obj);
   });
@@ -187,6 +179,11 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
 
   for (const row of readSheet(wb, 'Partes', PARTES)) {
     if (!row.nombre) { warnings.push(`Partes, fila ${row._row}: sin nombre, se omitió.`); continue; }
+    // El ID viaja a la pantalla y a rutas: solo se acepta el formato que genera la app
+    if (row.id && !/^[\w-]{1,64}$/.test(row.id)) {
+      warnings.push(`Partes, fila ${row._row}: el ID "${row.id}" no es válido, se asignó uno nuevo.`);
+      row.id = '';
+    }
     const existing = (row.id && byId.get(row.id)) || byKey.get(partyKey(row));
     const p = existing ? structuredClone(existing) : newParty(row.kind, row.propia);
     // El ID del Excel manda (lo escribió la app en algún equipo): así todos usan el mismo
@@ -205,6 +202,9 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
     } else created++;
     p.updatedAt = Date.now();
     if (result.some((x) => x.id === p.id)) { warnings.push(`Partes, fila ${row._row}: "${row.nombre}" está repetida, se usó la última.`); }
+    // Filas repetidas sin ID (mismo RFC o nombre) deben caer en la misma parte, no crear otra
+    byId.set(p.id, p);
+    byKey.set(partyKey(p), p);
     result.push(p);
   }
   const final = new Map(result.map((p) => [p.id, p]));

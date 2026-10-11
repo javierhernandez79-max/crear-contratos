@@ -76,7 +76,13 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
     doc.text('FIRMAS', PAGE.w / 2, y, { align: 'center' });
     y += 8;
     for (let i = 0; i < signers.length; i += 2) {
-      ensure(blockH);
+      // La fila mide según el nombre más largo: con nombres de varias líneas se encimaba con la siguiente
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      const lineas = Math.max(...[signers[i], signers[i + 1]].filter(Boolean)
+        .map((sg) => doc.splitTextToSize(fill(c, sg.name) || '_', colW).length));
+      const rowH = Math.max(blockH, 30 + lineas * 4.5 + 12);
+      ensure(rowH);
       [signers[i], signers[i + 1]].forEach((sg, col) => {
         if (!sg) return;
         const x = M.left + col * (colW + 10);
@@ -93,8 +99,8 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
           doc.text('FIRMA ELECTRÓNICA AVANZADA', bx + 32, y + 7.5, { align: 'center' });
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(7);
-          doc.text(sig.info.rfc ? `RFC ${sig.info.rfc}` : sig.info.name.slice(0, 40), bx + 32, y + 12, { align: 'center' });
-          doc.text(`Cert. ${sig.info.certNumber}`.slice(0, 48), bx + 32, y + 16, { align: 'center' });
+          doc.text(sig.info?.rfc ? `RFC ${sig.info.rfc}` : (sig.info?.name || '').slice(0, 40), bx + 32, y + 12, { align: 'center' });
+          doc.text(`Cert. ${sig.info?.certNumber || ''}`.slice(0, 48), bx + 32, y + 16, { align: 'center' });
           doc.text('Ver constancia anexa', bx + 32, y + 20, { align: 'center' });
           doc.setTextColor(20);
         } else if (sig?.image) {
@@ -113,7 +119,7 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
         if (sig?.date) doc.text(`Firmado: ${fmtDateTime(sig.date)}`, x + colW / 2, y + 34.5 + nameLines.length * 4.5, { align: 'center' });
         doc.setTextColor(20);
       });
-      y += blockH;
+      y += rowH;
     }
   }
 
@@ -128,7 +134,7 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10.5);
     c.anexos.forEach((a, i) => {
-      const lines = doc.splitTextToSize(`Anexo ${i + 1}. ${a.title || a.name}`, CONTENT_W);
+      const lines = doc.splitTextToSize(`Anexo ${i + 1}. ${a.title || a.name || ''}`, CONTENT_W);
       ensure(lines.length * LINE);
       doc.text(lines, M.left, y);
       y += lines.length * LINE;

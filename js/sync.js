@@ -17,14 +17,19 @@ import { DROPBOX_EXPEDIENTES } from './config.js';
 export const CATALOG_FILE = 'catalogo-partes.xlsx';
 const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas', lotes: 'datos-app/lotes' };
 
-let state = null; // { id:'sync', items:{contracts:{}, templates:{}}, catalog:{rev, known:[], dirty:[], deleted:[]}, lastSync }
+// { id:'sync', items:{contracts:{}, templates:{}, lotes:{}}, catalog:{rev, known:[], dirty:[], deleted:[], seq}, lastSync }
+// items[store][id] = { rev, dirty, deleted, seq }; seq sube con cada cambio local para detectar
+// ediciones hechas mientras una sincronización está en curso.
+let state = null;
+let loading = null;
 
 async function loadState() {
-  state ??= (await db.get('meta', 'sync')) || null;
-  if (!state) state = { id: 'sync' };
+  // Una sola lectura aunque varias llamadas lleguen a la vez (si no, la segunda pisaría a la primera)
+  if (!state) state = await (loading ??= db.get('meta', 'sync').then((s) => s || { id: 'sync' }));
   state.items ||= {};
   for (const k of Object.keys(COLLECTIONS)) state.items[k] ||= {};
   state.catalog ||= { rev: null, known: [], dirty: [], deleted: [] };
+  state.catalog.seq ||= 0;
   return state;
 }
 const saveState = () => db.put('meta', structuredClone(state));
@@ -38,6 +43,7 @@ export async function syncInfo() {
 
 /** Olvida todo el estado de sincronización (al desconectar o cambiar de carpeta). */
 export async function resetState() {
+  loading = null;
   state = { id: 'sync' };
   await loadState();
   await saveState();
@@ -50,9 +56,10 @@ export async function markDirty(store, id) {
     const c = state.catalog;
     if (!c.dirty.includes(id)) c.dirty.push(id);
     c.deleted = c.deleted.filter((x) => x !== id);
+    c.seq++;
   } else {
     const m = state.items[store];
-    m[id] = { ...m[id], dirty: true, deleted: false };
+    m[id] = { ...m[id], dirty: true, deleted: false, seq: (m[id]?.seq || 0) + 1 };
   }
   await saveState();
 }
@@ -63,9 +70,11 @@ export async function markDeleted(store, id) {
     const c = state.catalog;
     c.dirty = c.dirty.filter((x) => x !== id);
     if (c.known.includes(id) && !c.deleted.includes(id)) c.deleted.push(id);
+    c.seq++;
   } else {
+    // La marca se guarda aunque nunca se haya subido: una subida en curso podría registrarlo después
     const m = state.items[store];
-    if (m[id]?.rev) m[id] = { ...m[id], dirty: false, deleted: true }; else delete m[id];
+    m[id] = { ...m[id], dirty: false, deleted: true, seq: (m[id]?.seq || 0) + 1 };
   }
   await saveState();
 }
@@ -113,26 +122,57 @@ async function syncCollection(store, folder, report, opts) {
   const local = new Map((await db.getAll(store)).map((x) => [x.id, x]));
   const fileOf = (id) => dbx.joinPath(folder, `${id}.json`);
 
-  const pull = async (id) => {
-    const { data, meta: m } = await dbx.download(fileOf(id));
+  // Tras subir o bajar, el estado se decide con lo que pasó localmente durante la operación
+  const settle = (id, seq0, rev) => {
+    const cur = meta[id] || {};
+    if (cur.deleted) meta[id] = { rev, deleted: true, seq: cur.seq };
+    else if ((cur.seq || 0) !== seq0) meta[id] = { rev, dirty: true, seq: cur.seq };
+    else meta[id] = { rev, seq: cur.seq };
+  };
+  const pull = async (id, file) => {
+    const seq0 = meta[id]?.seq || 0;
+    let got = file;
+    if (!got) {
+      try {
+        got = await dbx.download(fileOf(id));
+      } catch (err) {
+        if (!err.notFound) throw err;
+        return null; // se borró entre el listado y la descarga; la siguiente sincronización lo resuelve
+      }
+    }
+    const { data, meta: m } = got;
     const item = dec(data);
+    const cur = meta[id] || {};
+    if (cur.deleted) { meta[id] = { rev: m.rev, deleted: true, seq: cur.seq }; return null; }
+    if ((cur.seq || 0) !== seq0) {
+      // Se editó aquí mientras se descargaba: la versión local queda como copia, como en cualquier conflicto
+      const mine = await db.get(store, id);
+      if (mine) await saveConflictCopy(store, mine, report, opts);
+    }
     await db.put(store, item);
-    meta[id] = { rev: m.rev };
+    meta[id] = { rev: m.rev, seq: cur.seq };
     report.changed[store].add(id);
     return item;
   };
   const push = async (item) => {
     const st = meta[item.id] || {};
+    const seq0 = st.seq || 0;
     const res = await dbx.upload(fileOf(item.id), enc(item), { rev: st.rev && remote.has(item.id) ? st.rev : undefined });
-    meta[item.id] = { rev: res.rev };
+    settle(item.id, seq0, res.rev);
   };
 
-  // Tombstones: borrados aquí → se borran en Dropbox
+  // Tombstones: borrados aquí → se borran en Dropbox, salvo que otro equipo lo haya cambiado después
   for (const [id, st] of Object.entries(meta)) {
     if (!st.deleted) continue;
-    if (remote.has(id)) await dbx.remove(fileOf(id));
+    const r = remote.get(id);
+    if (r && st.rev && r.rev !== st.rev) {
+      // Otro usuario lo editó: se conserva su versión en lugar de borrarla
+      delete meta[id];
+      continue;
+    }
+    if (r) await dbx.remove(fileOf(id));
     remote.delete(id);
-    delete meta[id];
+    if (meta[id]?.seq === st.seq) delete meta[id];
   }
 
   for (const [id, item] of local) {
@@ -149,9 +189,9 @@ async function syncCollection(store, folder, report, opts) {
       if (r && !st.rev) {
         // Existe en Dropbox pero aquí nunca se sincronizó (p. ej. respaldo importado en dos equipos):
         // se queda la versión más reciente
-        const { data } = await dbx.download(fileOf(id));
-        if ((dec(data).updatedAt || 0) >= (item.updatedAt || 0)) { await pull(id); continue; }
-        meta[id] = { rev: r.rev };
+        const file = await dbx.download(fileOf(id));
+        if ((dec(file.data).updatedAt || 0) >= (item.updatedAt || 0)) { await pull(id, file); continue; }
+        meta[id] = { ...meta[id], rev: r.rev };
       }
       try {
         await push(item);
@@ -161,7 +201,8 @@ async function syncCollection(store, folder, report, opts) {
         await pull(id);
       }
     } else if (!r) {
-      // Se borró en otro equipo
+      // Se borró en otro equipo (salvo que aquí se haya editado mientras tanto)
+      if ((meta[id]?.seq || 0) !== (st.seq || 0)) continue;
       await db.remove(store, id);
       delete meta[id];
       report.changed[store].add(id);
@@ -169,7 +210,7 @@ async function syncCollection(store, folder, report, opts) {
       await pull(id);
     }
   }
-  for (const id of remote.keys()) if (!local.has(id)) await pull(id);
+  for (const id of remote.keys()) if (!local.has(id) && !meta[id]?.deleted) await pull(id);
   await saveState();
 }
 
@@ -183,7 +224,7 @@ async function saveConflictCopy(store, item, report, opts) {
     copy.history = [{ date: Date.now(), text: 'Copia creada porque el contrato se editó en otro equipo al mismo tiempo' }, ...(copy.history || [])];
   } else copy.name = `${item.name} (copia en conflicto de ${who})`;
   await db.put(store, copy);
-  state.items[store][copy.id] = { dirty: true };
+  state.items[store][copy.id] = { dirty: true, seq: 1 };
   report.changed[store].add(copy.id);
   report.conflicts.push({ store, title: store === 'templates' ? item.name : item.title, copyId: copy.id });
 }
@@ -194,6 +235,7 @@ async function syncCatalog(root, opts, report) {
   const path = dbx.joinPath(root, CATALOG_FILE);
   for (let attempt = 0; attempt < 3; attempt++) {
     const meta = await dbx.getMetadata(path);
+    let seq0 = st.seq;
     let local = await db.getAll('parties');
     const dirty = new Set(st.dirty);
     const deleted = new Set(st.deleted);
@@ -214,7 +256,8 @@ async function syncCatalog(root, opts, report) {
       }
       if (missingIds) forceUpload = true; // escribir los ID nuevos en el Excel
       for (const rp of remote) {
-        if (dirty.has(rp.id) || deleted.has(rp.id)) continue; // gana el cambio local pendiente
+        // Gana el cambio local pendiente, también el hecho mientras se descargaba el Excel
+        if (dirty.has(rp.id) || deleted.has(rp.id) || st.dirty.includes(rp.id) || st.deleted.includes(rp.id)) continue;
         await db.put('parties', rp);
         report.changed.parties.add(rp.id);
       }
@@ -229,7 +272,9 @@ async function syncCatalog(root, opts, report) {
       }
       st.rev = meta.rev;
       st.known = [...remoteIds];
-      st.dirty = [...dirty];
+      // Se suman (no se reemplazan) las marcas que llegaron durante la descarga
+      st.dirty = [...new Set([...st.dirty.filter((id) => !renamedIds.has(id)), ...dirty])];
+      seq0 = st.seq;
       local = await db.getAll('parties');
     }
 
@@ -241,8 +286,8 @@ async function syncCatalog(root, opts, report) {
       const res = await dbx.upload(path, buf, { rev: meta ? st.rev : undefined });
       st.rev = res.rev;
       st.known = local.map((p) => p.id);
-      st.dirty = [];
-      st.deleted = [];
+      // Si algo cambió mientras se armaba y subía el Excel, las marcas se quedan para la siguiente vez
+      if (st.seq === seq0) { st.dirty = []; st.deleted = []; }
       break;
     } catch (err) {
       if (!err.conflict) throw err;

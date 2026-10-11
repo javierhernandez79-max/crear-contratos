@@ -59,12 +59,14 @@ const MONEDAS = {
 
 /** "CIENTO CINCUENTA MIL PESOS 00/100 M.N." */
 export function montoEnLetra(monto, moneda = 'MXN') {
-  const total = Math.round(Math.abs(Number(monto)) * 100);
+  // Mismo redondeo que la cifra con formato: 1.005 → 1.01 (×100 en binario daría 100.4999…)
+  const total = Math.round(Number(`${Math.abs(Number(monto))}e2`));
   const enteros = Math.floor(total / 100);
   const centavos = String(total % 100).padStart(2, '0');
   const [sing, plur, sufijo] = MONEDAS[moneda] || ['', '', moneda];
   const nombre = enteros === 1 ? sing : plur;
   // "UN MILLÓN DE PESOS", "DOS MILLONES DE PESOS"
   const de = /(MILLÓN|MILLONES|BILLÓN|BILLONES)$/.test(enLetras(enteros)) ? ' DE' : '';
-  return `${enLetras(enteros)}${de} ${nombre} ${centavos}/100 ${sufijo}`.replace(/\s+/g, ' ').trim();
+  const signo = Number(monto) < 0 && total ? 'MENOS ' : '';
+  return `${signo}${enLetras(enteros)}${de} ${nombre} ${centavos}/100 ${sufijo}`.replace(/\s+/g, ' ').trim();
 }
