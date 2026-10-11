@@ -17,6 +17,7 @@ import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, contractGaps, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
+import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
 
 // ---------- Estado ----------
 const state = {
@@ -26,6 +27,8 @@ const state = {
   lotes: [],
   loteDraft: null,
   loteQuery: '',
+  vencFilter: 'atender',
+  prefs: { anticipacion: DIAS_DEFAULT },
   partyFilter: 'todas',
   partyQuery: '',
   returnTo: null, // { contractId, signerId } al capturar una parte nueva desde un contrato
@@ -61,6 +64,7 @@ const ICONS = {
   up: '<path d="M18 15l-6-6-6 6"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   print: '<path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/>',
@@ -159,6 +163,7 @@ async function loadAll() {
   state.userTemplates = (await db.getAll('templates')).sort((a, b) => b.createdAt - a.createdAt);
   state.parties = await db.getAll('parties');
   state.lotes = await db.getAll('lotes');
+  state.prefs = { anticipacion: DIAS_DEFAULT, ...((await db.get('meta', 'prefs')) || {}) };
 }
 
 async function saveContract(c) {
@@ -222,11 +227,117 @@ function routeView() {
   if (view === 'catalogo') return id ? renderPartyEditor(id) : renderCatalog();
   if (view === 'lotes') return id === 'nuevo' ? renderNuevoLote() : id ? renderLote(id) : renderLotes();
   if (view === 'ajustes') return renderSettings();
+  if (view === 'vencimientos') return renderVencimientos();
   return renderHome();
 }
 
 function setNav(active) {
   $$('a', nav).forEach((a) => a.classList.toggle('active', a.dataset.nav === active));
+  updateVencBadge();
+}
+
+// ---------- Vencimientos ----------
+const vencimientos = () => listaVencimientos(state.lotes, { hoy: todayISO(), anticipacion: state.prefs.anticipacion });
+
+function updateVencBadge() {
+  const dot = $('#venc-badge');
+  if (!dot) return;
+  const n = porAtender(vencimientos()).length;
+  dot.textContent = n > 99 ? '99+' : n || '';
+  dot.hidden = !n;
+}
+
+function vencBanner() {
+  const pend = porAtender(vencimientos());
+  if (!pend.length) return '';
+  const venc = pend.filter((v) => v.nivel === 'vencido').length;
+  return `<a class="banner ${venc ? 'danger' : 'warn'} banner-link" href="#/vencimientos">${icon('bell')} <span>${pend.length} contrato${pend.length === 1 ? '' : 's'} de trabajo por atender${venc ? ` (${venc} ya vencido${venc === 1 ? '' : 's'})` : ''}: vencen en los próximos ${state.prefs.anticipacion} días.</span><strong>Ver</strong></a>`;
+}
+
+function renderVencimientos() {
+  setNav('vencimientos');
+  const todos = vencimientos();
+  const groups = {
+    atender: porAtender(todos),
+    vencidos: todos.filter((v) => !v.seguimiento && v.nivel === 'vencido'),
+    vigentes: todos.filter((v) => !v.seguimiento),
+    atendidos: todos.filter((v) => v.seguimiento),
+  };
+  const list = groups[state.vencFilter] || groups.atender;
+  app.innerHTML = `
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Contratos de trabajo por tiempo determinado</p>
+        <h1>Vencimientos</h1>
+      </div>
+    </header>
+    <div class="toolbar">
+      <div class="chips">
+        ${[['atender', `Por atender (${state.prefs.anticipacion} días)`], ['vencidos', 'Vencidos'], ['vigentes', 'Todos sin atender'], ['atendidos', 'Atendidos']].map(([k, l]) =>
+          `<button class="chip ${state.vencFilter === k ? 'on' : ''}" data-vf="${k}">${l} <span>${groups[k].length}</span></button>`).join('')}
+      </div>
+      <a class="btn ghost sm" href="#/ajustes">Cambiar anticipación</a>
+    </div>
+    ${!todos.length ? `
+      <section class="empty">
+        <div class="empty-art">${icon('bell')}</div>
+        <h2>Sin vencimientos</h2>
+        <p>Aquí aparecen los trabajadores de los lotes aprobados por tiempo determinado, con la Fecha de Terminación del P1. Se avisa desde ${state.prefs.anticipacion} días antes.</p>
+      </section>` : list.length ? `
+      <div class="card lotes-list venc-list">
+        <div class="ll-row ll-head"><span>Trabajador</span><span>Cliente</span><span>Empresa (patrón)</span><span>Termina</span><span>Estado</span><span></span></div>
+        ${list.map((v) => `
+        <div class="ll-row ${v.seguimiento ? '' : `v-${v.nivel}`}" data-lote="${v.loteId}" data-idx="${v.idx}" tabindex="0" role="link">
+          <span><strong>${esc(v.nombre)}</strong><span class="muted small">${esc(v.puesto || '')}${v.curp ? ` · <span class="mono">${esc(v.curp)}</span>` : ''}</span></span>
+          <span>${v.cliente ? esc(v.cliente) : '<span class="muted">—</span>'}</span>
+          <span class="small">${esc(v.empresa)}</span>
+          <span>${esc(fmtLongDate(v.fin))}</span>
+          <span>${v.seguimiento
+            ? `<span class="badge aprobado">${SEGUIMIENTO[v.seguimiento.estado]}</span><span class="muted small">${esc(v.seguimiento.by || '')}${v.seguimiento.nota ? ` · ${esc(v.seguimiento.nota)}` : ''}</span>`
+            : `<span class="venc-dias">${textoDias(v.dias)}</span>`}</span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Ver lote" aria-label="Ver lote">${icon('eye')}</button>
+            ${v.seguimiento
+              ? `<button class="icon-btn sm" data-act="undo" title="Quitar seguimiento" aria-label="Quitar seguimiento">${icon('x')}</button>`
+              : `<button class="icon-btn sm" data-act="done" title="Marcar como atendido" aria-label="Marcar como atendido">${icon('check')}</button>`}
+          </span>
+        </div>`).join('')}
+      </div>` : '<p class="empty-inline">Nada en esta vista.</p>'}`;
+
+  $$('[data-vf]').forEach((b) => b.addEventListener('click', () => { state.vencFilter = b.dataset.vf; renderVencimientos(); }));
+  $$('.venc-list .ll-row[data-lote]').forEach((row) => {
+    const l = state.lotes.find((x) => x.id === row.dataset.lote);
+    const w = l?.trabajadores[Number(row.dataset.idx)];
+    row.addEventListener('click', async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'done') return atenderVencimiento(l, w);
+      if (act === 'undo') {
+        if (!(await confirmDialog('Quitar seguimiento', `${w.nombre} volverá a aparecer en los vencimientos por atender.`, 'Quitar', 'primary'))) return;
+        delete w.seguimiento;
+        await saveLote(l, `Quitó el seguimiento del vencimiento de ${w.nombre}`);
+        return renderVencimientos();
+      }
+      go(`#/lotes/${l.id}`);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/lotes/${l.id}`); });
+  });
+}
+
+async function atenderVencimiento(l, w) {
+  const r = await modal({
+    title: `Vencimiento: ${w.nombre}`,
+    body: `
+      <p class="muted">Su contrato termina el ${esc(fmtLongDate(w.fin))}. Al marcarlo como atendido deja de aparecer en los avisos.</p>
+      <label class="field"><span>¿Qué se hizo?</span>
+        <select name="estado">${Object.entries(SEGUIMIENTO).map(([k, t]) => `<option value="${k}">${t}</option>`).join('')}</select></label>
+      <label class="field"><span>Nota (opcional)</span><input name="nota" placeholder="Ej. renovado por 3 meses en el lote de noviembre"></label>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Marcar atendido', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  w.seguimiento = { estado: r.data.estado, nota: r.data.nota.trim(), by: whoAmI(), at: Date.now() };
+  await saveLote(l, `Marcó el vencimiento de ${w.nombre} como ${SEGUIMIENTO[w.seguimiento.estado].toLowerCase()}`);
+  toast('Vencimiento atendido', 'ok');
+  renderVencimientos();
 }
 
 // ---------- Inicio: mis contratos ----------
@@ -253,6 +364,7 @@ function renderHome() {
       </div>
       <a href="#/plantillas" class="btn primary hide-sm">${icon('plus')} Nuevo contrato</a>
     </header>
+    ${vencBanner()}
     ${state.contracts.length ? `
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar contrato" value="${esc(state.homeQuery)}"></label>
@@ -2659,6 +2771,14 @@ async function renderSettings() {
     </section>
     ${await dropboxSettingsHTML()}
     <section class="card settings-block">
+      <h3>Vencimientos</h3>
+      <p class="muted">Avisar de los contratos de trabajo por tiempo determinado que terminan dentro de estos días. Se guarda en este equipo.</p>
+      <div class="row">
+        <label class="field inline"><span>Anticipación</span><input id="pref-dias" type="number" min="1" max="365" value="${state.prefs.anticipacion}" style="width:90px"></label>
+        <span class="muted small">días (por omisión ${DIAS_DEFAULT})</span>
+      </div>
+    </section>
+    <section class="card settings-block">
       <h3>Tus datos</h3>
       <p class="muted">${dbx.isConnected() ? 'Tus contratos se guardan en este dispositivo y se sincronizan con la carpeta de Dropbox.' : 'Tus contratos se guardan solo en este dispositivo (no hay servidor ni cuenta).'} ${usage ? esc(usage) + '.' : ''} ${persisted ? 'El almacenamiento está protegido contra limpieza automática.' : ''}</p>
       <p class="muted small">${state.contracts.length} contratos · ${state.userTemplates.length} plantillas propias · ${state.parties.length} partes en el catálogo</p>
@@ -2674,6 +2794,14 @@ async function renderSettings() {
     </section>`;
 
   bindDropboxSettings();
+  $('#pref-dias').addEventListener('change', async (e) => {
+    const n = Math.round(Number(e.target.value));
+    if (!(n >= 1 && n <= 365)) { e.target.value = state.prefs.anticipacion; return toast('Escribe un número de días entre 1 y 365', 'error'); }
+    state.prefs.anticipacion = n;
+    await db.put('meta', { id: 'prefs', ...state.prefs });
+    updateVencBadge();
+    toast(`Se avisará con ${n} días de anticipación`, 'ok');
+  });
   $('#install')?.addEventListener('click', async () => {
     state.installPrompt.prompt();
     await state.installPrompt.userChoice;
@@ -2759,6 +2887,7 @@ function renderLotes() {
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </div>
     </header>
+    ${vencBanner()}
     ${state.lotes.length ? `
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="lote-q" type="search" placeholder="Buscar por cliente o empresa" value="${esc(state.loteQuery)}"></label>
