@@ -2675,7 +2675,7 @@ function renderLotes() {
         <h1>Lotes</h1>
       </div>
       <div class="row">
-        <button class="btn" id="p1-blank">${icon('download')}<span class="hide-xs">Columnas del P1</span></button>
+        <button class="btn" id="p1-blank">${icon('download')}<span class="hide-xs">Descargar P1</span></button>
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </div>
     </header>
@@ -2698,7 +2698,22 @@ function renderLotes() {
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </section>`}`;
   $$('.lote-card').forEach((card) => card.addEventListener('click', () => go(`#/lotes/${card.dataset.id}`)));
-  $('#p1-blank').addEventListener('click', downloadP1Columns);
+  $('#p1-blank').addEventListener('click', downloadP1);
+}
+
+// Plantilla oficial del P1 en Dropbox; se puede editar ahí sin tocar la app
+const P1_PATH = 'PLANTILLAS MARCO/P1 - plantilla.xlsx';
+async function downloadP1() {
+  if (dbx.isConnected()) {
+    try {
+      const { data } = await dbx.download(dbx.joinPath(dbx.config().folder, P1_PATH));
+      return download(new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'P1 - plantilla.xlsx');
+    } catch (err) {
+      if (!err.notFound) { toast(err.message, 'error'); return; }
+      toast(`No está ${P1_PATH} en Dropbox; se descarga uno solo con encabezados`);
+    }
+  }
+  return downloadP1Columns();
 }
 
 /** Excel vacío con las columnas que lee la app (las nuevas resaltadas). */
