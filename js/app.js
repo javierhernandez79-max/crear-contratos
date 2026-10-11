@@ -418,6 +418,7 @@ function contractRow(c) {
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
             <button class="icon-btn sm" data-act="open" title="Editar" aria-label="Editar">${icon('pen')}</button>
+            <button class="icon-btn sm" data-act="download" title="Descargar Word o PDF" aria-label="Descargar">${icon('download')}</button>
             <button class="icon-btn sm danger" data-act="del" title="Eliminar" aria-label="Eliminar">${icon('trash')}</button>
             <button class="icon-btn sm" data-act="menu" title="Más acciones" aria-label="Más acciones">${icon('more')}</button>
           </span>
@@ -447,6 +448,19 @@ async function contractAction(act, c) {
     return;
   }
   if (act === 'pdf') return exportPdf(c);
+  if (act === 'word') return downloadWord(c);
+  if (act === 'download') {
+    const r = await modal({
+      title: `Descargar: ${fill(c, c.title)}`,
+      body: `<p class="muted small">${['aprobado', 'final'].includes(c.status) ? 'Versión final.' : 'Sale marcado como borrador hasta que el contrato se apruebe.'}</p>
+        <div class="menu-list">
+          <button value="word" class="menu-item">${icon('doc')} Word (.docx)</button>
+          <button value="pdf" class="menu-item">${icon('pdf')} PDF</button>
+        </div>`,
+    });
+    if (r.value) return contractAction(r.value, c);
+    return;
+  }
   if (act === 'dup') {
     const copy = duplicateContract(c);
     await saveContract(copy);
@@ -473,6 +487,12 @@ async function contractAction(act, c) {
     toast('Contrato eliminado');
     if (state.current?.id === c.id) { state.current = null; go('#/'); } else renderHome();
   }
+}
+
+async function downloadWord(c) {
+  const D = await loadDocx();
+  download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(fill(c, c.title))}.docx`);
+  toast('Word descargado', 'ok');
 }
 
 async function exportPdf(c) {
@@ -2471,11 +2491,7 @@ function renderDocumento() {
       if (act === 'review') return await sendToReview(c, btn);
       if (act === 'approve') return await approve(c, btn);
       if (act === 'pdf') return exportPdf(c);
-      if (act === 'word') {
-        const D = await loadDocx();
-        download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(fill(c, c.title))}.docx`);
-        return toast('Word descargado', 'ok');
-      }
+      if (act === 'word') return downloadWord(c);
       if (act === 'open') return openDropboxFile(c.documentos.find((d) => d.id === btn.closest('.doc-item').dataset.id).path);
       if (act === 'folder') {
         await loadExpedienteFolders();
@@ -2906,6 +2922,9 @@ function renderLotes() {
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar resumen y contratos" aria-label="Visualizar">${icon('eye')}</button>
             <button class="icon-btn sm" data-act="print" title="Imprimir resumen y contratos" aria-label="Imprimir">${icon('print')}</button>
+            ${l.status === 'aprobado'
+              ? `<button class="icon-btn sm" data-act="zip" title="Descargar .zip con los contratos" aria-label="Descargar .zip">${icon('download')}</button>`
+              : `<button class="icon-btn sm" disabled title="El .zip se descarga cuando el lote esté aprobado" aria-label="Descargar .zip (requiere aprobación)">${icon('download')}</button>`}
             <button class="icon-btn sm danger" data-act="del" title="Eliminar lote" aria-label="Eliminar">${icon('trash')}</button>
           </span>
         </div>`).join('')}
@@ -2928,6 +2947,7 @@ function renderLotes() {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'view') return viewLote(l);
       if (act === 'print') return printLote(l);
+      if (act === 'zip') return downloadLoteZip(l);
       if (act === 'del') return deleteLote(l).then((ok) => ok && renderLotes());
       go(`#/lotes/${l.id}`);
     });
