@@ -217,7 +217,7 @@ textarea { resize: vertical; line-height: 1.55; }
   text-overflow: ellipsis;
 }
 .doc-title:focus { background: var(--surface) !important; }
-.title-meta { display: flex; gap: 8px; align-items: center; padding-left: 4px; }
+.title-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding-left: 4px; min-width: 0; }
 .tabs {
   display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none;
   border-bottom: 1px solid var(--border); margin: 4px -16px 16px; padding: 0 12px;

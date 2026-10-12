@@ -1001,7 +1001,10 @@ function renderTemplates() {
   const cats = [{ id: 'todas', label: 'Todas' }, ...(state.userTemplates.length ? [{ id: 'mis', label: 'Mis plantillas' }] : []), ...CATEGORIES];
   if (!cats.some((c) => c.id === state.tplCategory)) state.tplCategory = 'todas';
   // "Mis plantillas" son las propias (incluidas las marco), sea cual sea su categoría
-  const list = allTemplates().filter((t) =>
+  // Los formatos de servicios (F1, F2…) no se muestran: se usan por dentro desde el Sugerido de conceptos;
+  // en la biblioteca queda la plantilla maestra
+  const formatos = allTemplates().filter(codigoFormato);
+  const list = allTemplates().filter((t) => (state.verFormatos || !codigoFormato(t)) &&
     (state.tplCategory === 'todas' || (state.tplCategory === 'mis' ? t.custom : t.category === state.tplCategory)) &&
     (!q || (t.name + ' ' + t.description).toLowerCase().includes(q)));
 
@@ -1037,6 +1040,7 @@ function renderTemplates() {
         </span>
       </div>`).join('')}
     </div>` : '<p class="empty-inline">Sin resultados.</p>'}
+    ${formatos.length ? `<p class="muted small"><button class="link" id="tpl-fmt">${state.verFormatos ? 'Ocultar' : 'Ver'} los ${formatos.length} formatos de servicios</button> (no aparecen en la biblioteca; se asignan desde Servicios desde Sugerido de conceptos).</p>` : ''}
     <p class="disclaimer">Las plantillas son modelos generales de referencia y no sustituyen la asesoría de un abogado. Revisa que el contenido se ajuste a tu caso y a la legislación aplicable.</p>
   `;
   $('#tpl-q').addEventListener('input', (e) => {
@@ -1046,6 +1050,7 @@ function renderTemplates() {
     const el = $('#tpl-q'); el.focus(); el.setSelectionRange(pos, pos);
   });
   $$('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.tplCategory = b.dataset.cat; renderTemplates(); }));
+  $('#tpl-fmt')?.addEventListener('click', () => { state.verFormatos = !state.verFormatos; renderTemplates(); });
   $$('.tpl-list .ll-row[data-id]').forEach((row) => {
     const t = allTemplates().find((x) => x.id === row.dataset.id);
     row.addEventListener('click', (e) => {
