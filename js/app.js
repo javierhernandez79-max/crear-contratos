@@ -3584,8 +3584,7 @@ function renderNuevoLote() {
 
 // Campos del P1 que se pueden corregir en la plataforma (los demás no los usa el contrato)
 const P1_EDIT = ['nombre', 'apPaterno', 'apMaterno', 'nombreCompleto', 'curp', 'rfc', 'nacionalidad', 'sexo', 'estadoCivil', 'calle', 'noExt', 'noInt',
-  'colonia', 'municipio', 'cp', 'sueldo', 'sd', 'puesto', 'lugar', 'diasPago', 'tipo', 'antiguedad', 'ingreso', 'fin', 'firma'];
-const normP1 = (v) => String(v ?? '').trim().toUpperCase();
+  'colonia', 'municipio', 'cp', 'sueldo', 'sd', 'puesto', 'lugar', 'diasPago', 'antiguedad', 'ingreso', 'fin', 'firma'];
 
 /** Corrige una fila del P1 sin salir de la plataforma; el Excel original no se modifica. */
 async function editLoteRow(i) {
@@ -3611,9 +3610,7 @@ async function editLoteRow(i) {
   const field = (c) => {
     const id = `p1-${c.key}`;
     const type = DATE_KEYS.has(c.key) ? 'date' : ['sueldo', 'sd'].includes(c.key) ? 'number' : 'text';
-    const input = c.key === 'tipo'
-      ? `<select name="${c.key}" id="${id}"><option value=""></option>${['INDETERMINADO', 'DETERMINADO'].map((o) => `<option ${normP1(val(c)) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
-      : `<input name="${c.key}" id="${id}" type="${type}" ${type === 'number' ? 'step="0.01" min="0"' : ''} value="${esc(val(c))}">`;
+    const input = `<input name="${c.key}" id="${id}" type="${type}" ${type === 'number' ? 'step="0.01" min="0"' : ''} value="${esc(val(c))}">`;
     return `<label class="field"><span>${esc(c.label)}</span>${input}</label>`;
   };
   const r = await modal({
