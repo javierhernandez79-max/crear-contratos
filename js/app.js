@@ -17,8 +17,8 @@ import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido } from './servicios.js';
-import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios } from './servicios.js';
+import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer } from './extraccion.js';
 
 // ---------- Estado ----------
@@ -203,6 +203,7 @@ async function saveContract(c) {
   const i = state.contracts.findIndex((x) => x.id === c.id);
   if (i >= 0) state.contracts[i] = c; else state.contracts.unshift(c);
   state.contracts.sort((a, b) => b.updatedAt - a.updatedAt);
+  updateVencBadge(); // el aviso de firma de servicios depende del estado del contrato
 }
 
 const setSaveStatus = (txt) => { const el = $('#save-status'); if (el) el.textContent = txt; };
@@ -509,9 +510,33 @@ const vencimientos = () => listaVencimientos(state.lotes, { hoy: todayISO(), ant
 function updateVencBadge() {
   const dot = $('#venc-badge');
   if (!dot) return;
-  const n = porAtender(vencimientos()).length;
+  const n = porAtender(vencimientos()).length + firmasPorAtender(firmasPend()).length;
   dot.textContent = n > 99 ? '99+' : n || '';
   dot.hidden = !n;
+}
+
+// Contratos de servicios: días hábiles desde que se generaron sin marcarse como firmados
+const firmasPend = () => listaFirmasPendientes(state.contracts, { hoy: todayISO(), esServicios: esContratoServicios });
+
+function firmaBanner() {
+  const n = firmasPorAtender(firmasPend()).length;
+  if (!n) return '';
+  return `<a class="banner danger banner-link" href="#/vencimientos">${icon('bell')} <span>${n} contrato${n === 1 ? '' : 's'} de servicios con más de ${PLAZO_FIRMA} días hábiles sin firma del cliente.</span><strong>Ver</strong></a>`;
+}
+
+/** Etiqueta "N días háb. sin firma" para contratos de servicios no firmados. */
+function plazoChip(c) {
+  if (!esContratoServicios(c) || c.alertaFirma?.descartada) return '';
+  const p = plazoFirma(c, todayISO());
+  if (!p) return '';
+  return `<span class="small ${p.atrasado ? 'warn-text' : 'muted'} plazo-chip" title="Generado el ${esc(fmtLongDate(p.inicio))}; el plazo de ${PLAZO_FIRMA} días hábiles se cumple el ${esc(fmtLongDate(p.limite))}">${p.habiles} día${p.habiles === 1 ? '' : 's'} háb. sin firma</span>`;
+}
+
+/** Nombre del cliente (contraparte) de un contrato de servicios. */
+function clienteDe(c) {
+  const sg = c.signers.find((s) => s.bind?.prefix === 'cliente') || c.signers.find((s) => s.party && !state.parties.find((p) => p.id === s.party.id)?.propia);
+  if (!sg) return '';
+  return state.parties.find((p) => p.id === sg.party?.id)?.nombre || fill(c, sg.name);
 }
 
 function vencBanner() {
@@ -531,13 +556,49 @@ function renderVencimientos() {
     atendidos: todos.filter((v) => v.seguimiento),
   };
   const list = groups[state.vencFilter] || groups.atender;
+  const firmas = firmasPend();
+  const fg = {
+    atrasados: firmasPorAtender(firmas),
+    plazo: firmas.filter((x) => !x.atrasado && !x.descartada),
+    descartados: firmas.filter((x) => x.descartada),
+  };
+  const flist = fg[state.firmaFilter || 'atrasados'] || fg.atrasados;
   app.innerHTML = `
     <header class="page-head">
       <div>
-        <p class="eyebrow">Contratos de trabajo por tiempo determinado</p>
+        <p class="eyebrow">Alertas</p>
         <h1>Vencimientos</h1>
       </div>
     </header>
+    <h2 class="section-title">Contratos de servicios sin firma del cliente</h2>
+    <p class="muted small">Se cuentan los días hábiles (lunes a viernes, sin días de descanso obligatorio) desde que se generó el contrato. Pasados ${PLAZO_FIRMA} sin marcarse como firmado, se avisa.</p>
+    <div class="toolbar">
+      <div class="chips">
+        ${[['atrasados', `Más de ${PLAZO_FIRMA} días hábiles`], ['plazo', 'En plazo'], ['descartados', 'Descartados']].map(([k, l]) =>
+          `<button class="chip ${(state.firmaFilter || 'atrasados') === k ? 'on' : ''}" data-ff="${k}">${l} <span>${fg[k].length}</span></button>`).join('')}
+      </div>
+    </div>
+    ${flist.length ? `
+      <div class="card lotes-list firma-list">
+        <div class="ll-row ll-head"><span>Contrato</span><span>Cliente</span><span>Generado</span><span>Días hábiles</span><span>Plazo</span><span></span></div>
+        ${flist.map((x) => `
+        <div class="ll-row ${x.atrasado && !x.descartada ? 'v-vencido' : ''}" data-cid="${esc(x.c.id)}" tabindex="0" role="link">
+          <span><strong>${esc(nombreDe(x.c))}</strong>${statusBadge(x.c)}</span>
+          <span class="small">${esc(clienteDe(x.c)) || '<span class="muted">—</span>'}</span>
+          <span>${esc(fmtLongDate(x.inicio))}</span>
+          <span><span class="venc-dias">${x.habiles}</span></span>
+          <span>${x.descartada
+            ? `<span class="badge aprobado">Descartado</span><span class="muted small">${esc(x.descartada.by || '')}${x.descartada.nota ? ` · ${esc(x.descartada.nota)}` : ''}</span>`
+            : `<span class="small">${x.atrasado ? 'Se cumplió' : 'Se cumple'} el ${esc(fmtLongDate(x.limite))}</span>`}</span>
+          <span class="ll-acts">
+            <button class="icon-btn sm" data-act="view" title="Abrir contrato" aria-label="Abrir contrato">${icon('eye')}</button>
+            ${x.descartada
+              ? `<button class="icon-btn sm" data-act="undo" title="Volver a avisar" aria-label="Volver a avisar">${icon('x')}</button>`
+              : `<button class="icon-btn sm" data-act="discard" title="Descartar aviso" aria-label="Descartar aviso">${icon('check')}</button>`}
+          </span>
+        </div>`).join('')}
+      </div>` : `<p class="empty-inline">${firmas.length ? 'Nada en esta vista.' : 'No hay contratos de servicios pendientes de firma.'}</p>`}
+    <h2 class="section-title">Contratos de trabajo por tiempo determinado</h2>
     <div class="toolbar">
       <div class="chips">
         ${[['atender', `Por atender (${state.prefs.anticipacion} días)`], ['vencidos', 'Vencidos'], ['vigentes', 'Todos sin atender'], ['atendidos', 'Atendidos']].map(([k, l]) =>
@@ -572,6 +633,23 @@ function renderVencimientos() {
       </div>` : '<p class="empty-inline">Nada en esta vista.</p>'}`;
 
   $$('[data-vf]').forEach((b) => b.addEventListener('click', () => { state.vencFilter = b.dataset.vf; renderVencimientos(); }));
+  $$('[data-ff]').forEach((b) => b.addEventListener('click', () => { state.firmaFilter = b.dataset.ff; renderVencimientos(); }));
+  $$('.firma-list .ll-row[data-cid]').forEach((row) => {
+    const c = state.contracts.find((x) => x.id === row.dataset.cid);
+    row.addEventListener('click', async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'discard') return descartarAlertaFirma(c);
+      if (act === 'undo') {
+        delete c.alertaFirma;
+        logChange(c, 'Volvió a activar el aviso de firma del cliente');
+        await saveContract(c);
+        updateVencBadge();
+        return renderVencimientos();
+      }
+      go(`#/c/${c.id}/firmas`);
+    });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/c/${c.id}/firmas`); });
+  });
   $$('.venc-list .ll-row[data-lote]').forEach((row) => {
     const l = state.lotes.find((x) => x.id === row.dataset.lote);
     const w = l?.trabajadores[Number(row.dataset.idx)];
@@ -588,6 +666,23 @@ function renderVencimientos() {
     });
     row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/lotes/${l.id}`); });
   });
+}
+
+async function descartarAlertaFirma(c) {
+  const r = await modal({
+    title: `Descartar aviso: ${nombreDe(c)}`,
+    body: `
+      <p class="muted">Si el cliente ya lo regresó firmado, mejor márcalo como firmado en la pestaña Firmas. Descarta el aviso solo si el contrato ya no se va a firmar.</p>
+      <label class="field"><span>Motivo</span><input name="nota" required placeholder="Ej. el cliente canceló el servicio"></label>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Descartar aviso', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  c.alertaFirma = { descartada: true, nota: r.data.nota.trim(), by: whoAmI(), at: Date.now() };
+  logChange(c, `Descartó el aviso de firma del cliente: ${c.alertaFirma.nota}`);
+  await saveContract(c);
+  updateVencBadge();
+  toast('Aviso descartado', 'ok');
+  renderVencimientos();
 }
 
 async function atenderVencimiento(l, w) {
@@ -635,6 +730,7 @@ function renderHome() {
       </div>
     </header>
     ${vencBanner()}
+    ${firmaBanner()}
     ${state.contracts.length ? `
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar contrato" value="${esc(state.homeQuery)}"></label>
@@ -681,7 +777,7 @@ function contractRow(c) {
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
-          <span>${statusBadge(c)}</span>
+          <span>${statusBadge(c)}${plazoChip(c)}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
@@ -942,6 +1038,7 @@ function renderEditorHeader() {
       <input id="doc-title" class="doc-title" value="${esc(c.title)}" aria-label="Título del contrato">
       <div class="title-meta">
         ${statusBadge(c)}
+        ${plazoChip(c)}
         <span id="save-status" class="muted small">Guardado</span>
       </div>
     </div>
@@ -2978,8 +3075,7 @@ async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
 }
 
 // ---------- Firma remota con DocuSign (contratos de prestación de servicios) ----------
-const esServicios = (c) => c.varDefs?.some((d) => d.key === 'servicios')
-  || (c.signers.some((s) => s.bind?.prefix === 'prestador') && c.signers.some((s) => s.bind?.prefix === 'cliente'));
+const esServicios = esContratoServicios;
 const ENVIO_ABIERTO = ['created', 'sent', 'delivered', 'signed'];
 const revisando = new Set(); // contratos cuyo estado se está consultando
 const ultimaRevision = new Map(); // id → última consulta automática
