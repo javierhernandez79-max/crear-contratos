@@ -29,7 +29,7 @@ export const P1_COLUMNS = [
   { key: 'sd', label: 'SD', aliases: ['sd', 'salario diario'], opcional: true },
   { key: 'puesto', label: 'Puesto', aliases: ['puesto'] },
   { key: 'antiguedad', label: 'Fecha de Antigüedad', aliases: ['fecha de antiguedad'] },
-  { key: 'tipo', label: 'Tipo de Contrato', aliases: ['tipo de contrato'] },
+  // La columna "Tipo de Contrato" no se lee: manda la plantilla elegida al crear el lote
   { key: 'diasPago', label: 'Días de Pago', aliases: ['dias de pago'] },
   { key: 'ingreso', label: 'Fecha de Ingreso', aliases: ['fecha de ingreso'] },
   { key: 'lugar', label: 'Lugar de Trabajo', aliases: ['lugar de trabajo'], nueva: true },
@@ -102,7 +102,7 @@ export function readP1(workbook) {
       // Solo cuentan los renglones con trabajador (debajo puede haber tablas auxiliares)
       if (text(raw.curp) || text(raw.rfc) || text(raw.nombre) || text(raw.nombreCompleto)) rows.push(raw);
     });
-    const missing = P1_COLUMNS.filter((c) => !header[c.key] && !c.opcional && !['nombreCompleto', 'noInt', 'tipo'].includes(c.key)
+    const missing = P1_COLUMNS.filter((c) => !header[c.key] && !c.opcional && !['nombreCompleto', 'noInt'].includes(c.key)
       && !(c.key === 'sueldo' && header.sd)
       && !(c.key === 'nombre' && header.nombreCompleto) && !(['apPaterno', 'apMaterno'].includes(c.key) && header.nombreCompleto));
     return { rows, missing, sheet: ws.name.trim(), sheetIndex: workbook.worksheets.indexOf(ws), header };
@@ -192,7 +192,6 @@ export function normalizeRow(r) {
     lugar: text(r.lugar).toUpperCase(),
     sd: Number.isFinite(sd) && sd > 0 ? Math.round(sd * 100) / 100 : null,
     diasPago: text(r.diasPago),
-    tipo: norm(r.tipo).toUpperCase(),
     antiguedad: toISODate(r.antiguedad),
     ingreso: toISODate(r.ingreso),
     fin: toISODate(r.fin),
@@ -290,7 +289,6 @@ export function validateWorkers(workers, tpl, lote) {
     if (w.curp && !CURP.test(w.curp)) errs.push(`CURP inválida (${w.curp})`);
     for (const f of w.fechasInvalidas || []) if (!comision || f.startsWith('Fecha de Firma')) errs.push(`${f}: usa día/mes/año`);
     if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && !rfcCoincideCurp(w.rfc, w.curp)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
-    if (!comision && w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
     if (tipo === 'DETERMINADO' && w.fin && w.ingreso && w.fin <= w.ingreso) errs.push('La fecha de terminación debe ser posterior a la de ingreso');
     if (w.curp) {
       if (curps.has(w.curp)) errs.push(`CURP repetida (fila ${curps.get(w.curp)})`);
