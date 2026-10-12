@@ -35,6 +35,8 @@ export function newContractFromTemplate(tpl) {
     id: uid(),
     title: tpl.titulo || tpl.name,
     templateId: tpl.id,
+    // Código de formato (F1, F2…): solo para la app, no se imprime
+    ...(tpl.formato ? { formato: String(tpl.formato).trim().toUpperCase() } : {}),
     status: 'borrador',
     varDefs,
     variables,
