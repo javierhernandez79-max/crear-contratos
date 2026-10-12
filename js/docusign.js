@@ -42,8 +42,9 @@ export async function setOptions({ key, env }) {
   await save();
 }
 
-/** La URI de regreso debe registrarse tal cual en la app de DocuSign. */
-export const redirectUri = () => location.origin + location.pathname;
+/** La URI de regreso debe registrarse tal cual en la app de DocuSign: en la raíz va sin "/" final
+ *  (https://…pages.dev), que es como la consola de DocuSign suele guardarla. */
+export const redirectUri = () => location.origin + (location.pathname === '/' ? '' : location.pathname);
 
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 // El "state" de DocuSign empieza con "ds." para no confundir su regreso (?code=…) con el de Dropbox
