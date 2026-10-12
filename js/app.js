@@ -15,7 +15,7 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
-import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, fileNameFor } from './lote.js';
+import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
@@ -3361,7 +3361,7 @@ function renderLotes() {
   app.innerHTML = `
     <header class="page-head">
       <div>
-        <p class="eyebrow">Contratos individuales de trabajo</p>
+        <p class="eyebrow">Contratos de trabajo y de comisión mercantil</p>
         <h1>Lotes</h1>
       </div>
       <div class="row">
@@ -3376,12 +3376,12 @@ function renderLotes() {
       </div>` : ''}
     ${list.length ? `
       <div class="card lotes-list lote-list">
-        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa (patrón)</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
+        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
         ${list.map((l) => `
         <div class="ll-row" data-id="${esc(l.id)}" tabindex="0" role="link">
           <span><strong>${l.cliente ? esc(l.cliente) : '<span class="muted">—</span>'}</strong></span>
           <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
-          <span>${l.tipo === 'DETERMINADO' ? 'Determinado' : 'Indeterminado'}</span>
+          <span>${esc(TIPO_LOTE[l.tipo] || l.tipo)}</span>
           <span>${l.trabajadores.length}${l.excluidos?.length ? `<span class="warn-text small">${l.excluidos.length} con errores</span>` : ''}</span>
           <span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span>${l.status === 'aprobado' ? `<span class="muted small">${esc(l.approvedBy || '')}</span>` : ''}</span>
           <span class="small">${esc(l.createdBy || '')}<span class="muted">${fmtRelative(l.createdAt)}</span></span>
@@ -3397,8 +3397,8 @@ function renderLotes() {
       </div>` : state.lotes.length ? '<p class="empty-inline">No hay lotes que coincidan.</p>' : `
       <section class="empty">
         <div class="empty-art">${icon('users')}</div>
-        <h2>Contratos de trabajo en lote</h2>
-        <p>Sube tu Excel P1 (una fila por trabajador), elige la empresa, quién firma y la plantilla. La app revisa los datos, genera un contrato por trabajador y, cuando alguien del equipo aprueba el lote, descargas todos en un .zip.</p>
+        <h2>Contratos en lote</h2>
+        <p>Sube tu Excel P1 (una fila por persona), elige la empresa, quién firma y la plantilla (trabajo o comisión mercantil). La app revisa los datos, genera un contrato por persona y, cuando alguien del equipo aprueba el lote, descargas todos en un .zip.</p>
         <a class="btn primary" href="#/lotes/nuevo">${icon('plus')} Nuevo lote</a>
       </section>`}`;
   $('#lote-q')?.addEventListener('input', (e) => {
@@ -3469,13 +3469,17 @@ function renderNuevoLote() {
       : 'Este equipo no está conectado a Dropbox, por eso no tiene el catálogo. Conéctalo en <a href="#/ajustes">Ajustes</a>.')
     : 'Ninguna empresa del catálogo es persona moral activa marcada como “Empresa del grupo”. Márcala así en <a href="#/catalogo">Catálogo</a>.';
   // Fecha de terminación solo hace falta en contratos por tiempo determinado
-  d.missing = d.rawMissing.filter((c) => c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO'));
+  const comision = !!tpl && esComision(tpl);
+  // Lugar de firma: solo si la plantilla lo tiene como variable; arranca con el de la plantilla
+  const lugarVar = tpl?.vars.find(([k]) => k === 'lugar_firma');
+  if (lugarVar && d.lugarTpl !== tpl.id) { d.lugarFirma = lugarVar[3] || ''; d.lugarTpl = tpl.id; }
+  d.missing = d.rawMissing.filter((c) => (c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO')) && (!tpl || usaColumna(tpl, c.key)));
   const nErr = d.errors ? d.errors.filter((e) => e.length).length : 0;
   const nOk = d.workers ? d.workers.length - nErr : 0;
   // Se genera con los trabajadores correctos; los que tienen errores quedan fuera y se reportan
   const ok = nOk > 0 && !d.missing.length;
   // Todo listo salvo, quizá, el cliente (que se escribe sin redibujar la pantalla)
-  const listo = ok && !!tpl && !!emp && !!d.periodicidad;
+  const listo = ok && !!tpl && !!emp && (comision || !!d.periodicidad);
   app.innerHTML = `
     <header class="page-head">
       <div>
@@ -3490,41 +3494,44 @@ function renderNuevoLote() {
       <div class="row wrap">
         <label class="field"><span>Plantilla</span>
           <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${esc(t.id)}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Periodicidad de pago</span>
+        <label class="field" ${comision ? 'hidden' : ''}><span>Periodicidad de pago</span>
           <select id="l-per"><option value="">Elige…</option>${PERIODICIDADES.map((p) => `<option ${p === d.periodicidad ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+        ${lugarVar ? `<label class="field"><span>Lugar de firma</span><input id="l-lugar" value="${esc(d.lugarFirma || '')}" placeholder="Ciudad de México"></label>` : ''}
       </div>
-      ${tpls.length ? '' : '<p class="warn-text small">No hay plantillas de trabajo con firmantes “patrón” y “trabajador”. Sincroniza para traer las plantillas marco.</p>'}
+      ${tpls.length ? '' : '<p class="warn-text small">No hay plantillas con firmantes “patrón” y “trabajador” o “comitente” y “comisionista”. Sincroniza para traer las plantillas marco.</p>'}
       ${sinEmpresas ? `<div class="banner warn">${icon('alert')} <span>${sinEmpresas}</span></div>` : ''}
       <div class="row wrap">
-        <label class="field"><span>Empresa (patrón)</span>
+        <label class="field"><span>Empresa (${comision ? 'comitente' : 'patrón'})</span>
           <select id="l-emp"><option value="">Elige…</option>${empresas.map((p) => `<option value="${esc(p.id)}" ${p.id === d.empresaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></label>
         <label class="field"><span>Firma por la empresa</span>
           <select id="l-apo" ${emp ? '' : 'disabled'}><option value="">${emp ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : 'Primero elige la empresa'}</option>
           ${apos.map((a) => `<option value="${esc(a.id)}" ${a.id === d.apoderadoId ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select></label>
       </div>
       <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Excel P1'}<input type="file" id="l-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
-      <p class="muted small">Una fila por trabajador. Además de las columnas de siempre, el P1 debe traer <strong>Lugar de Trabajo</strong>, <strong>Fecha de Firma</strong> y, para tiempo determinado, <strong>Fecha de Terminación</strong>. El género de nacionalidad y estado civil se ajusta según el sexo.</p>
+      <p class="muted small">${comision
+        ? 'Una fila por comisionista. De tu P1 se usan nombre, RFC, CURP (de ahí sale la nacionalidad), domicilio y <strong>Fecha de Firma</strong>; las demás columnas no se piden.'
+        : 'Una fila por trabajador. Además de las columnas de siempre, el P1 debe traer <strong>Lugar de Trabajo</strong>, <strong>Fecha de Firma</strong> y, para tiempo determinado, <strong>Fecha de Terminación</strong>. El género de nacionalidad y estado civil se ajusta según el sexo.'}</p>
     </section>
     ${d.missing.length ? `<div class="banner danger">${icon('alert')} <span>Al Excel le faltan columnas: ${d.missing.map((c) => esc(c.label)).join(', ')}.</span></div>` : ''}
     ${d.workers ? `
       ${tpl ? '' : `<div class="banner warn">${icon('alert')} <span>Elige la plantilla para revisar los datos.</span></div>`}
       ${d.workers.length ? `
-        <div class="banner ${nErr ? 'danger' : 'info'}">${icon(nErr ? 'alert' : 'check')} <span>${d.workers.length} trabajador${d.workers.length === 1 ? '' : 'es'}${nErr ? ` · ${nErr} con errores: no se generará su contrato (quedan en la lista de errores del lote)` : ' · datos completos'}</span></div>
+        <div class="banner ${nErr ? 'danger' : 'info'}">${icon(nErr ? 'alert' : 'check')} <span>${d.workers.length} ${comision ? `comisionista${d.workers.length === 1 ? '' : 's'}` : `trabajador${d.workers.length === 1 ? '' : 'es'}`}${nErr ? ` · ${nErr} con errores: no se generará su contrato (quedan en la lista de errores del lote)` : ' · datos completos'}</span></div>
         <div class="card lote-table">
-          <div class="lt-row lt-head"><span>Fila</span><span>Trabajador</span><span>Puesto</span><span>Salario diario</span><span>Revisión</span></div>
+          <div class="lt-row lt-head"><span>Fila</span><span>${comision ? 'Comisionista' : 'Trabajador'}</span><span>${comision ? 'RFC' : 'Puesto'}</span><span>${comision ? 'Fecha de firma' : 'Salario diario'}</span><span>Revisión</span></div>
           ${d.workers.map((w, i) => `
             <div class="lt-row ${d.errors[i].length ? 'bad' : ''}">
               <span class="muted">${w.fila}</span>
               <span><strong>${esc(w.nombre || '(sin nombre)')}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
-              <span>${esc(w.puesto)}</span>
-              <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>
+              ${comision ? `<span class="mono small">${esc(w.rfc)}</span><span>${esc(fmtLongDate(w.firma)) || '—'}</span>` : `<span>${esc(w.puesto)}</span>
+              <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>`}
               <span class="lt-rev">${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : `<span class="ok-text">Listo${d.editadas?.has(i) ? ' · corregido aquí' : ''}</span>`}
                 <button class="btn sm ${d.errors[i].length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${d.errors[i].length ? 'Corregir' : 'Editar'}</button></span>
             </div>`).join('')}
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
     <div class="row wrap lote-actions">
       <a class="btn ghost" href="#/lotes">Cancelar</a>
-      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() ? '' : 'disabled'} data-ready="${listo ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
+      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() && (!lugarVar || d.lugarFirma?.trim()) ? '' : 'disabled'} data-ready="${listo ? 1 : ''}" data-lugar="${lugarVar ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
     </div>`;
 
   const revalidate = () => {
@@ -3533,13 +3540,14 @@ function renderNuevoLote() {
     renderNuevoLote();
   };
   // Sin re-render al escribir para no perder el foco; solo se habilita o no el botón
-  $('#l-cli').addEventListener('input', (e) => {
-    d.cliente = e.target.value;
+  const habilitar = () => {
     const b = $('#l-create');
-    b.disabled = !(b.dataset.ready && d.cliente.trim());
-  });
+    b.disabled = !(b.dataset.ready && d.cliente?.trim() && (!b.dataset.lugar || d.lugarFirma?.trim()));
+  };
+  $('#l-cli').addEventListener('input', (e) => { d.cliente = e.target.value; habilitar(); });
   $('#l-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; revalidate(); });
   $('#l-per').addEventListener('change', (e) => { d.periodicidad = e.target.value; renderNuevoLote(); });
+  $('#l-lugar')?.addEventListener('input', (e) => { d.lugarFirma = e.target.value.trim(); habilitar(); });
   $('#l-emp').addEventListener('change', (e) => {
     d.empresaId = e.target.value;
     const p = state.parties.find((x) => x.id === d.empresaId);
@@ -3589,7 +3597,8 @@ async function editLoteRow(i) {
   const cols = P1_COLUMNS.filter((c) => P1_EDIT.includes(c.key)
     && (c.key in raw || !['nombreCompleto', 'sd', 'sexo'].includes(c.key))
     && !(c.key === 'nombreCompleto' && 'nombre' in raw)
-    && !(c.key === 'fin' && !determinado));
+    && !(c.key === 'fin' && !determinado)
+    && (!tpl || usaColumna(tpl, c.key)));
   // Lo que muestra cada campo: los montos sin "$" ni comas (un input numérico borraría "$12,500.00")
   const val = (c) => {
     if (DATE_KEYS.has(c.key)) return toISODate(raw[c.key]);
@@ -3640,8 +3649,8 @@ async function createLote() {
   const tpl = loteTemplates().find((t) => t.id === d.templateId);
   const emp = state.parties.find((p) => p.id === d.empresaId);
   const apo = emp?.apoderados.find((a) => a.id === d.apoderadoId) || null;
-  if (!apo && !(await confirmDialog('Sin representante', `No elegiste quién firma por ${emp.nombre}. Los contratos saldrán sin representante del patrón. ¿Continuar?`, 'Continuar', 'primary'))) return;
   const tipo = tipoDePlantilla(tpl);
+  if (!apo && !(await confirmDialog('Sin representante', `No elegiste quién firma por ${emp.nombre}. Los contratos saldrán sin representante ${tipo === 'COMISION' ? 'del comitente' : 'del patrón'}. ¿Continuar?`, 'Continuar', 'primary'))) return;
   const validos = d.workers.filter((w, i) => !d.errors[i].length);
   const excluidos = d.workers.map((w, i) => ({ fila: w.fila, nombre: w.nombre, curp: w.curp, errores: d.errors[i] })).filter((x) => x.errores.length);
   const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -3653,7 +3662,8 @@ async function createLote() {
     title: `${cliente} · ${emp.nombre} · ${validos.length} contrato${validos.length === 1 ? '' : 's'} · ${fecha}`,
     tipo,
     status: 'revision',
-    periodicidad: d.periodicidad,
+    periodicidad: tipo === 'COMISION' ? '' : d.periodicidad,
+    ...(tpl.vars.some(([k]) => k === 'lugar_firma') ? { lugarFirma: d.lugarFirma } : {}),
     archivo: d.file,
     p1: await p1DelLote(d),
     plantilla: structuredClone(tpl),
@@ -3665,7 +3675,7 @@ async function createLote() {
     createdBy: whoAmI(),
     history: [],
   };
-  await saveLote(l, `Creó el lote con ${validos.length} trabajadores (${d.file})${d.editadas?.size ? `; ${d.editadas.size} fila(s) corregida(s) en la plataforma` : ''}${excluidos.length ? `; ${excluidos.length} quedaron fuera por errores` : ''}`);
+  await saveLote(l, `Creó el lote con ${validos.length} ${tipo === 'COMISION' ? 'comisionistas' : 'trabajadores'} (${d.file})${d.editadas?.size ? `; ${d.editadas.size} fila(s) corregida(s) en la plataforma` : ''}${excluidos.length ? `; ${excluidos.length} quedaron fuera por errores` : ''}`);
   state.loteDraft = null;
   toast('Lote enviado a revisión', 'ok');
   go(`#/lotes/${l.id}`);
@@ -3696,19 +3706,19 @@ function renderLote(id) {
     <section class="card settings-block">
       ${l.cliente ? `<p><strong>Cliente:</strong> ${esc(l.cliente)}</p>` : ''}
       <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
-      <p><strong>Patrón:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
-      <p><strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · <strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
+      <p><strong>${l.tipo === 'COMISION' ? 'Comitente' : 'Patrón'}:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
+      <p>${l.periodicidad ? `<strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · ` : ''}${l.lugarFirma ? `<strong>Lugar de firma:</strong> ${esc(l.lugarFirma)} · ` : ''}<strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
       <p class="muted small">Creado por ${esc(l.createdBy || '')} el ${fmtDateTime(l.createdAt)}${l.status === 'aprobado' ? ` · Aprobado por ${esc(l.approvedBy || '')} el ${fmtDateTime(l.approvedAt)}` : ''}</p>
     </section>
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
     ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (cada uno sale marcado “EN REVISIÓN”). Cuando estén bien, cualquiera del equipo puede aprobar el lote.</span></div>` : ''}
     <div class="card lote-table">
-      <div class="lt-row lt-head"><span>#</span><span>Trabajador</span><span>Puesto</span><span>Firma</span><span></span></div>
+      <div class="lt-row lt-head"><span>#</span><span>${l.tipo === 'COMISION' ? 'Comisionista' : 'Trabajador'}</span><span>${l.tipo === 'COMISION' ? 'RFC' : 'Puesto'}</span><span>Firma</span><span></span></div>
       ${l.trabajadores.map((w, i) => `
         <div class="lt-row">
           <span class="muted">${i + 1}</span>
           <span><strong>${esc(w.nombre)}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
-          <span>${esc(w.puesto)}</span>
+          <span${l.tipo === 'COMISION' ? ' class="mono small"' : ''}>${esc(l.tipo === 'COMISION' ? w.rfc : w.puesto)}</span>
           <span>${esc(fmtLongDate(w.firma))}</span>
           <span><button class="btn sm" data-word="${i}">${icon('doc')} Word</button></span>
         </div>`).join('')}
@@ -3770,23 +3780,25 @@ async function deleteLote(l) {
 /** Documento HTML con una hoja de resumen del lote y después cada contrato en página nueva. */
 function loteHTML(l, { toolbar = false } = {}) {
   const enRevision = l.status !== 'aprobado';
-  const filas = l.trabajadores.map((w, i) => `<tr><td>${i + 1}</td><td>${esc(w.nombre)}</td><td>${esc(w.curp)}</td><td>${esc(w.puesto)}</td><td>${esc(fmtLongDate(w.firma))}</td></tr>`).join('');
+  const com = l.tipo === 'COMISION';
+  const filas = l.trabajadores.map((w, i) => `<tr><td>${i + 1}</td><td>${esc(w.nombre)}</td><td>${esc(w.curp)}</td><td>${esc(com ? w.rfc : w.puesto)}</td><td>${esc(fmtLongDate(w.firma))}</td></tr>`).join('');
   const resumen = `
     <section class="pg">
       <h1>${esc(l.title)}</h1>
       <table class="kv">
         ${l.cliente ? `<tr><th>Cliente</th><td>${esc(l.cliente)}</td></tr>` : ''}
-        <tr><th>Patrón</th><td>${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ''}</td></tr>
-        <tr><th>Tipo</th><td>Tiempo ${l.tipo === 'DETERMINADO' ? 'determinado' : 'indeterminado'}</td></tr>
+        <tr><th>${com ? 'Comitente' : 'Patrón'}</th><td>${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ''}</td></tr>
+        <tr><th>Tipo</th><td>${esc(TIPO_LOTE[l.tipo] || l.tipo)}</td></tr>
         <tr><th>Plantilla</th><td>${esc(l.plantilla?.name || '')}</td></tr>
-        <tr><th>Periodicidad de pago</th><td>${esc(l.periodicidad || '')}</td></tr>
+        ${l.periodicidad ? `<tr><th>Periodicidad de pago</th><td>${esc(l.periodicidad)}</td></tr>` : ''}
+        ${l.lugarFirma ? `<tr><th>Lugar de firma</th><td>${esc(l.lugarFirma)}</td></tr>` : ''}
         <tr><th>Excel</th><td>${esc(l.archivo || '')}${l.p1?.corregido ? ' (corregido en la plataforma)' : ''}</td></tr>
         <tr><th>Estado</th><td>${LOTE_STATUS[l.status]}</td></tr>
         <tr><th>Creado</th><td>${esc(l.createdBy || '')}, ${fmtDateTime(l.createdAt)}</td></tr>
         ${l.status === 'aprobado' ? `<tr><th>Aprobado</th><td>${esc(l.approvedBy || '')}, ${fmtDateTime(l.approvedAt)}</td></tr>` : ''}
       </table>
       <h2>Contratos (${l.trabajadores.length})</h2>
-      <table class="grid"><thead><tr><th>#</th><th>Trabajador</th><th>CURP</th><th>Puesto</th><th>Firma</th></tr></thead><tbody>${filas}</tbody></table>
+      <table class="grid"><thead><tr><th>#</th><th>${com ? 'Comisionista' : 'Trabajador'}</th><th>CURP</th><th>${com ? 'RFC' : 'Puesto'}</th><th>Firma</th></tr></thead><tbody>${filas}</tbody></table>
       ${l.excluidos?.length ? `
         <h2>Sin contrato por errores (${l.excluidos.length})</h2>
         <table class="grid"><thead><tr><th>Fila</th><th>Trabajador</th><th>CURP</th><th>Error</th></tr></thead><tbody>
@@ -3861,7 +3873,7 @@ const erroresFileName = (l) => `00 - Errores (${l.excluidos.length} sin contrato
 /** Aviso con los trabajadores que quedaron fuera del lote y su error. */
 function alertExcluidos(l) {
   return modal({
-    title: `${l.excluidos.length} trabajador${l.excluidos.length === 1 ? '' : 'es'} sin contrato`,
+    title: `${l.excluidos.length} persona${l.excluidos.length === 1 ? "" : "s"} sin contrato`,
     body: `<p>Se generó el lote con ${l.trabajadores.length} contrato${l.trabajadores.length === 1 ? '' : 's'}. Estos trabajadores quedaron fuera por errores en el P1:</p>
       <ul class="err-list">${l.excluidos.map((x) => `<li><strong>${esc(x.nombre || `Fila ${x.fila}`)}</strong> <span class="muted small">(fila ${x.fila})</span><br><span class="error-text small">${x.errores.map(esc).join('; ')}</span></li>`).join('')}</ul>
       <p class="muted small">La lista también se descarga en Word desde el lote y va dentro del .zip.</p>`,

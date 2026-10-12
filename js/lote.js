@@ -202,23 +202,34 @@ export function normalizeRow(r) {
 
 // ---------- Plantilla y validación ----------
 /** Plantillas aptas para lote: tienen firmantes "patron" y "trabajador". */
-export const isLoteTemplate = (t) => {
-  const p = new Set((t.signers || []).map((s) => s.bind?.prefix));
-  return p.has('patron') && p.has('trabajador');
-};
-/** Contrato por tiempo determinado si la plantilla pide fecha de terminación. */
-export const tipoDePlantilla = (t) => (t.vars.some(([k]) => k === 'fecha_fin') ? 'DETERMINADO' : 'INDETERMINADO');
+// Plantillas que se generan en lote: [firmante de la empresa, firmante de la persona del P1]
+const ROLES_LOTE = [{ empresa: 'patron', persona: 'trabajador' }, { empresa: 'comitente', persona: 'comisionista' }];
+/** Prefijos de la empresa y de la persona en la plantilla, o null si no es de lote. */
+export function rolesDe(t) {
+  const p = new Set((t?.signers || []).map((s) => s.bind?.prefix));
+  return ROLES_LOTE.find((r) => p.has(r.empresa) && p.has(r.persona)) || null;
+}
+export const isLoteTemplate = (t) => !!rolesDe(t);
+export const esComision = (t) => rolesDe(t)?.persona === 'comisionista';
+/** COMISION para comisión mercantil; en trabajo, DETERMINADO si la plantilla pide fecha de terminación. */
+export const tipoDePlantilla = (t) => (esComision(t) ? 'COMISION' : t.vars.some(([k]) => k === 'fecha_fin') ? 'DETERMINADO' : 'INDETERMINADO');
+export const TIPO_LOTE = { DETERMINADO: 'Tiempo determinado', INDETERMINADO: 'Tiempo indeterminado', COMISION: 'Comisión mercantil' };
+
+// Columnas del P1 que usa la comisión mercantil (nombre, RFC, CURP, domicilio y fecha de firma)
+const COLS_COMISION = new Set(['nombre', 'apPaterno', 'apMaterno', 'nombreCompleto', 'rfc', 'curp', 'nacionalidad', 'calle', 'noExt', 'noInt', 'colonia', 'municipio', 'cp', 'firma']);
+/** ¿La plantilla usa esta columna del P1? (para pedirla y para corregirla) */
+export const usaColumna = (t, key) => !esComision(t) || COLS_COMISION.has(key);
 
 /** Variables del trabajador y del lote, con el nombre que usan las plantillas marco. */
-export function workerVariables(w, lote) {
+export function workerVariables(w, lote, persona = 'trabajador') {
   return {
-    trabajador_nombre: w.nombre,
-    trabajador_nacionalidad: w.nacionalidad,
-    trabajador_sexo: w.sexo === 'F' ? 'FEMENINO' : w.sexo === 'M' ? 'MASCULINO' : '',
-    trabajador_estado_civil: w.estadoCivil,
-    trabajador_domicilio: w.domicilio,
-    trabajador_curp: w.curp,
-    trabajador_rfc: w.rfc,
+    [`${persona}_nombre`]: w.nombre,
+    [`${persona}_nacionalidad`]: w.nacionalidad,
+    [`${persona}_sexo`]: w.sexo === 'F' ? 'FEMENINO' : w.sexo === 'M' ? 'MASCULINO' : '',
+    [`${persona}_estado_civil`]: w.estadoCivil,
+    [`${persona}_domicilio`]: w.domicilio,
+    [`${persona}_curp`]: w.curp,
+    [`${persona}_rfc`]: w.rfc,
     puesto: w.puesto,
     lugar_trabajo: w.lugar,
     salario_diario: w.sd === null ? '' : String(w.sd),
@@ -228,15 +239,21 @@ export function workerVariables(w, lote) {
     fecha_inicio: w.ingreso,
     fecha_fin: w.fin,
     fecha_firma: w.firma,
+    // Lugar de firma capturado en el lote (si la plantilla lo usa); si no, queda el de la plantilla
+    ...(lote.lugarFirma ? { lugar_firma: lote.lugarFirma } : {}),
   };
 }
 
+// Datos de la persona (trabajador o comisionista), por sufijo de la variable
+const LABELS_PERSONA = {
+  nombre: 'Nombre', nacionalidad: 'Nacionalidad', sexo: 'Sexo', estado_civil: 'Estado Civil',
+  domicilio: 'Domicilio (Calle, Colonia, Alcaldía/municipio, CP)', curp: 'CURP', rfc: 'RFC con Homoclave',
+};
 const LABELS = {
-  trabajador_nombre: 'Nombre', trabajador_nacionalidad: 'Nacionalidad', trabajador_sexo: 'Sexo', trabajador_estado_civil: 'Estado Civil',
-  trabajador_domicilio: 'Domicilio (Calle, Colonia, Alcaldía/municipio, CP)', trabajador_curp: 'CURP', trabajador_rfc: 'RFC con Homoclave',
   puesto: 'Puesto', lugar_trabajo: 'Lugar de Trabajo', salario_diario: 'Sueldo Mensual Bruto', periodicidad_pago: 'Periodicidad de pago', dias_pago: 'Días de Pago',
   fecha_antiguedad: 'Fecha de Antigüedad', fecha_inicio: 'Fecha de Ingreso', fecha_fin: 'Fecha de Terminación', fecha_firma: 'Fecha de Firma',
 };
+const etiquetaDe = (k, persona) => (k.startsWith(`${persona}_`) ? LABELS_PERSONA[k.slice(persona.length + 1)] : LABELS[k]);
 
 const RFC_PF = /^[A-ZÑ&]{4}\d{6}[A-Z0-9]{3}$/;
 const CURP = /^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/;
@@ -257,20 +274,23 @@ function rfcCoincideCurp(rfc, curp) {
 
 /** Errores de cada trabajador para la plantilla elegida (lista vacía = listo). */
 export function validateWorkers(workers, tpl, lote) {
-  const needed = new Set(tpl.vars.map(([k]) => k).filter((k) => k in LABELS));
+  const { persona } = rolesDe(tpl);
+  const needed = new Set(tpl.vars.map(([k]) => k).filter((k) => etiquetaDe(k, persona)));
   const tipo = tipoDePlantilla(tpl);
+  const comision = tipo === 'COMISION';
   const curps = new Map();
   return workers.map((w) => {
     const errs = [];
-    const vars = workerVariables(w, lote);
-    for (const k of needed) if (!vars[k] && !(k === 'trabajador_nacionalidad' && w.extranjero)) errs.push(`Falta ${LABELS[k]}`);
-    if (!w.sexo) errs.push('No se pudo determinar el sexo: la CURP no lo indica (posición 11 H/M) y la columna Sexo está vacía');
+    const vars = workerVariables(w, lote, persona);
+    for (const k of needed) if (!vars[k] && !(k === `${persona}_nacionalidad` && w.extranjero)) errs.push(`Falta ${etiquetaDe(k, persona)}`);
+    // El sexo ajusta el género del contrato de trabajo; la comisión no lo usa
+    if (!comision && !w.sexo) errs.push('No se pudo determinar el sexo: la CURP no lo indica (posición 11 H/M) y la columna Sexo está vacía');
     if (w.extranjero && !w.nacionalidad) errs.push('Nació en el extranjero (CURP con NE): captura su Nacionalidad');
     if (w.rfc && !RFC_PF.test(w.rfc)) errs.push(`RFC inválido (${w.rfc}): deben ser 13 caracteres`);
     if (w.curp && !CURP.test(w.curp)) errs.push(`CURP inválida (${w.curp})`);
-    for (const f of w.fechasInvalidas || []) errs.push(`${f}: usa día/mes/año`);
+    for (const f of w.fechasInvalidas || []) if (!comision || f.startsWith('Fecha de Firma')) errs.push(`${f}: usa día/mes/año`);
     if (RFC_PF.test(w.rfc) && CURP.test(w.curp) && !rfcCoincideCurp(w.rfc, w.curp)) errs.push(`RFC y CURP no coinciden (${w.rfc.slice(0, 10)} / ${w.curp.slice(0, 10)})`);
-    if (w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
+    if (!comision && w.tipo && w.tipo !== tipo) errs.push(`Tipo de contrato "${w.tipo}" distinto a la plantilla (${tipo})`);
     if (tipo === 'DETERMINADO' && w.fin && w.ingreso && w.fin <= w.ingreso) errs.push('La fecha de terminación debe ser posterior a la de ingreso');
     if (w.curp) {
       if (curps.has(w.curp)) errs.push(`CURP repetida (fila ${curps.get(w.curp)})`);
@@ -286,9 +306,10 @@ export function workerContract(lote, w) {
   const tpl = lote.plantilla;
   const c = newContractFromTemplate(tpl);
   c.history = [];
-  const patron = c.signers.find((s) => s.bind?.prefix === 'patron');
-  if (patron && lote.empresa) applyParty(c, patron, lote.empresa, lote.apoderado || null);
-  Object.assign(c.variables, workerVariables(w, lote));
+  const { empresa, persona } = rolesDe(tpl) || ROLES_LOTE[0];
+  const sg = c.signers.find((s) => s.bind?.prefix === empresa);
+  if (sg && lote.empresa) applyParty(c, sg, lote.empresa, lote.apoderado || null);
+  Object.assign(c.variables, workerVariables(w, lote, persona));
   c.status = lote.status === 'aprobado' ? 'aprobado' : 'revision';
   return c;
 }
