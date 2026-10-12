@@ -70,6 +70,8 @@ export async function startAuth() {
 export async function handleRedirect() {
   const q = new URLSearchParams(location.search);
   if (!q.has('code') && !q.has('error')) return null;
+  // Regreso de DocuSign (también llega con ?code=…): no es de Dropbox
+  if ((q.get('state') || '').startsWith('ds.')) return null;
   const saved = JSON.parse(sessionStorage.getItem('dbx-pkce') || 'null');
   sessionStorage.removeItem('dbx-pkce');
   history.replaceState(null, '', redirectUri() + (saved?.hash || '#/ajustes'));
