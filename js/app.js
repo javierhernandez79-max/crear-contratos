@@ -17,8 +17,9 @@ import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate } from './servicios.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias } from './vencimientos.js';
+import { TIPOS, pdfText, sinTexto, detectarTipo, extraer } from './extraccion.js';
 
 // ---------- Estado ----------
 const state = {
@@ -2009,7 +2010,10 @@ function renderPartyEditor(id) {
         <p class="eyebrow"><a href="#/catalogo">Catálogo</a> · ${PARTY_KINDS[p.kind]}</p>
         <h1>${esc(p.nombre || 'Nueva parte')}</h1>
       </div>
-      <span id="party-save" class="muted small">Guardado</span>
+      <div class="row">
+        <button type="button" class="btn sm" id="party-extract" title="Lee una constancia fiscal, escritura constitutiva o poder (PDF con texto)">${icon('upload')} Llenar desde PDF</button>
+        <span id="party-save" class="muted small">Guardado</span>
+      </div>
     </header>
     ${ret ? `<div class="banner info">${icon('link')} <span>Al terminar, úsala en el contrato.</span><button class="btn sm primary" id="use-in-contract">Usar en el contrato</button></div>` : ''}
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …].</span></div>` : ''}
@@ -2134,6 +2138,12 @@ function renderPartyEditor(id) {
     renderPartyEditor(p.id);
     window.scrollTo(0, y);
   });
+  $('#party-extract').addEventListener('click', conAviso(async () => {
+    if (!(await extraerDePdf(p))) return;
+    const y = window.scrollY;
+    renderPartyEditor(p.id);
+    window.scrollTo(0, y);
+  }));
   $('#use-in-contract')?.addEventListener('click', async () => {
     await saveParty(p);
     const { contractId, signerId } = state.returnTo;
@@ -2145,6 +2155,142 @@ function renderPartyEditor(id) {
     if (await linkPartyToSigner(sg, p)) await saveContract(c);
     go(`#/c/${c.id}/variables`);
   });
+}
+
+// --- Llenar la ficha desde un PDF del expediente (#8) ---
+// Campos que puede llenar cada tipo de documento: [campo, etiqueta, tipo]
+const CAMPOS_PDF = {
+  csf: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo']],
+  acta: [['nombre', 'Razón social (sin tipo de sociedad)'], ...PARTY_FIELDS.pm.map(([k, l, t]) => [k, l, t])],
+  poder: PARTY_FIELDS.apoderado.filter(([k]) => k !== 'cargo').map(([k, l, t]) => [k, l, t]),
+};
+
+/** Elige un PDF del expediente en Dropbox o del equipo. Devuelve {name, data} o null. */
+async function elegirPdf(p) {
+  const r = await modal({
+    title: 'Llenar desde PDF',
+    body: `
+      <p class="muted small">Constancia de situación fiscal, escritura constitutiva o escritura de poder. Solo PDFs con texto: los escaneados se capturan a mano. Antes de aplicar, revisas cada dato.</p>
+      <div class="menu-list">
+        <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
+        <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
+      </div>`,
+  });
+  if (r.value === 'dbx' && !dbx.isConnected()) {
+    toast('Dropbox no está conectado en este navegador: conéctalo en Ajustes o usa “Desde este equipo”', 'error');
+    return null;
+  }
+  if (r.value === 'dbx') {
+    const start = p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot());
+    let files = await browseDropbox({ start, title: 'Elegir el PDF', shortcuts: [{ label: 'Expedientes', path: sync.expedientesRoot() }] });
+    files = files?.filter((f) => /\.pdf$/i.test(f.name));
+    if (!files) return null;
+    if (!files.length) { toast('Elige un archivo PDF', 'error'); return null; }
+    const { data } = await dbx.download(files[0].path_lower || files[0].path_display);
+    return { name: files[0].name, data };
+  }
+  if (r.value === 'local') {
+    const file = await new Promise((resolve) => {
+      const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.pdf,application/pdf' });
+      input.addEventListener('change', () => resolve(input.files[0] || null));
+      input.addEventListener('cancel', () => resolve(null));
+      input.click();
+    });
+    return file ? { name: file.name, data: await file.arrayBuffer() } : null;
+  }
+  return null;
+}
+
+/** Lee el PDF, muestra lo encontrado para revisión y aplica lo marcado. true si cambió la ficha. */
+async function extraerDePdf(p) {
+  const pdf = await elegirPdf(p);
+  if (!pdf) return false;
+  toast('Leyendo el PDF…');
+  const text = await pdfText(pdf.data);
+  if (sinTexto(text)) {
+    await modal({
+      title: 'PDF sin texto',
+      body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). Captura los datos a mano.</p>`,
+      actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
+    });
+    return false;
+  }
+  let tipo = detectarTipo(text) || (p.kind === 'pm' ? 'acta' : 'csf');
+  const detectado = detectarTipo(text);
+  const sugerirApo = (nombre) => p.apoderados.map((a) => ({ a, s: parecido(nombre || '', a.nombre) })).filter((x) => x.s >= 0.8).sort((x, y) => y.s - x.s)[0]?.a;
+
+  // apoId: undefined = el apoderado que más se parece al del poder; '' = nuevo
+  const filas = (t, apoId) => {
+    const data = extraer(t, text);
+    const campos = CAMPOS_PDF[t].filter(([k]) => k !== 'curp' || p.kind === 'pf');
+    const apo = t !== 'poder' ? null : apoId === undefined ? sugerirApo(data.nombre) : p.apoderados.find((a) => a.id === apoId);
+    const actualDe = (k, destino) => String((destino ?? p)[k] ?? '');
+    const hall = campos.filter(([k]) => data[k]);
+    const faltan = campos.filter(([k]) => !data[k]).map(([, l]) => l);
+    const aviso = t === 'csf' && data.kind && data.kind !== p.kind
+      ? `<div class="banner warn">${icon('alert')} <span>La constancia es de una ${data.kind === 'pm' ? 'persona moral' : 'persona física'} y esta ficha es de ${PARTY_KINDS[p.kind].toLowerCase()}.</span></div>` : '';
+    return `
+      ${aviso}
+      ${t === 'poder' ? `
+        <label class="field"><span>Aplicar al apoderado</span>
+          <select name="apo" id="ex-apo">
+            <option value="">Nuevo apoderado</option>
+            ${p.apoderados.map((a) => `<option value="${esc(a.id)}" ${a === apo ? 'selected' : ''}>${esc(a.nombre || 'Sin nombre')}</option>`).join('')}
+          </select>
+        </label>` : ''}
+      ${hall.length ? `
+      <div class="ll-row ll-head ex-row"><span></span><span>Dato</span><span>Encontrado en el PDF (puedes corregirlo)</span></div>
+      ${hall.map(([k, l, ty]) => {
+        const actual = t === 'poder' ? (apo ? actualDe(k, apo) : '') : actualDe(k);
+        const v = data[k];
+        const igual = folderKey(actual) === folderKey(v); // sin acentos, signos ni mayúsculas
+        const input = ty === 'address' || k === 'objetoSocial'
+          ? `<textarea name="v_${k}" rows="${k === 'objetoSocial' ? 4 : 2}">${esc(v)}</textarea>`
+          : `<input name="v_${k}" type="${ty === 'date' ? 'date' : 'text'}" value="${esc(v)}">`;
+        return `
+        <div class="ll-row ex-row">
+          <span><input type="checkbox" name="u_${k}" ${!actual.trim() ? 'checked' : ''} aria-label="Aplicar ${esc(l)}"></span>
+          <span><strong class="small">${esc(l)}</strong>${actual.trim() ? `<span class="muted small clamp">Actual: ${esc(ty === 'date' ? fmtLongDate(actual) : actual)}</span>` : '<span class="muted small">Vacío</span>'}
+            ${actual.trim() && !igual ? '<span class="badge borrador">Distinto</span>' : ''}${igual ? '<span class="badge final">Igual</span>' : ''}</span>
+          <span>${input}</span>
+        </div>`;
+      }).join('')}` : '<p class="muted">No encontré datos de este tipo de documento. Revisa el tipo o captura a mano.</p>'}
+      ${faltan.length && hall.length ? `<p class="muted small">No encontrados: ${esc(faltan.join(', '))}.</p>` : ''}`;
+  };
+
+  const r = await modal({
+    title: `Datos de ${pdf.name}`,
+    wide: true,
+    body: `
+      <label class="field inline"><span>Tipo de documento</span>
+        <select name="tipo" id="ex-tipo">${Object.entries(TIPOS).filter(([k]) => k !== 'acta' || p.kind === 'pm').map(([k, l]) => `<option value="${k}" ${k === tipo ? 'selected' : ''}>${l}${k === detectado ? ' (detectado)' : ''}</option>`).join('')}</select>
+      </label>
+      <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el PDF es más reciente o correcto.</p>
+      <div id="ex-filas">${filas(tipo)}</div>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Aplicar marcados', value: 'ok', kind: 'primary' }],
+    onOpen: (dlg) => {
+      $('#ex-tipo', dlg).addEventListener('change', (e) => { tipo = e.target.value; $('#ex-filas', dlg).innerHTML = filas(tipo); });
+      // Al cambiar de apoderado se recalcula "Actual" y qué viene marcado
+      dlg.addEventListener('change', (e) => {
+        if (e.target.id === 'ex-apo') $('#ex-filas', dlg).innerHTML = filas(tipo, e.target.value);
+      });
+    },
+  });
+  if (r.value !== 'ok') return false;
+  const usar = Object.keys(r.data).filter((k) => k.startsWith('u_')).map((k) => k.slice(2));
+  if (!usar.length) { toast('No marcaste ningún dato'); return false; }
+  let destino = p;
+  if (r.data.tipo === 'poder') {
+    destino = p.apoderados.find((a) => a.id === r.data.apo);
+    if (!destino) { destino = newApoderado(); p.apoderados.push(destino); }
+  }
+  for (const k of usar) {
+    const v = String(r.data[`v_${k}`] ?? '').trim();
+    destino[k] = k === 'rfc' || k === 'curp' ? v.toUpperCase() : v;
+  }
+  await saveParty(p);
+  toast(`${usar.length} dato${usar.length === 1 ? '' : 's'} aplicado${usar.length === 1 ? '' : 's'}`, 'ok');
+  return true;
 }
 
 // --- Partes dentro del contrato (pestaña Variables) ---

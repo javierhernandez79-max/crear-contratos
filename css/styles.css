@@ -359,6 +359,7 @@ dialog::backdrop { background: rgba(10, 16, 28, .5); backdrop-filter: blur(2px);
   padding: 12px; border: 0; border-radius: 10px; background: transparent; cursor: pointer; font-weight: 600;
 }
 .menu-item:hover { background: var(--surface-2); }
+.menu-item:disabled { opacity: .5; cursor: not-allowed; background: none; }
 .menu-item.danger { color: var(--danger); }
 .var-pick .menu-item { justify-content: space-between; font-weight: 500; }
 .var-pick code { font-size: 12px; color: var(--muted); }
@@ -593,3 +594,10 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 .err-list { margin: 8px 0 12px; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; }
 .lt-rev { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .p1-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 12px; }
+
+/* Llenar desde PDF: revisión de datos encontrados */
+.ex-row { grid-template-columns: 28px minmax(140px, 1fr) minmax(0, 2fr); align-items: start; }
+.ex-row > span:nth-child(2) { display: flex; flex-direction: column; gap: 2px; }
+.ex-row .badge { align-self: flex-start; }
+.ex-row input[type="text"], .ex-row input[type="date"], .ex-row textarea { width: 100%; }
+@media (max-width: 640px) { .ex-row { grid-template-columns: 28px 1fr; } .ex-row > span:nth-child(3) { grid-column: 2; } }
