@@ -169,6 +169,18 @@ export async function ensureAccount() {
   await save();
 }
 
+/**
+ * Cuando la carpeta se comparte con alguien de otro equipo de Dropbox, al aceptarla queda dentro de su
+ * carpeta personal ("/Nombre/Legal - Documentos App"), no en la raíz del equipo. Devuelve esa ruta si existe.
+ */
+export async function findInHome(folder) {
+  const home = cfg?.rootInfo?.homePath;
+  if (!cfg?.pathRoot || !home) return null;
+  const alt = joinPath(home, normalizePath(folder).split('/').pop());
+  const meta = await getMetadata(alt);
+  return meta?.['.tag'] === 'folder' ? alt : null;
+}
+
 /** Texto para Ajustes: en qué espacio de Dropbox se trabaja. */
 export const rootLabel = () => (cfg?.pathRoot ? 'espacio del equipo' : cfg?.rootInfo ? 'carpeta personal' : '');
 
