@@ -13,6 +13,7 @@ import * as sync from './sync.js';
 import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
+import { moldeDocx } from './molde.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
@@ -75,6 +76,23 @@ const allTemplates = () => {
   return [...state.userTemplates, ...TEMPLATES.filter((t) => !replaced.has(t.id))];
 };
 const go = (hash) => { location.hash = hash; };
+
+/** Word original del formato (molde) del contrato, o null si el contrato sale del generador de la app. */
+const moldeDe = (c) => (c.formato && allTemplates().find((t) => t.id === c.templateId)?.molde) || null;
+/** Contrato que sale del molde pero cuya plantilla ya no está en este equipo (p. ej., falta sincronizar). */
+const sinMolde = (c) => !!c.conMolde && !moldeDe(c);
+/** Word del contrato: del molde del formato (conserva su estilo) o del generador de la app. */
+async function wordDe(c, label = '') {
+  if (c.conMolde) {
+    const molde = moldeDe(c);
+    if (!molde) throw new Error(`No está la plantilla del formato ${c.formato || ''} en este equipo; sincroniza e intenta de nuevo.`);
+    return moldeDocx(c, molde);
+  }
+  return buildDocxBlob(await loadDocx(), c, { label });
+}
+const avisoMolde = (c) => (c.conMolde
+  ? `<div class="banner info">${icon('doc')} <span>Formato ${esc(c.formato)}: el Word sale del formato original (letra, márgenes y encabezados intactos) con los datos llenos. El texto de las cláusulas es fijo; el PDF se saca desde Word (Archivo › Guardar como › PDF).${sinMolde(c) ? ' <strong>Falta la plantilla de este formato en este equipo: sincroniza.</strong>' : ''}</span></div>`
+  : '');
 
 const ICONS = {
   back: '<path d="M15 18l-6-6 6-6"/>',
@@ -475,7 +493,8 @@ function formatosServicios(d, formatos) {
 function formatoSelect(d, fx, partyId) {
   const fila = fx.filas.get(partyId);
   if (!fila) return '<span class="muted small">Elige la empresa</span>';
-  const label = (t) => (codigoFormato(t) ? `${codigoFormato(t)} — ${t.name}` : t.name);
+  // "Prestación de servicios · Formato 2" ya dice el formato: basta el código
+  const label = (t) => (!codigoFormato(t) ? t.name : /formato/i.test(t.name) ? codigoFormato(t) : `${codigoFormato(t)} — ${t.name}`);
   return `<select data-fmt="${esc(partyId)}" ${fila.fijo ? 'disabled' : ''} aria-label="Formato">
       <option value="">Elige…</option>
       ${fila.opciones.map((o) => `<option value="${esc(o.t.id)}" ${o.t.id === d.fmt[partyId] ? 'selected' : ''} ${o.motivo ? 'disabled' : ''}>${esc(label(o.t))}${o.motivo ? ` (${esc(o.motivo)})` : ''}</option>`).join('')}
@@ -546,7 +565,7 @@ function renderServiciosRevision(gid) {
       return `
       <section class="serv-doc">
         <div class="serv-doc-head">
-          <div><strong>${i + 1}. ${esc(prest)}</strong>
+          <div><strong>${i + 1}. ${esc(prest)} ${formatoChip(c)}</strong>
             <span class="muted small">Firma: ${esc(c.variables.prestador_representante || 'sin representante')}${faltan ? ` · <span class="warn-text">${faltan} dato${faltan === 1 ? '' : 's'} por completar</span>` : ''}</span></div>
           <div class="row">${statusBadge(c)}<a class="btn sm" href="#/c/${c.id}/variables">${icon('pen')} Editar</a></div>
         </div>
@@ -608,6 +627,9 @@ function firmaBanner() {
 }
 
 /** Etiqueta "N días háb. sin firma" para contratos de servicios no firmados. */
+/** Código de formato (F1, F2…): solo en la app, nunca en el documento. */
+const formatoChip = (c) => (c.formato ? `<span class="badge formato-chip" title="Formato del contrato (no aparece en el documento)">${esc(c.formato)}</span>` : '');
+
 function plazoChip(c) {
   if (!esContratoServicios(c) || c.alertaFirma?.descartada) return '';
   const p = plazoFirma(c, todayISO());
@@ -860,7 +882,7 @@ function contractRow(c) {
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
-          <span>${statusBadge(c)}${plazoChip(c)}</span>
+          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
@@ -940,8 +962,7 @@ async function contractAction(act, c) {
 
 async function downloadWord(c) {
   try {
-    const D = await loadDocx();
-    download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(nombreDe(c))}.docx`);
+    download(await wordDe(c, c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR'), `${safeName(nombreDe(c))}.docx`);
     toast('Word descargado', 'ok');
   } catch (err) {
     console.error(err);
@@ -950,6 +971,10 @@ async function downloadWord(c) {
 }
 
 async function exportPdf(c) {
+  if (c.conMolde) {
+    if (await confirmDialog('PDF desde Word', `Este contrato usa el formato ${c.formato}: para conservar su letra y márgenes, el PDF se saca desde Word (Archivo › Guardar como › PDF). ¿Descargar el Word?`, 'Descargar Word', 'primary')) await downloadWord(c);
+    return;
+  }
   const missing = missingVariables(c);
   if (missing.length) {
     const ok = await confirmDialog('Faltan datos',
@@ -1121,6 +1146,7 @@ function renderEditorHeader() {
       <input id="doc-title" class="doc-title" value="${esc(c.title)}" aria-label="Título del contrato">
       <div class="title-meta">
         ${statusBadge(c)}
+        ${formatoChip(c)}
         ${plazoChip(c)}
         <span id="save-status" class="muted small">Guardado</span>
       </div>
@@ -1194,6 +1220,13 @@ let lastField = null;
 function renderSections() {
   const c = state.current;
   const box = tabBox();
+  if (c.conMolde) {
+    // Formato con texto fijo: se lee aquí, pero solo se llenan los datos (pestaña Variables)
+    box.innerHTML = `${avisoMolde(c)}
+      <div class="paper-wrap"><div class="paper full">${documentHTML(c)}</div></div>
+      <p class="muted small">Para cambiar la redacción, edita el Word que se descarga o pide que se actualice el formato.</p>`;
+    return;
+  }
   const nums = sectionNumbers(c);
   box.innerHTML = `
     ${efirmaEditBanner(c)}
@@ -1606,6 +1639,7 @@ function renderSigners() {
   const box = tabBox();
   box.innerHTML = `
     ${signedChangedBanner(c)}
+    ${c.conMolde ? `<div class="banner info">${icon('pen')} <span>Formato ${esc(c.formato)}: las firmas se recaban sobre el PDF que se saca del Word (o por DocuSign). Las firmas dibujadas o con e.firma de esta pestaña no se integran a ese Word. Cuando regrese firmado, márcalo como firmado.</span></div>` : ''}
     <div class="card soft sign-summary">
       <div>
         <strong>${signed} de ${c.signers.length} firmas</strong>
@@ -3115,29 +3149,31 @@ function renderDocumento() {
       ${STATUS_STEPS.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
     </ol>
     ${missing ? `<div class="banner warn">${icon('alert')} <span>${missing} dato(s) sin completar: aparecerán entre corchetes en el documento.</span></div>` : ''}
+    ${conflictoFormato(c, state.contracts) ? `<div class="banner danger">${icon('alert')} <span>${esc(conflictoFormato(c, state.contracts))} No se puede aprobar así.</span></div>` : ''}
+    ${avisoMolde(c)}
     <section class="card form-block">
       ${c.status === 'borrador' ? `
         <h3>Enviar a revisión</h3>
-        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'} con la leyenda “EN REVISIÓN” para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
+        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'}${c.conMolde ? ' del formato' : ' con la leyenda “EN REVISIÓN”'} para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
         <div class="row"><button class="btn primary" data-wf="review">${icon('doc')} Generar Word para revisión</button></div>`
       : c.status === 'revision' ? `
         <h3>En revisión · v${rev}</h3>
-        <p class="muted">Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.</p>
+        <p class="muted">${c.conMolde ? 'Si hay correcciones de datos, edítalas en Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se genera el Word final del formato.' : 'Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.'}</p>
         <div class="row">
           <button class="btn" data-wf="review">${icon('doc')} Nueva versión v${rev + 1}</button>
-          <button class="btn primary" data-wf="approve">${icon('check')} Aprobar y generar PDF</button>
+          <button class="btn primary" data-wf="approve">${icon('check')} ${c.conMolde ? 'Aprobar y generar Word' : 'Aprobar y generar PDF'}</button>
         </div>`
       : c.status === 'aprobado' ? `
         <h3>Aprobado</h3>
         <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado.</p>
         <div class="row">
-          <button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>
+          ${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`}
           <a class="btn primary" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
         </div>`
       : `
         <h3>Firmado</h3>
         <p class="muted">El contrato está firmado. Cualquier edición lo regresa a borrador.</p>
-        <div class="row"><button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button></div>`}
+        <div class="row">${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button>`}</div>`}
       <button class="link" data-wf="word">Descargar Word de trabajo (sin guardar en Dropbox)</button>
     </section>
     <section class="card form-block">
@@ -3204,7 +3240,7 @@ async function sendToReview(c, btn) {
   btn.disabled = true;
   const D = await loadDocx();
   const n = (c.revision || 0) + 1;
-  const blob = await buildDocxBlob(D, c, { label: `EN REVISIÓN · v${n}` });
+  const blob = await wordDe(c, `EN REVISIÓN · v${n}`);
   // Si la entrega falla (sin conexión, token vencido) el contrato vuelve a como estaba: sin "v2" fantasma
   const prev = { revision: c.revision, status: c.status, documentos: c.documentos };
   c.revision = n;
@@ -3225,12 +3261,12 @@ async function sendToReview(c, btn) {
 
 async function approve(c, btn) {
   const missing = missingVariables(c).length;
-  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}Se generarán el Word y el PDF finales (sin leyendas) y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
+  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}${c.conMolde ? `Se generará el Word final del formato ${c.formato} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
   renderEditorHeader();
   renderDocumento();
-  toast(`Contrato aprobado${dbx.isConnected() ? '; Word y PDF guardados en Dropbox' : ''}`, 'ok');
+  toast(`Contrato aprobado${dbx.isConnected() ? `; ${c.conMolde ? 'Word guardado' : 'Word y PDF guardados'} en Dropbox` : ''}`, 'ok');
 }
 
 /** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
@@ -3238,12 +3274,16 @@ async function approve(c, btn) {
 async function finalFiles(c, D) {
   const base = safeName(nombreDe(c));
   return [
-    { name: `${base} - APROBADO.docx`, blob: await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
-    { name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' },
+    { name: `${base} - APROBADO.docx`, blob: c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
+    // Con formato propio el PDF lo saca el abogado desde Word: el generador de la app no reproduce su estilo
+    ...(c.conMolde ? [] : [{ name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' }]),
   ];
 }
 
 async function approveContract(c, { descargar = true } = {}) {
+  // Regla de formatos por cliente: puede romperse si se cambió el prestador o el cliente a mano
+  const conflicto = conflictoFormato(c, state.contracts);
+  if (conflicto) throw new Error(conflicto);
   const prev = { status: c.status, documentos: c.documentos };
   c.status = 'aprobado';
   let files;
@@ -3312,6 +3352,7 @@ function renderTemplateEditor(id) {
       <span id="tpl-save" class="muted small">Guardado</span>
     </header>
     <div class="banner info">${icon('alert')} <span>Los cambios aplican a los contratos nuevos. Los contratos ya creados no se modifican.</span></div>
+    ${t.molde ? `<div class="banner warn">${icon('doc')} <span>Esta plantilla genera el Word desde el formato original (${esc(t.molde.nombre || 'molde')}). Las secciones de aquí solo sirven para la vista previa y para saber qué datos pide: cambiar su texto no cambia el Word.</span></div>` : ''}
     <form class="party-form" id="tpl-form" autocomplete="off">
       <section class="card form-block">
         <div class="form-grid">
