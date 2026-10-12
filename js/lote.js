@@ -239,6 +239,8 @@ export function workerVariables(w, lote, persona = 'trabajador') {
     fecha_inicio: w.ingreso,
     fecha_fin: w.fin,
     fecha_firma: w.firma,
+    // Lugar de firma capturado en el lote (si la plantilla lo usa); si no, queda el de la plantilla
+    ...(lote.lugarFirma ? { lugar_firma: lote.lugarFirma } : {}),
   };
 }
 

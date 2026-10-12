@@ -3470,6 +3470,9 @@ function renderNuevoLote() {
     : 'Ninguna empresa del catálogo es persona moral activa marcada como “Empresa del grupo”. Márcala así en <a href="#/catalogo">Catálogo</a>.';
   // Fecha de terminación solo hace falta en contratos por tiempo determinado
   const comision = !!tpl && esComision(tpl);
+  // Lugar de firma: solo si la plantilla lo tiene como variable; arranca con el de la plantilla
+  const lugarVar = tpl?.vars.find(([k]) => k === 'lugar_firma');
+  if (lugarVar && d.lugarTpl !== tpl.id) { d.lugarFirma = lugarVar[3] || ''; d.lugarTpl = tpl.id; }
   d.missing = d.rawMissing.filter((c) => (c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO')) && (!tpl || usaColumna(tpl, c.key)));
   const nErr = d.errors ? d.errors.filter((e) => e.length).length : 0;
   const nOk = d.workers ? d.workers.length - nErr : 0;
@@ -3493,6 +3496,7 @@ function renderNuevoLote() {
           <select id="l-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${esc(t.id)}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
         <label class="field" ${comision ? 'hidden' : ''}><span>Periodicidad de pago</span>
           <select id="l-per"><option value="">Elige…</option>${PERIODICIDADES.map((p) => `<option ${p === d.periodicidad ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+        ${lugarVar ? `<label class="field"><span>Lugar de firma</span><input id="l-lugar" value="${esc(d.lugarFirma || '')}" placeholder="Ciudad de México"></label>` : ''}
       </div>
       ${tpls.length ? '' : '<p class="warn-text small">No hay plantillas con firmantes “patrón” y “trabajador” o “comitente” y “comisionista”. Sincroniza para traer las plantillas marco.</p>'}
       ${sinEmpresas ? `<div class="banner warn">${icon('alert')} <span>${sinEmpresas}</span></div>` : ''}
@@ -3527,7 +3531,7 @@ function renderNuevoLote() {
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
     <div class="row wrap lote-actions">
       <a class="btn ghost" href="#/lotes">Cancelar</a>
-      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() ? '' : 'disabled'} data-ready="${listo ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
+      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() && (!lugarVar || d.lugarFirma?.trim()) ? '' : 'disabled'} data-ready="${listo ? 1 : ''}" data-lugar="${lugarVar ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
     </div>`;
 
   const revalidate = () => {
@@ -3536,13 +3540,14 @@ function renderNuevoLote() {
     renderNuevoLote();
   };
   // Sin re-render al escribir para no perder el foco; solo se habilita o no el botón
-  $('#l-cli').addEventListener('input', (e) => {
-    d.cliente = e.target.value;
+  const habilitar = () => {
     const b = $('#l-create');
-    b.disabled = !(b.dataset.ready && d.cliente.trim());
-  });
+    b.disabled = !(b.dataset.ready && d.cliente?.trim() && (!b.dataset.lugar || d.lugarFirma?.trim()));
+  };
+  $('#l-cli').addEventListener('input', (e) => { d.cliente = e.target.value; habilitar(); });
   $('#l-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; revalidate(); });
   $('#l-per').addEventListener('change', (e) => { d.periodicidad = e.target.value; renderNuevoLote(); });
+  $('#l-lugar')?.addEventListener('input', (e) => { d.lugarFirma = e.target.value.trim(); habilitar(); });
   $('#l-emp').addEventListener('change', (e) => {
     d.empresaId = e.target.value;
     const p = state.parties.find((x) => x.id === d.empresaId);
@@ -3658,6 +3663,7 @@ async function createLote() {
     tipo,
     status: 'revision',
     periodicidad: tipo === 'COMISION' ? '' : d.periodicidad,
+    ...(tpl.vars.some(([k]) => k === 'lugar_firma') ? { lugarFirma: d.lugarFirma } : {}),
     archivo: d.file,
     p1: await p1DelLote(d),
     plantilla: structuredClone(tpl),
@@ -3701,7 +3707,7 @@ function renderLote(id) {
       ${l.cliente ? `<p><strong>Cliente:</strong> ${esc(l.cliente)}</p>` : ''}
       <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
       <p><strong>${l.tipo === 'COMISION' ? 'Comitente' : 'Patrón'}:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
-      <p>${l.periodicidad ? `<strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · ` : ''}<strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
+      <p>${l.periodicidad ? `<strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · ` : ''}${l.lugarFirma ? `<strong>Lugar de firma:</strong> ${esc(l.lugarFirma)} · ` : ''}<strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
       <p class="muted small">Creado por ${esc(l.createdBy || '')} el ${fmtDateTime(l.createdAt)}${l.status === 'aprobado' ? ` · Aprobado por ${esc(l.approvedBy || '')} el ${fmtDateTime(l.approvedAt)}` : ''}</p>
     </section>
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
@@ -3785,6 +3791,7 @@ function loteHTML(l, { toolbar = false } = {}) {
         <tr><th>Tipo</th><td>${esc(TIPO_LOTE[l.tipo] || l.tipo)}</td></tr>
         <tr><th>Plantilla</th><td>${esc(l.plantilla?.name || '')}</td></tr>
         ${l.periodicidad ? `<tr><th>Periodicidad de pago</th><td>${esc(l.periodicidad)}</td></tr>` : ''}
+        ${l.lugarFirma ? `<tr><th>Lugar de firma</th><td>${esc(l.lugarFirma)}</td></tr>` : ''}
         <tr><th>Excel</th><td>${esc(l.archivo || '')}${l.p1?.corregido ? ' (corregido en la plataforma)' : ''}</td></tr>
         <tr><th>Estado</th><td>${LOTE_STATUS[l.status]}</td></tr>
         <tr><th>Creado</th><td>${esc(l.createdBy || '')}, ${fmtDateTime(l.createdAt)}</td></tr>
