@@ -2172,10 +2172,14 @@ async function elegirPdf(p) {
     body: `
       <p class="muted small">Constancia de situación fiscal, escritura constitutiva o escritura de poder. Solo PDFs con texto: los escaneados se capturan a mano. Antes de aplicar, revisas cada dato.</p>
       <div class="menu-list">
-        <button value="dbx" class="menu-item" ${dbx.isConnected() ? '' : 'disabled title="Conecta Dropbox en Ajustes"'}>${icon('folder')} Del expediente en Dropbox</button>
+        <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
         <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
       </div>`,
   });
+  if (r.value === 'dbx' && !dbx.isConnected()) {
+    toast('Dropbox no está conectado en este navegador: conéctalo en Ajustes o usa “Desde este equipo”', 'error');
+    return null;
+  }
   if (r.value === 'dbx') {
     const start = p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot());
     let files = await browseDropbox({ start, title: 'Elegir el PDF', shortcuts: [{ label: 'Expedientes', path: sync.expedientesRoot() }] });
