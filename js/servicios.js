@@ -108,3 +108,70 @@ export const isServiciosTemplate = (t) =>
 /** Contrato de prestación de servicios: tiene {{servicios}} o firmantes prestador y cliente. */
 export const esContratoServicios = (c) => !!c.varDefs?.some((d) => d.key === 'servicios')
   || (c.signers?.some((s) => s.bind?.prefix === 'prestador') && c.signers?.some((s) => s.bind?.prefix === 'cliente'));
+
+// ---------- Formatos (F1, F2…) ----------
+// Cada plantilla de servicios puede llevar un código de formato. El código vive solo en la app (no se
+// imprime). Con un mismo cliente, cada empresa del grupo queda amarrada a un formato y cada formato a
+// una sola empresa; la regla sale de los contratos de servicios ya creados que llevan código.
+
+/** "f1 " → "F1"; '' si no tiene. */
+export const codigoFormato = (x) => String(x?.formato || '').trim().toUpperCase();
+
+/** Orden natural: F2 antes que F10. */
+export const ordenFormato = (a, b) => codigoFormato(a).localeCompare(codigoFormato(b), 'es', { numeric: true });
+
+const firmante = (c, prefix) => c.signers?.find((s) => s.bind?.prefix === prefix);
+
+/** Parte de un contrato en un rol: { id (catálogo) | null, nombre }. */
+export function parteDe(c, prefix) {
+  const sg = firmante(c, prefix);
+  if (!sg) return null;
+  return { id: sg.party?.id || null, nombre: c.variables?.[`${prefix}_nombre`] || '' };
+}
+
+/** ¿Es la misma parte? Por id del catálogo o, si alguno no lo tiene, por nombre sin tipo de sociedad. */
+export function mismaParte(a, b) {
+  if (!a || !b) return false;
+  if (a.id && b.id) return a.id === b.id;
+  const na = nucleo(a.nombre);
+  return !!na && na === nucleo(b.nombre);
+}
+
+/**
+ * Formatos ya usados con un cliente (en contratos distintos de `exceptId`), del más antiguo al más nuevo.
+ * Devuelve [{ formato, prestador: {id, nombre}, contrato }], uno por formato y uno por empresa (el primero manda).
+ */
+export function formatosDelCliente(contracts, cliente, exceptId) {
+  const usados = [];
+  const lista = contracts.filter((c) => c.id !== exceptId && codigoFormato(c) && esContratoServicios(c)).sort((a, b) => a.createdAt - b.createdAt);
+  for (const c of lista) {
+    if (!mismaParte(parteDe(c, 'cliente'), cliente)) continue;
+    const prestador = parteDe(c, 'prestador');
+    if (!prestador || !(prestador.id || prestador.nombre)) continue;
+    const formato = codigoFormato(c);
+    if (usados.some((u) => u.formato === formato || mismaParte(u.prestador, prestador))) continue;
+    usados.push({ formato, prestador, contrato: c });
+  }
+  return usados;
+}
+
+/** Formato fijo de una empresa con el cliente, o null. */
+export const formatoFijo = (usados, prestador) => usados.find((u) => mismaParte(u.prestador, prestador)) || null;
+
+/** Quién ya tiene ese formato con el cliente (otra empresa), o null. */
+export const formatoOcupado = (usados, formato, prestador) =>
+  usados.find((u) => u.formato === formato && !mismaParte(u.prestador, prestador)) || null;
+
+/** Motivo por el que un contrato rompe la regla de formatos, o ''. */
+export function conflictoFormato(c, contracts) {
+  const formato = codigoFormato(c);
+  const cliente = parteDe(c, 'cliente');
+  const prestador = parteDe(c, 'prestador');
+  if (!formato || !esContratoServicios(c) || !(cliente?.id || cliente?.nombre) || !(prestador?.id || prestador?.nombre)) return '';
+  const usados = formatosDelCliente(contracts, cliente, c.id);
+  const fijo = formatoFijo(usados, prestador);
+  if (fijo && fijo.formato !== formato) return `${prestador.nombre || 'Esta empresa'} ya tiene el formato ${fijo.formato} con este cliente; no puede usar el ${formato}.`;
+  const otro = formatoOcupado(usados, formato, prestador);
+  if (otro) return `El formato ${formato} ya se usó con este cliente para ${otro.prestador.nombre || 'otra empresa del grupo'}; elige otro formato.`;
+  return '';
+}

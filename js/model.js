@@ -35,6 +35,10 @@ export function newContractFromTemplate(tpl) {
     id: uid(),
     title: tpl.titulo || tpl.name,
     templateId: tpl.id,
+    // Código de formato (F1, F2…): solo para la app, no se imprime
+    ...(tpl.formato ? { formato: String(tpl.formato).trim().toUpperCase() } : {}),
+    // Sale del Word original del formato (molde): el texto es fijo y el Word conserva su estilo
+    ...(tpl.molde ? { conMolde: true } : {}),
     status: 'borrador',
     varDefs,
     variables,
