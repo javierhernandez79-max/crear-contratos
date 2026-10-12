@@ -90,52 +90,6 @@ export const TEMPLATES = [
     ],
   },
   {
-    id: 'servicios',
-    category: 'servicios',
-    name: 'Contrato de prestación de servicios',
-    description: 'Para servicios profesionales con alcance, honorarios y forma de pago definidos.',
-    vars: [
-      ['cliente', 'Cliente', 'text'],
-      ['domicilio_cliente', 'Domicilio del cliente', 'address'],
-      ['prestador', 'Prestador de servicios', 'text'],
-      ['domicilio_prestador', 'Domicilio del prestador', 'address'],
-      ['descripcion_servicios', 'Descripción de los servicios', 'text'],
-      ['honorarios', 'Honorarios totales', 'money'],
-      ['forma_pago', 'Forma de pago', 'text', '50% al inicio y 50% a la entrega'],
-      ['fecha_inicio', 'Fecha de inicio', 'date'],
-      ['fecha_entrega', 'Fecha de entrega', 'date'],
-      ['email_cliente', 'Correo del cliente', 'email'],
-      ['email_prestador', 'Correo del prestador', 'email'],
-      ...COMMON,
-    ],
-    signers: [
-      { role: 'El Cliente', name: '{{cliente}}', bind: { prefix: 'cliente', nombre: 'cliente', domicilio: 'domicilio_cliente', correo: 'email_cliente' } },
-      { role: 'El Prestador', name: '{{prestador}}', bind: { prefix: 'prestador', nombre: 'prestador', domicilio: 'domicilio_prestador', correo: 'email_prestador' } },
-    ],
-    sections: [
-      s('Partes', `
-        Contrato de prestación de servicios que celebran en {{ciudad_firma}}, el {{fecha_firma}}, por una parte {{cliente}}, con domicilio en {{domicilio_cliente}} ("el Cliente"), y por la otra {{prestador}}, con domicilio en {{domicilio_prestador}} ("el Prestador").`),
-      s('Objeto', `
-        El Prestador se obliga a prestar al Cliente los siguientes servicios: {{descripcion_servicios}} (los "Servicios"), conforme a los términos de este contrato.`),
-      s('Plazo', `
-        Los Servicios iniciarán el {{fecha_inicio}} y deberán concluirse a más tardar el {{fecha_entrega}}, salvo que las partes acuerden por escrito una fecha distinta.`),
-      s('Honorarios y forma de pago', `
-        Como contraprestación, el Cliente pagará al Prestador la cantidad de {{honorarios}} más los impuestos aplicables, de la siguiente forma: {{forma_pago}}. El Prestador emitirá el comprobante fiscal correspondiente por cada pago.`),
-      s('Obligaciones del Prestador', `
-        El Prestador se obliga a: (a) prestar los Servicios con calidad profesional y diligencia; (b) informar al Cliente sobre el avance cuando éste lo solicite; y (c) cumplir con las leyes aplicables a su actividad.`),
-      s('Obligaciones del Cliente', `
-        El Cliente se obliga a: (a) proporcionar oportunamente la información y accesos necesarios; (b) revisar y aprobar los entregables en un plazo razonable; y (c) pagar los honorarios en los términos acordados.`),
-      s('Relación entre las partes', `
-        El Prestador actúa como profesional independiente. Nada en este contrato crea una relación laboral, de sociedad o de agencia entre las partes. El Prestador es el único responsable de sus obligaciones fiscales y de seguridad social.`),
-      s('Terminación', `
-        Cualquiera de las partes podrá dar por terminado este contrato mediante aviso por escrito con 15 días naturales de anticipación. El Cliente pagará los Servicios efectivamente prestados hasta la fecha de terminación.`),
-      s('Notificaciones', `
-        Las notificaciones se enviarán a los correos {{email_cliente}} (Cliente) y {{email_prestador}} (Prestador), o a los domicilios señalados en este contrato.`),
-      s('Jurisdicción', `
-        Para la interpretación y cumplimiento de este contrato, las partes se someten a los tribunales competentes de {{jurisdiccion}}.`),
-    ],
-  },
-  {
     id: 'consultoria',
     category: 'servicios',
     name: 'Contrato de consultoría',
@@ -169,47 +123,6 @@ export const TEMPLATES = [
         Una vez pagados, los entregables elaborados específicamente para el Cliente serán propiedad de éste. El Consultor conserva la titularidad de sus metodologías, herramientas y conocimientos previos.`),
       s('Jurisdicción', `
         Las partes se someten a los tribunales competentes de {{jurisdiccion}}.`),
-    ],
-  },
-  {
-    id: 'laboral',
-    category: 'laboral',
-    name: 'Contrato individual de trabajo',
-    description: 'Términos de contratación: puesto, salario, jornada y prestaciones.',
-    vars: [
-      ['empresa', 'Empresa (patrón)', 'text'],
-      ['representante', 'Representante legal', 'text'],
-      ['trabajador', 'Nombre del trabajador', 'text'],
-      ['domicilio_trabajador', 'Domicilio del trabajador', 'address'],
-      ['puesto', 'Puesto', 'text'],
-      ['salario_mensual', 'Salario mensual', 'money'],
-      ['jornada', 'Jornada', 'text', 'lunes a viernes de 9:00 a 18:00 horas, con una hora para tomar alimentos'],
-      ['lugar_trabajo', 'Lugar de trabajo', 'address'],
-      ['fecha_inicio', 'Fecha de inicio', 'date'],
-      ['tipo_contrato', 'Duración de la relación', 'text', 'tiempo indeterminado'],
-      ...COMMON,
-    ],
-    signers: [
-      { role: 'El Patrón', name: '{{empresa}}, representada por {{representante}}', bind: { prefix: 'patron', nombre: 'empresa', representante: 'representante' } },
-      { role: 'El Trabajador', name: '{{trabajador}}', bind: { prefix: 'trabajador', nombre: 'trabajador', domicilio: 'domicilio_trabajador' } },
-    ],
-    sections: [
-      s('Partes', `
-        Contrato individual de trabajo que celebran en {{ciudad_firma}}, el {{fecha_firma}}, {{empresa}}, representada por {{representante}} ("el Patrón"), y {{trabajador}}, con domicilio en {{domicilio_trabajador}} ("el Trabajador").`),
-      s('Puesto y funciones', `
-        El Trabajador prestará sus servicios en el puesto de {{puesto}}, realizando las funciones inherentes al mismo y las demás que le sean asignadas y resulten compatibles con su capacidad.`),
-      s('Duración', `
-        La relación de trabajo será por {{tipo_contrato}} y comenzará el {{fecha_inicio}}.`),
-      s('Lugar y jornada', `
-        Los servicios se prestarán en {{lugar_trabajo}}, en una jornada de {{jornada}}.`),
-      s('Salario', `
-        El Trabajador percibirá un salario mensual de {{salario_mensual}}, pagadero de forma quincenal, del cual el Patrón realizará las retenciones previstas por la ley.`),
-      s('Prestaciones', `
-        El Trabajador gozará, al menos, de las prestaciones previstas por la legislación laboral aplicable, incluyendo vacaciones, prima vacacional, aguinaldo, días de descanso y seguridad social.`),
-      s('Confidencialidad', `
-        El Trabajador se obliga a guardar reserva sobre la información confidencial del Patrón a la que tenga acceso con motivo de su trabajo, aun después de terminada la relación laboral.`),
-      s('Disposiciones generales', `
-        Lo no previsto en este contrato se regirá por la legislación laboral aplicable y el reglamento interior de trabajo del Patrón. Para cualquier controversia, las partes se someten a las autoridades laborales competentes de {{jurisdiccion}}.`),
     ],
   },
   {
