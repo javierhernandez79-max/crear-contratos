@@ -38,6 +38,7 @@ const APODERADOS = [
   ['Empresa (RFC o razón social)', '_empresa', 'text', 30],
   ['Nombre del apoderado', 'nombre', 'text', 32],
   ['Cargo', 'cargo', 'text', 22],
+  ['Correo', 'correo', 'text', 28],
   ['Escritura de poder núm.', 'poderNumero', 'text', 14],
   ['Fecha del poder', 'poderFecha', 'date', 14],
   ['Notario (con título)', 'notario', 'text', 30],
@@ -218,7 +219,8 @@ export async function xlsxToCatalog(ExcelJS, buffer, current) {
       const p = findCompany(row._empresa);
       if (!p) { warnings.push(`${sheet}, fila ${row._row}: no se encontró la empresa "${row._empresa}".`); continue; }
       const prev = p._prev?.[list].find((x) => partyKey({ nombre: x.nombre }) === partyKey({ nombre: row.nombre }));
-      const item = { ...make(), ...(prev ? { id: prev.id } : {}) };
+      // Lo que no venga en el Excel (p. ej. columnas nuevas en un archivo viejo) se conserva
+      const item = { ...make(), ...(prev || {}) };
       for (const [, key] of cols) if (!key.startsWith('_') && row[key] !== undefined) item[key] = row[key];
       p[list].push(item);
     }

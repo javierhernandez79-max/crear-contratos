@@ -21,7 +21,7 @@ export function newParty(kind = 'pm', propia = false) {
 }
 
 export const newApoderado = () => ({
-  id: uid(), nombre: '', cargo: 'Apoderado legal',
+  id: uid(), nombre: '', cargo: 'Apoderado legal', correo: '',
   poderNumero: '', poderFecha: '', notario: '', notariaNumero: '', notariaCiudad: '',
   facultades: '', vigente: true,
 });

@@ -10,6 +10,7 @@ import {
 import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
+import * as ds from './docusign.js';
 import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
@@ -82,11 +83,11 @@ const moldeDe = (c) => (c.formato && allTemplates().find((t) => t.id === c.templ
 /** Contrato que sale del molde pero cuya plantilla ya no está en este equipo (p. ej., falta sincronizar). */
 const sinMolde = (c) => !!c.conMolde && !moldeDe(c);
 /** Word del contrato: del molde del formato (conserva su estilo) o del generador de la app. */
-async function wordDe(c, label = '') {
+async function wordDe(c, label = '', opts = {}) {
   if (c.conMolde) {
     const molde = moldeDe(c);
     if (!molde) throw new Error(`No está la plantilla del formato ${c.formato || ''} en este equipo; sincroniza e intenta de nuevo.`);
-    return moldeDocx(c, molde);
+    return moldeDocx(c, molde, opts);
   }
   return buildDocxBlob(await loadDocx(), c, { label });
 }
@@ -125,6 +126,7 @@ const ICONS = {
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',
   paperclip: '<path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -2227,7 +2229,7 @@ const PARTY_FIELDS = {
     ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría', 'text', 'la Ciudad de México'], ['folioMercantil', 'Folio mercantil electrónico'],
     ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['objetoSocial', 'Objeto social (resumen)', 'address']],
   pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['sexo', 'Sexo'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
-  apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
+  apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['correo', 'Correo (firma remota)', 'email'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
     ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…']],
 };
 
@@ -3020,6 +3022,63 @@ async function uploadAnexos(linked) {
 }
 
 // --- Ajustes: bloque de Dropbox ---
+function docusignSettingsHTML() {
+  const cfg = ds.config();
+  const conn = ds.isConnected();
+  return `
+    <section class="card settings-block" id="ds-block">
+      <h3>DocuSign (firma remota)</h3>
+      ${ds.isLinked() ? `
+        <p>${conn ? 'Conectado' : 'Sesión vencida'} como <strong>${esc(cfg.user?.name || '')}</strong> <span class="muted">${esc(cfg.user?.email || '')}</span></p>
+        <p class="muted small">Cuenta: ${esc(cfg.account?.name || '')} · ${esc(ds.ENVS[cfg.env])}${conn ? ` · sesión vigente hasta ${fmtDateTime(cfg.expiresAt)}` : ''}</p>
+        <p class="muted small">DocuSign pide volver a entrar cada 8 horas. Los contratos ya enviados no se afectan.</p>
+        <div class="row wrap">
+          ${conn ? '' : '<button class="btn primary" data-ds="connect">Volver a conectar</button>'}
+          <button class="btn ghost danger" data-ds="disconnect">Desconectar</button>
+        </div>` : `
+        <p class="muted">Envía los contratos de prestación de servicios aprobados para que las partes los firmen por correo con DocuSign.</p>
+        <div class="form-grid full">
+          <label class="field"><span>Integration Key</span><input id="ds-key" value="${esc(cfg.key || '')}" placeholder="p. ej. 1a2b3c4d-…" autocomplete="off"></label>
+          <label class="field"><span>Ambiente</span><select id="ds-env">${Object.entries(ds.ENVS).map(([k, l]) => `<option value="${k}" ${k === cfg.env ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        </div>
+        <details class="new-var">
+          <summary>Cómo obtener el Integration Key (una sola vez)</summary>
+          <ol class="small muted steps">
+            <li>Entra a <a href="https://developers.docusign.com" target="_blank" rel="noopener">developers.docusign.com</a> y crea una cuenta de desarrollador (gratis, ambiente de pruebas).</li>
+            <li>En <em>Settings → Apps and Keys</em> pulsa <em>Add App and Integration Key</em> y ponle “Documentos Legales”.</li>
+            <li>En <em>Authentication</em> indica que la app <b>no</b> guarda un secreto (aplicación de navegador) y activa <em>Implicit Grant</em>.</li>
+            <li>En <em>Redirect URIs</em> agrega exactamente: <code>${esc(ds.redirectUri())}</code></li>
+            <li>En <em>CORS configuration</em> agrega el origen <code>${esc(location.origin)}</code> y permite GET, POST y PUT.</li>
+            <li>Copia el <em>Integration Key</em> aquí (o en <code>js/config.js</code> para que nadie lo capture). No uses ni compartas el <em>secret key</em>.</li>
+          </ol>
+        </details>
+        <button class="btn primary" data-ds="connect">${icon('link')} Conectar con DocuSign</button>`}
+    </section>`;
+}
+
+function bindDocusignSettings() {
+  const box = $('#ds-block');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-ds]')?.dataset.ds;
+    if (!act) return;
+    try {
+      if (act === 'connect') {
+        if ($('#ds-key')) await ds.setOptions({ key: $('#ds-key').value, env: $('#ds-env').value });
+        return ds.startAuth();
+      }
+      if (act === 'disconnect') {
+        if (!(await confirmDialog('Desconectar DocuSign', 'Los contratos ya enviados siguen su curso en DocuSign; para ver su estado tendrás que volver a conectar.', 'Desconectar'))) return;
+        await ds.disconnect();
+        toast('DocuSign desconectado');
+        return renderSettings();
+      }
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+}
+
 async function dropboxSettingsHTML() {
   const cfg = dbx.config();
   const info = await sync.syncInfo();
@@ -3139,6 +3198,201 @@ async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
   return rec;
 }
 
+// ---------- Firma remota con DocuSign (contratos de prestación de servicios) ----------
+const esServicios = esContratoServicios;
+const ENVIO_ABIERTO = ['created', 'sent', 'delivered', 'signed'];
+const revisando = new Set(); // contratos cuyo estado se está consultando
+const ultimaRevision = new Map(); // id → última consulta automática
+const envioActivo = (c) => !!c.docusign && ENVIO_ABIERTO.includes(c.docusign.status);
+
+/** Persona que firma por un firmante: el apoderado elegido (persona moral) o la persona física. */
+function firmantePersona(c, sg) {
+  const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
+  const apo = p?.apoderados?.find((a) => a.id === sg.party.apoderadoId);
+  return {
+    nombre: apo?.nombre || (p?.kind === 'pf' ? p.nombre : '') || fill(c, sg.name).split(',')[0],
+    correo: apo?.correo || p?.correo || '',
+    propia: !!p?.propia,
+  };
+}
+
+function envioHTML(c) {
+  const e = c.docusign;
+  const abierto = envioActivo(c);
+  const cambio = abierto && e.hash && e.hash !== contentHash(c);
+  return `
+    <section class="card form-block" id="ds-envio">
+      <h3>${icon('mail')} Firma con DocuSign · <span class="badge ${e.status === 'completed' ? 'final' : ['declined', 'voided'].includes(e.status) ? 'invalid' : 'revision'}">${esc(ds.statusLabel(e.status))}</span></h3>
+      <p class="muted small">Enviado por ${esc(e.sentBy || '—')} el ${fmtDateTime(e.sentAt)} · ${esc(ds.ENVS[e.env] || '')}${e.checkedAt ? ` · revisado ${fmtRelative(e.checkedAt)}` : ''}</p>
+      ${cambio ? `<div class="banner warn">${icon('alert')} <span>El contrato cambió después de enviarlo: en DocuSign se firma la versión enviada. Cancela el envío y vuelve a enviarlo.</span></div>` : ''}
+      ${e.status === 'declined' ? `<div class="banner warn">${icon('alert')} <span>Un firmante rechazó firmar${e.recipients.find((r) => r.declinedReason) ? `: “${esc(e.recipients.find((r) => r.declinedReason).declinedReason)}”` : ''}.</span></div>` : ''}
+      ${e.status === 'voided' && e.voidedReason ? `<p class="muted small">Motivo de cancelación: ${esc(e.voidedReason)}</p>` : ''}
+      <div class="doc-list">${e.recipients.map((r) => `
+        <div class="doc-item">
+          <span class="badge ${r.status === 'completed' ? 'final' : r.status === 'declined' ? 'invalid' : 'revision'}">${esc(r.status === 'completed' ? 'Firmó' : r.status === 'declined' ? 'Rechazó' : r.status === 'delivered' ? 'Lo abrió' : 'Pendiente')}</span>
+          <div class="anexo-main"><strong>${esc(r.name)}</strong><span class="muted small">${esc(r.email)}${r.signedAt ? ` · ${fmtDateTime(r.signedAt)}` : ''}</span></div>
+        </div>`).join('')}
+        ${(e.enApp || []).map((n) => `<div class="doc-item"><span class="badge final">En la app</span><div class="anexo-main"><strong>${esc(n)}</strong><span class="muted small">Firmó en la app antes del envío</span></div></div>`).join('')}
+      </div>
+      <div class="row wrap">
+        ${abierto ? `
+          ${ds.isConnected() ? '<button class="btn" data-wf="ds-refresh">Actualizar estado</button>' : '<button class="btn" data-wf="ds-settings">Conectar DocuSign para ver el estado</button>'}
+          <button class="btn ghost danger" data-wf="ds-void">Cancelar envío</button>`
+        : e.status !== 'completed' && c.status === 'aprobado' ? '<button class="btn primary" data-wf="ds-reset">Preparar un nuevo envío</button>' : ''}
+      </div>
+    </section>`;
+}
+
+async function enviarDocuSign(c) {
+  if (!ds.isConnected()) {
+    if (await confirmDialog('Conectar DocuSign', ds.isLinked() ? 'La sesión de DocuSign venció (dura 8 horas). ¿Conectar de nuevo?' : 'Primero conecta la cuenta de DocuSign en Ajustes.', ds.isLinked() ? 'Conectar' : 'Ir a Ajustes', 'primary')) {
+      return ds.isLinked() ? ds.startAuth() : go('#/ajustes');
+    }
+    return;
+  }
+  // Con formato propio (Word original) las firmas hechas en la app no van en el documento: firman todos en DocuSign
+  const pendientes = c.signers.filter((sg) => c.conMolde || !c.signatures[sg.id]);
+  if (!pendientes.length) return toast('Todos los firmantes ya firmaron en la app', 'error');
+  const firmados = c.signers.filter((sg) => !c.conMolde && c.signatures[sg.id]);
+  const r = await modal({
+    title: 'Enviar a firma con DocuSign',
+    wide: true,
+    body: `
+      <p class="muted small">Cada firmante recibe un correo de DocuSign con el PDF aprobado; todos firman a la vez. Si nuestro apoderado prefiere firmar en la app (autógrafa o e.firma), cancela, fírmalo en la pestaña <b>Firmas</b> y vuelve a enviar: su firma va incluida en el PDF.</p>
+      ${pendientes.map((sg) => {
+        const f = firmantePersona(c, sg);
+        return `
+        <fieldset class="card soft ds-rcpt">
+          <legend><strong>${esc(sg.role)}</strong>${f.propia ? ' <span class="badge grupo">Nuestra parte</span>' : ''}</legend>
+          <div class="form-grid">
+            <label class="field"><span>Nombre de quien firma</span><input name="n_${esc(sg.id)}" value="${esc(f.nombre)}" required></label>
+            <label class="field"><span>Correo</span><input name="e_${esc(sg.id)}" type="email" value="${esc(f.correo)}" required></label>
+          </div>
+        </fieldset>`;
+      }).join('')}
+      ${firmados.length ? `<p class="muted small">Ya firmaron en la app: ${firmados.map((sg) => esc(fill(c, sg.name) || sg.role)).join(', ')}.</p>` : ''}
+      <label class="field"><span>Mensaje para los firmantes (opcional)</span><textarea name="msg" rows="2" maxlength="1000"></textarea></label>
+      <label class="check"><input type="checkbox" name="guardar" checked> Guardar los correos en el catálogo</label>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Enviar', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  if (state.current !== c) return toast('El contrato se actualizó desde otro equipo; vuelve a intentarlo', 'error');
+  const anchors = {};
+  const recipients = pendientes.map((sg, i) => {
+    anchors[sg.id] = ds.anchorOf(i + 1);
+    return { signerId: sg.id, name: String(r.data[`n_${sg.id}`]).trim(), email: String(r.data[`e_${sg.id}`]).trim(), anchor: anchors[sg.id] };
+  });
+  toast('Enviando a DocuSign…');
+  const base = safeName(nombreDe(c));
+  // Formato propio: va el Word del formato (DocuSign lo convierte a PDF respetando su estilo), con las marcas
+  // invisibles de firma que trae el molde en el bloque de firmas de cada parte
+  const porRol = Object.fromEntries(pendientes.filter((sg) => sg.bind?.prefix).map((sg) => [sg.bind.prefix, anchors[sg.id]]));
+  const res = await ds.sendEnvelope({
+    subject: `Firma: ${nombreDe(c)}`,
+    message: r.data.msg,
+    pdf: c.conMolde ? await wordDe(c, '', { anchors: porRol }) : buildPdf(c, { anchors }).blob,
+    fileName: `${base}.${c.conMolde ? 'docx' : 'pdf'}`,
+    recipients,
+  });
+  if (r.data.guardar) await guardarCorreos(c, pendientes, recipients);
+  c.docusign = {
+    envelopeId: res.envelopeId, status: res.status || 'sent', env: ds.config().env,
+    sentAt: Date.now(), sentBy: ds.config().user?.name || cuenta(), hash: contentHash(c),
+    recipients: recipients.map(({ signerId, name, email }) => ({ signerId, name, email, status: 'sent' })),
+    enApp: firmados.map((sg) => fill(c, sg.name) || sg.role),
+  };
+  logChange(c, `Envió el contrato a firma con DocuSign a ${recipients.map((x) => `${x.name} <${x.email}>`).join(', ')}`);
+  await saveContract(c);
+  renderDocumento();
+  toast('Enviado a firma: cada firmante recibirá un correo de DocuSign', 'ok');
+}
+
+/** Guarda en el catálogo el correo usado para cada firmante (apoderado o persona física). */
+async function guardarCorreos(c, signers, recipients) {
+  for (const sg of signers) {
+    const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
+    const email = recipients.find((x) => x.signerId === sg.id)?.email;
+    if (!p || !email) continue;
+    const apo = p.apoderados?.find((a) => a.id === sg.party.apoderadoId);
+    const target = apo || p;
+    if (target.correo === email) continue;
+    target.correo = email;
+    await saveParty(p);
+  }
+}
+
+/** Consulta DocuSign; si ya firmaron todos, guarda el PDF firmado y el certificado y marca el contrato firmado. */
+async function revisarEnvio(c, { aviso = false } = {}) {
+  const e = c.docusign;
+  if (!envioActivo(c) || !ds.isConnected()) return;
+  if (e.env !== ds.config().env) { if (aviso) toast('El envío se hizo en otro ambiente de DocuSign', 'error'); return; }
+  let st;
+  try {
+    st = await ds.envelopeStatus(e.envelopeId);
+  } catch (err) {
+    if (aviso) toast(err.status === 404 || err.status === 403 ? 'Tu usuario de DocuSign no puede ver este envío; consúltalo quien lo envió' : err.message, 'error');
+    return;
+  }
+  const antes = JSON.stringify([e.status, e.recipients.map((r) => r.status)]);
+  e.status = st.status;
+  e.voidedReason = st.voidedReason;
+  e.checkedAt = Date.now();
+  for (const r of e.recipients) {
+    const s = st.signers.find((x) => x.email.toLowerCase() === r.email.toLowerCase() && x.name === r.name) || st.signers.find((x) => x.email.toLowerCase() === r.email.toLowerCase());
+    if (s) Object.assign(r, { status: s.status, signedAt: s.signedAt, declinedReason: s.declinedReason });
+  }
+  const cambio = antes !== JSON.stringify([e.status, e.recipients.map((r) => r.status)]);
+  if (st.status === 'completed' && !e.files) {
+    const { signed, certificate } = await ds.signedFiles(e.envelopeId);
+    const base = safeName(nombreDe(c));
+    const descargar = !dbx.isConnected(); // sin Dropbox, la única copia es la descarga
+    const f1 = await deliverFile(c, signed, `${base} - FIRMADO DocuSign.pdf`, 'pdf', { descargar });
+    const f2 = await deliverFile(c, certificate, `${base} - certificado DocuSign.pdf`, 'pdf', { descargar });
+    e.files = [f1.id, f2.id];
+    e.completedAt = st.completedAt || Date.now();
+    c.status = 'final';
+    addVersion(c, 'Firmado en DocuSign');
+    logChange(c, 'Todas las partes firmaron en DocuSign; se guardaron el PDF firmado y el certificado');
+    await saveContract(c);
+    if (state.current === c) renderEditorHeader();
+    toast(`“${nombreDe(c)}” quedó firmado en DocuSign${dbx.isConnected() ? '; PDF firmado guardado en Dropbox' : ''}`, 'ok');
+    return;
+  }
+  if (cambio) {
+    if (['declined', 'voided'].includes(st.status)) logChange(c, st.status === 'declined' ? 'Un firmante rechazó firmar en DocuSign' : 'El envío a DocuSign se canceló');
+    await saveContract(c);
+  } else if (aviso) toast('Sin cambios en DocuSign');
+}
+
+async function cancelarEnvio(c) {
+  const r = await modal({
+    title: 'Cancelar envío',
+    body: `<p>Los firmantes recibirán un aviso de DocuSign y ya no podrán firmar este envío.</p>
+      <label class="field"><span>Motivo</span><input name="motivo" value="Se enviará una versión corregida" required maxlength="200"></label>`,
+    actions: [{ label: 'Volver', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Cancelar envío', value: 'ok', kind: 'danger' }],
+  });
+  if (r.value !== 'ok') return;
+  if (!ds.isConnected()) return toast('Conecta DocuSign en Ajustes para cancelar el envío', 'error');
+  await ds.voidEnvelope(c.docusign.envelopeId, r.data.motivo);
+  Object.assign(c.docusign, { status: 'voided', voidedReason: r.data.motivo, checkedAt: Date.now() });
+  logChange(c, `Canceló el envío a DocuSign: ${r.data.motivo}`);
+  await saveContract(c);
+  renderDocumento();
+  toast('Envío cancelado', 'ok');
+}
+
+/** Revisa en segundo plano los envíos abiertos (cada 5 minutos, con DocuSign conectado). */
+async function revisarEnvios() {
+  if (!ds.isConnected()) return;
+  for (const c of state.contracts.filter(envioActivo)) {
+    // Si el contrato está abierto se actualiza esa copia, para que el autoguardado no regrese el estado anterior
+    const obj = state.current?.id === c.id ? state.current : c;
+    if (revisando.has(obj.id)) continue;
+    revisando.add(obj.id);
+    try { await revisarEnvio(obj); } catch (err) { console.warn('DocuSign', err); } finally { revisando.delete(obj.id); }
+  }
+}
+
 const STATUS_STEPS = [['borrador', 'Borrador'], ['revision', 'En revisión'], ['aprobado', 'Aprobado'], ['final', 'Firmado']];
 
 function renderDocumento() {
@@ -3170,10 +3424,11 @@ function renderDocumento() {
         </div>`
       : c.status === 'aprobado' ? `
         <h3>Aprobado</h3>
-        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado.</p>
-        <div class="row">
+        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado${esServicios(c) ? ', o envíalo a firma por correo con DocuSign' : ''}.</p>
+        <div class="row wrap">
           ${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`}
-          <a class="btn primary" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
+          <a class="btn ${esServicios(c) && !envioActivo(c) ? '' : 'primary'}" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
+          ${esServicios(c) && !envioActivo(c) ? `<button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>` : ''}
         </div>`
       : `
         <h3>Firmado</h3>
@@ -3181,6 +3436,7 @@ function renderDocumento() {
         <div class="row">${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button>`}</div>`}
       <button class="link" data-wf="word">Descargar Word de trabajo (sin guardar en Dropbox)</button>
     </section>
+    ${c.docusign ? envioHTML(c) : ''}
     <section class="card form-block">
       <h3>Dónde se guarda</h3>
       ${connected ? `
@@ -3202,6 +3458,15 @@ function renderDocumento() {
         </div>`).join('')}</div>` : '<p class="muted small">Aún no se ha generado ningún documento.</p>'}
     </section>`;
 
+  if (envioActivo(c) && ds.isConnected() && !revisando.has(c.id) && Date.now() - (ultimaRevision.get(c.id) || 0) > 60000) {
+    // Al abrir la pestaña se consulta el estado en DocuSign (sin servidor no hay aviso automático), máximo una vez por minuto
+    revisando.add(c.id);
+    ultimaRevision.set(c.id, Date.now());
+    revisarEnvio(c).catch((err) => console.warn('DocuSign', err)).finally(() => {
+      revisando.delete(c.id);
+      if (state.current === c && state.tab === 'documento') renderDocumento();
+    });
+  }
   if (connected && !c.carpeta) {
     // Al leer las carpetas existentes puede reconocerse la del expediente (p. ej. "MERCASA DEL BAJIO")
     loadExpedienteFolders().then(() => { const el = $('#doc-folder'); if (el) el.textContent = contractFolder(c); });
@@ -3216,6 +3481,15 @@ function renderDocumento() {
       if (act === 'approve') return await approve(c, btn);
       if (act === 'pdf') return exportPdf(c);
       if (act === 'word') return downloadWord(c);
+      if (act === 'ds-send') return await enviarDocuSign(c);
+      if (act === 'ds-refresh') { btn.disabled = true; await revisarEnvio(c, { aviso: true }); return renderDocumento(); }
+      if (act === 'ds-void') return await cancelarEnvio(c);
+      if (act === 'ds-reset') {
+        delete c.docusign;
+        touched({ log: 'Descartó el envío a DocuSign para enviarlo de nuevo', content: false });
+        return renderDocumento();
+      }
+      if (act === 'ds-settings') return go('#/ajustes');
       if (act === 'open') return openDropboxFile(c.documentos.find((d) => d.id === btn.closest('.doc-item').dataset.id).path);
       if (act === 'folder') {
         await loadExpedienteFolders();
@@ -3534,6 +3808,7 @@ async function renderSettings() {
       <p class="small muted" ${state.installPrompt ? 'hidden' : ''}>En iPhone: toca Compartir y luego “Agregar a inicio”. En Chrome o Edge: usa el ícono de instalar en la barra de direcciones.</p>
     </section>
     ${await dropboxSettingsHTML()}
+    ${docusignSettingsHTML()}
     <section class="card settings-block">
       <h3>Vencimientos</h3>
       <p class="muted">Avisar de los contratos de trabajo por tiempo determinado que terminan dentro de estos días. Se guarda en este equipo.</p>
@@ -3558,6 +3833,7 @@ async function renderSettings() {
     </section>`;
 
   bindDropboxSettings();
+  bindDocusignSettings();
   $('#pref-dias').addEventListener('change', async (e) => {
     const n = Math.round(Number(e.target.value));
     if (!(n >= 1 && n <= 365)) { e.target.value = state.prefs.anticipacion; return toast('Escribe un número de días entre 1 y 365', 'error'); }
@@ -4196,10 +4472,16 @@ const downloadLoteZip = conAviso(async (l) => {
 (async function init() {
   await loadAll();
   await dbx.loadConfig();
+  await ds.loadConfig();
   db.requestPersistence();
   if (!navigator.onLine) $('#offline')?.removeAttribute('hidden');
   try {
     if (await dbx.handleRedirect()) toast(`Conectado a Dropbox como ${dbx.config().account?.name}`, 'ok');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+  try {
+    if (await ds.handleRedirect()) toast(`Conectado a DocuSign como ${ds.config().user?.name}`, 'ok');
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -4209,6 +4491,10 @@ const downloadLoteZip = conAviso(async (l) => {
     setSyncPill('ok');
     runSync();
     setInterval(() => { if (!document.hidden) runSync(); }, 60 * 1000);
+  }
+  if (ds.isConnected()) {
+    setTimeout(revisarEnvios, 5000);
+    setInterval(() => { if (!document.hidden) revisarEnvios(); }, 5 * 60 * 1000);
   }
   window.addEventListener('focus', () => scheduleSync(500));
   window.addEventListener('online', () => scheduleSync(500));
