@@ -109,7 +109,7 @@ const toBase64 = async (blob) => {
 export const anchorOf = (n) => `~dsf${n}~`;
 
 /**
- * Crea y envía un sobre. `recipients` = [{ name, email, anchor }]: todos firman a la vez.
+ * Crea y envía un sobre con un PDF o un Word (`pdf`, tipo según `fileName`). `recipients` = [{ name, email, anchor }]: todos firman a la vez.
  * Devuelve { envelopeId, status }.
  */
 export async function sendEnvelope({ subject, message, pdf, fileName, recipients }) {
@@ -127,7 +127,7 @@ export async function sendEnvelope({ subject, message, pdf, fileName, recipients
     body: {
       emailSubject: subject.slice(0, 100),
       emailBlurb: message || '',
-      documents: [{ documentId: '1', name: fileName, fileExtension: 'pdf', documentBase64 }],
+      documents: [{ documentId: '1', name: fileName, fileExtension: fileName.split('.').pop() || 'pdf', documentBase64 }],
       recipients: { signers },
       status: 'sent',
     },

@@ -217,7 +217,7 @@ textarea { resize: vertical; line-height: 1.55; }
   text-overflow: ellipsis;
 }
 .doc-title:focus { background: var(--surface) !important; }
-.title-meta { display: flex; gap: 8px; align-items: center; padding-left: 4px; }
+.title-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding-left: 4px; min-width: 0; }
 .tabs {
   display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none;
   border-bottom: 1px solid var(--border); margin: 4px -16px 16px; padding: 0 12px;
@@ -590,9 +590,11 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 }
 .section-title { font-size: 1.15rem; margin: 26px 0 6px; }
 .plazo-chip { display: inline-block; margin-left: 6px; white-space: nowrap; }
+.badge.formato-chip { margin-left: 6px; background: var(--surface-2, #eef1f5); color: var(--muted, #555); font-family: ui-monospace, monospace; }
 .contract-list .plazo-chip { display: block; margin: 4px 0 0; }
 .p1-grid.full { width: 100%; }
-.serv-list .ll-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 1.2fr) minmax(0, 2fr); align-items: start; }
+.serv-list .ll-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1.1fr) minmax(0, 1.5fr) minmax(0, 1.8fr); align-items: start; }
+.serv-list .ll-row > span:has(> [data-fmt]) { display: flex; flex-direction: column; gap: 4px; }
 @media (max-width: 760px) {
   .serv-list .ll-row { grid-template-columns: 1fr; }
   .serv-list .ll-row > span { display: flex !important; }

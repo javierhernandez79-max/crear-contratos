@@ -14,10 +14,11 @@ import * as ds from './docusign.js';
 import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
+import { moldeDocx } from './molde.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios } from './servicios.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer } from './extraccion.js';
 
@@ -76,6 +77,23 @@ const allTemplates = () => {
   return [...state.userTemplates, ...TEMPLATES.filter((t) => !replaced.has(t.id))];
 };
 const go = (hash) => { location.hash = hash; };
+
+/** Word original del formato (molde) del contrato, o null si el contrato sale del generador de la app. */
+const moldeDe = (c) => (c.formato && allTemplates().find((t) => t.id === c.templateId)?.molde) || null;
+/** Contrato que sale del molde pero cuya plantilla ya no está en este equipo (p. ej., falta sincronizar). */
+const sinMolde = (c) => !!c.conMolde && !moldeDe(c);
+/** Word del contrato: del molde del formato (conserva su estilo) o del generador de la app. */
+async function wordDe(c, label = '', opts = {}) {
+  if (c.conMolde) {
+    const molde = moldeDe(c);
+    if (!molde) throw new Error(`No está la plantilla del formato ${c.formato || ''} en este equipo; sincroniza e intenta de nuevo.`);
+    return moldeDocx(c, molde, opts);
+  }
+  return buildDocxBlob(await loadDocx(), c, { label });
+}
+const avisoMolde = (c) => (c.conMolde
+  ? `<div class="banner info">${icon('doc')} <span>Formato ${esc(c.formato)}: el Word sale del formato original (letra, márgenes y encabezados intactos) con los datos llenos. El texto de las cláusulas es fijo; el PDF se saca desde Word (Archivo › Guardar como › PDF).${sinMolde(c) ? ' <strong>Falta la plantilla de este formato en este equipo: sincroniza.</strong>' : ''}</span></div>`
+  : '');
 
 const ICONS = {
   back: '<path d="M15 18l-6-6 6-6"/>',
@@ -273,8 +291,10 @@ function setNav(active) {
 function renderServicios() {
   setNav('home');
   const tpls = allTemplates().filter(isServiciosTemplate);
-  const d = (state.servDraft ||= { templateId: tpls[0]?.id || '', fecha: todayISO(), file: null, cliente: '', clienteModo: 'catalogo', clienteId: '', clienteApoId: '', manual: {}, empresas: [] });
-  const tpl = tpls.find((t) => t.id === d.templateId);
+  const d = (state.servDraft ||= { fmt: {}, fecha: todayISO(), file: null, cliente: '', clienteModo: 'catalogo', clienteId: '', clienteApoId: '', manual: {}, empresas: [] });
+  // Formatos: las plantillas de servicios con código (F1, F2…); mientras no haya ninguna, cualquier plantilla de servicios
+  const conCodigo = tpls.filter(codigoFormato).sort(ordenFormato);
+  const formatos = conCodigo.length ? conCodigo : tpls;
   const grupo = sortParties(state.parties.filter((p) => p.activa && p.propia));
   const todas = sortParties(state.parties.filter((p) => p.activa));
   const cliente = state.parties.find((p) => p.id === d.clienteId);
@@ -285,14 +305,17 @@ function renderServicios() {
   };
   const clienteCands = d.cliente ? candidatos(d.cliente, todas, 0.3) : [];
   const clienteOpts = [...clienteCands.map((x) => x.p), ...todas.filter((p) => !clienteCands.some((x) => x.p === p))];
-  const manualVars = tpl ? tpl.vars.filter(([k]) => k.startsWith('cliente_')) : [];
+  // Datos del cliente capturado a mano: los que pide cualquiera de los formatos elegidos (o de todos, si aún no hay)
+  const elegidos = formatos.filter((t) => Object.values(d.fmt).includes(t.id));
+  const manualVars = [...new Map((elegidos.length ? elegidos : formatos).flatMap((t) => t.vars.filter(([k]) => k.startsWith('cliente_'))).map((v) => [v[0], v])).values()];
   // Quien tenga apoderados en el catálogo debe tener elegido quién firma
   const firmaOk = (p, apoId) => !p || !p.apoderados.some((a) => a.nombre.trim()) || !!apoId;
   const nCrear = new Set(d.empresas.map((e) => e.partyId || e.nombre)).size;
   const empresasOk = d.empresas.length && d.empresas.every((e) => e.partyId && firmaOk(state.parties.find((p) => p.id === e.partyId), e.apoId));
   // El nombre del Excel viene precargado en la captura manual aunque no se haya tocado el campo
   if (d.clienteModo === 'manual') d.manual.cliente_nombre ??= d.cliente;
-  const listo = tpl && empresasOk &&
+  const fx = formatosServicios(d, formatos);
+  const listo = empresasOk && fx.ok &&
     (d.clienteModo === 'catalogo' ? !!cliente && firmaOk(cliente, d.clienteApoId) : !!String(d.manual.cliente_nombre || '').trim());
   app.innerHTML = `
     <header class="page-head">
@@ -303,13 +326,11 @@ function renderServicios() {
     </header>
     <section class="card settings-block lote-form">
       <div class="row wrap">
-        <label class="field"><span>Plantilla</span>
-          <select id="s-tpl"><option value="">Elige…</option>${tpls.map((t) => `<option value="${esc(t.id)}" ${t.id === d.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Fecha de firma</span><input id="s-fecha" type="date" value="${esc(d.fecha)}"></label>
       </div>
-      ${tpls.length ? '' : '<p class="warn-text small">No hay plantilla de servicios con la variable {{servicios}}. Sincroniza para traer la plantilla marco actualizada.</p>'}
+      ${tpls.length ? (conCodigo.length ? '' : '<p class="warn-text small">Ninguna plantilla de servicios tiene código de formato (F1, F2…): se puede elegir cualquiera, pero no se aplica la regla de formatos por cliente.</p>') : '<p class="warn-text small">No hay plantilla de servicios con la variable {{servicios}}. Sincroniza para traer la plantilla marco actualizada.</p>'}
       <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Sugerido de conceptos'}<input type="file" id="s-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
-      <p class="muted small">Arriba el nombre del cliente; abajo la tabla EMPRESA | CONCEPTO. Se crea un contrato por empresa del grupo con todos sus conceptos como objeto (sin la clave SAT). Los montos no se usan.</p>
+      <p class="muted small">Arriba el nombre del cliente; abajo la tabla EMPRESA | CONCEPTO. Se crea un contrato por empresa del grupo con todos sus conceptos como objeto (sin la clave SAT). Los montos no se usan. A cada empresa se le asigna un formato; con un mismo cliente, cada empresa conserva su formato y un formato no se repite entre empresas.</p>
     </section>
     ${d.file ? `
       <h4 class="sub">Cliente${d.cliente ? ` <span class="muted small">(en el Excel: ${esc(d.cliente)})</span>` : ''}</h4>
@@ -332,14 +353,16 @@ function renderServicios() {
       <h4 class="sub">Contratos a crear (${nCrear})</h4>
       ${d.empresas.length ? `
       <div class="card lotes-list serv-list">
-        <div class="ll-row ll-head"><span>En el Excel</span><span>Empresa del grupo (prestador)</span><span>Firma</span><span>Servicios</span></div>
+        <div class="ll-row ll-head"><span>En el Excel</span><span>Empresa del grupo (prestador)</span><span>Firma</span><span>Formato</span><span>Servicios</span></div>
         ${d.empresas.map((e, i) => {
           const p = state.parties.find((x) => x.id === e.partyId);
+          const repetida = d.empresas.findIndex((x) => x.partyId && x.partyId === e.partyId) < i;
           return `
         <div class="ll-row">
           <span><strong>${esc(e.nombre)}</strong>${d.empresas.findIndex((x) => x.partyId && x.partyId === e.partyId) < i ? '<span class="warn-text small">Misma empresa que otra fila: sus servicios van en un solo contrato</span>' : ''}${e.manual ? '<span class="muted small">Elegida a mano</span>' : e.score === 1 ? '<span class="ok-text small">Coincide</span>' : e.score ? `<span class="warn-text small">Parecido ${Math.round(e.score * 100)}%: revisa</span>` : '<span class="error-text small">Sin coincidencia: elígela</span>'}</span>
           <span><select data-emp="${i}"><option value="">Elige…</option>${grupo.map((g) => `<option value="${esc(g.id)}" ${g.id === e.partyId ? 'selected' : ''}>${esc(g.nombre)}</option>`).join('')}</select></span>
           <span>${apoSelect(p, e.apoId, `data-apo="${i}"`)}</span>
+          <span>${repetida ? '<span class="muted small">El de arriba</span>' : formatoSelect(d, fx, e.partyId)}</span>
           <span class="small">${e.conceptos.map(esc).join('<br>')}</span>
         </div>`;
         }).join('')}
@@ -350,7 +373,7 @@ function renderServicios() {
       </div>` : ''}`;
 
   const vigenteUnico = (p) => { const v = p?.apoderados.filter((a) => a.nombre.trim() && a.vigente) || []; return v.length === 1 ? v[0].id : ''; };
-  $('#s-tpl').addEventListener('change', (e) => { d.templateId = e.target.value; renderServicios(); });
+  $$('[data-fmt]').forEach((sel) => sel.addEventListener('change', () => { d.fmt[sel.dataset.fmt] = sel.value; renderServicios(); }));
   $('#s-fecha').addEventListener('change', (e) => { d.fecha = e.target.value; });
   $('#s-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
@@ -383,8 +406,13 @@ function renderServicios() {
   $('#s-cli-apo')?.addEventListener('change', (e) => { d.clienteApoId = e.target.value; renderServicios(); });
   $$('[data-man]').forEach((inp) => inp.addEventListener('input', () => {
     d.manual[inp.dataset.man] = inp.value;
-    if (inp.dataset.man === 'cliente_nombre') $('#s-create').disabled = !(tpl && empresasOk && inp.value.trim());
+    if (inp.dataset.man === 'cliente_nombre') $('#s-create').disabled = !(empresasOk && fx.ok && inp.value.trim());
   }));
+  // Con otro nombre de cliente cambian los formatos ya usados; solo se vuelve a dibujar si eso cambia algo
+  // (si no, al pasar al siguiente campo se perdería lo que se está escribiendo)
+  const firmaFx = (x) => JSON.stringify([d.fmt, [...x.filas].map(([id, f]) => [id, f.fijo?.formato, f.error, f.opciones.map((o) => o.motivo)])]);
+  const antes = firmaFx(fx);
+  $('[data-man="cliente_nombre"]')?.addEventListener('change', () => { if (firmaFx(formatosServicios(d, formatos)) !== antes) renderServicios(); });
   $$('[data-emp]').forEach((sel) => sel.addEventListener('change', () => {
     const e = d.empresas[Number(sel.dataset.emp)];
     e.partyId = sel.value;
@@ -408,20 +436,96 @@ function porEmpresa(empresas) {
   return [...m.values()];
 }
 
+/** Cliente del borrador de servicios: { id, nombre } o null. */
+function clienteServicios(d) {
+  if (d.clienteModo === 'catalogo') {
+    const p = state.parties.find((x) => x.id === d.clienteId);
+    return p ? { id: p.id, nombre: p.nombre } : null;
+  }
+  const nombre = String(d.manual.cliente_nombre ?? d.cliente ?? '').trim();
+  return nombre ? { id: null, nombre } : null;
+}
+
+/**
+ * Formato de cada empresa del borrador con la regla por cliente: la empresa que ya tiene formato con el
+ * cliente lo conserva (fijo) y un formato no se repite entre empresas (ni con las de contratos anteriores
+ * ni entre filas). Corrige `d.fmt` (partyId → plantilla) y devuelve { ok, filas: Map(partyId → fila) }.
+ */
+function formatosServicios(d, formatos) {
+  const cliente = clienteServicios(d);
+  const usados = cliente ? formatosDelCliente(state.contracts, cliente) : [];
+  const ids = [...new Set(d.empresas.map((e) => e.partyId).filter(Boolean))];
+  const tplDe = (id) => formatos.find((t) => t.id === d.fmt[id]);
+  const filas = new Map();
+  const tomados = new Map(); // código → fila
+  for (const id of ids) {
+    const pref = { id, nombre: state.parties.find((x) => x.id === id)?.nombre || '' };
+    const fila = { pref, fijo: formatoFijo(usados, pref), error: '' };
+    filas.set(id, fila);
+    if (!fila.fijo) continue;
+    const t = formatos.find((x) => codigoFormato(x) === fila.fijo.formato && x.id === fila.fijo.contrato.templateId)
+      || formatos.find((x) => codigoFormato(x) === fila.fijo.formato);
+    d.fmt[id] = t?.id || '';
+    if (!t) fila.error = `Ya tiene el formato ${fila.fijo.formato} con este cliente y esa plantilla no está disponible.`;
+    tomados.set(fila.fijo.formato, fila);
+  }
+  // Lo elegido a mano deja de valer si el formato ya es de otra empresa (p. ej., al cambiar de cliente)
+  for (const id of ids) {
+    const fila = filas.get(id);
+    if (fila.fijo) continue;
+    const cod = codigoFormato(tplDe(id));
+    if (!tplDe(id) || (cod && (tomados.has(cod) || formatoOcupado(usados, cod, fila.pref)))) d.fmt[id] = '';
+    else if (cod) tomados.set(cod, fila);
+  }
+  for (const id of ids) {
+    const fila = filas.get(id);
+    fila.opciones = formatos.map((t) => {
+      const cod = codigoFormato(t);
+      const hist = cod && formatoOcupado(usados, cod, fila.pref);
+      const otra = cod && tomados.get(cod);
+      return { t, motivo: hist ? `ya es de ${hist.prestador.nombre} con este cliente` : otra && otra !== fila ? `elegido para ${otra.pref.nombre}` : '' };
+    });
+    if (!d.fmt[id] && formatos.length === 1 && !fila.opciones[0].motivo) d.fmt[id] = formatos[0].id;
+    if (!d.fmt[id] && !fila.error) fila.error = fila.opciones.some((o) => !o.motivo) ? 'Elige el formato' : 'No queda ningún formato libre para esta empresa con este cliente';
+    else if (d.fmt[id]) fila.error = '';
+  }
+  return { ok: ids.length > 0 && ids.every((id) => d.fmt[id] && !filas.get(id).error), filas };
+}
+
+function formatoSelect(d, fx, partyId) {
+  const fila = fx.filas.get(partyId);
+  if (!fila) return '<span class="muted small">Elige la empresa</span>';
+  // "Prestación de servicios · Formato 2" ya dice el formato: basta el código
+  const label = (t) => (!codigoFormato(t) ? t.name : /formato/i.test(t.name) ? codigoFormato(t) : `${codigoFormato(t)} — ${t.name}`);
+  return `<select data-fmt="${esc(partyId)}" ${fila.fijo ? 'disabled' : ''} aria-label="Formato">
+      <option value="">Elige…</option>
+      ${fila.opciones.map((o) => `<option value="${esc(o.t.id)}" ${o.t.id === d.fmt[partyId] ? 'selected' : ''} ${o.motivo ? 'disabled' : ''}>${esc(label(o.t))}${o.motivo ? ` (${esc(o.motivo)})` : ''}</option>`).join('')}
+    </select>
+    ${fila.fijo ? `<span class="muted small">Fijo: ya lo usa con este cliente</span>` : ''}
+    ${fila.error && fila.error !== 'Elige el formato' ? `<span class="error-text small">${esc(fila.error)}</span>` : ''}`;
+}
+
 async function crearServicios() {
   const d = state.servDraft;
   if (!d) return;
-  const tpl = allTemplates().find((t) => t.id === d.templateId);
   const cliente = d.clienteModo === 'catalogo' ? state.parties.find((p) => p.id === d.clienteId) : null;
   const cliApo = cliente?.apoderados.find((a) => a.id === d.clienteApoId) || null;
   if (d.clienteModo === 'manual' && !d.manual.cliente_nombre) d.manual.cliente_nombre = d.cliente;
   const clienteNombre = cliente?.nombre || d.manual.cliente_nombre;
+  // La regla se revisa otra vez al crear: otro usuario pudo crear un contrato para el mismo cliente mientras tanto
+  const tpls = allTemplates().filter(isServiciosTemplate);
+  const conCodigo = tpls.filter(codigoFormato);
+  const fx = formatosServicios(d, conCodigo.length ? conCodigo : tpls);
+  if (!fx.ok) {
+    toast('Revisa los formatos: cambiaron los contratos de este cliente.', 'error');
+    return renderServicios();
+  }
   const grupo = { id: uid(), cliente: clienteNombre, archivo: d.file };
   const creados = [];
   for (const e of porEmpresa(d.empresas)) {
     const p = state.parties.find((x) => x.id === e.partyId);
     const apo = p.apoderados.find((a) => a.id === e.apoId) || null;
-    const c = newContractFromTemplate(tpl);
+    const c = newContractFromTemplate(allTemplates().find((t) => t.id === d.fmt[e.partyId]));
     applyParty(c, c.signers.find((s) => s.bind?.prefix === 'prestador'), p, apo);
     const sgC = c.signers.find((s) => s.bind?.prefix === 'cliente');
     if (cliente) applyParty(c, sgC, cliente, cliApo);
@@ -431,7 +535,7 @@ async function crearServicios() {
     c.etiqueta = `Prestación de servicios · ${p.nombre} · ${clienteNombre}`;
     c.grupoServicios = grupo;
     syncVarDefs(c);
-    logChange(c, `Creado desde el Sugerido de conceptos (${d.file}): ${e.conceptos.length} servicio${e.conceptos.length === 1 ? '' : 's'}`);
+    logChange(c, `Creado desde el Sugerido de conceptos (${d.file}): ${e.conceptos.length} servicio${e.conceptos.length === 1 ? '' : 's'}${c.formato ? `; formato ${c.formato}` : ''}`);
     await saveContract(c);
     creados.push(c);
   }
@@ -463,7 +567,7 @@ function renderServiciosRevision(gid) {
       return `
       <section class="serv-doc">
         <div class="serv-doc-head">
-          <div><strong>${i + 1}. ${esc(prest)}</strong>
+          <div><strong>${i + 1}. ${esc(prest)} ${formatoChip(c)}</strong>
             <span class="muted small">Firma: ${esc(c.variables.prestador_representante || 'sin representante')}${faltan ? ` · <span class="warn-text">${faltan} dato${faltan === 1 ? '' : 's'} por completar</span>` : ''}</span></div>
           <div class="row">${statusBadge(c)}<a class="btn sm" href="#/c/${c.id}/variables">${icon('pen')} Editar</a></div>
         </div>
@@ -525,6 +629,9 @@ function firmaBanner() {
 }
 
 /** Etiqueta "N días háb. sin firma" para contratos de servicios no firmados. */
+/** Código de formato (F1, F2…): solo en la app, nunca en el documento. */
+const formatoChip = (c) => (c.formato ? `<span class="badge formato-chip" title="Formato del contrato (no aparece en el documento)">${esc(c.formato)}</span>` : '');
+
 function plazoChip(c) {
   if (!esContratoServicios(c) || c.alertaFirma?.descartada) return '';
   const p = plazoFirma(c, todayISO());
@@ -777,7 +884,7 @@ function contractRow(c) {
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
-          <span>${statusBadge(c)}${plazoChip(c)}</span>
+          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
@@ -857,8 +964,7 @@ async function contractAction(act, c) {
 
 async function downloadWord(c) {
   try {
-    const D = await loadDocx();
-    download(await buildDocxBlob(D, c, { label: c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR' }), `${safeName(nombreDe(c))}.docx`);
+    download(await wordDe(c, c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR'), `${safeName(nombreDe(c))}.docx`);
     toast('Word descargado', 'ok');
   } catch (err) {
     console.error(err);
@@ -867,6 +973,10 @@ async function downloadWord(c) {
 }
 
 async function exportPdf(c) {
+  if (c.conMolde) {
+    if (await confirmDialog('PDF desde Word', `Este contrato usa el formato ${c.formato}: para conservar su letra y márgenes, el PDF se saca desde Word (Archivo › Guardar como › PDF). ¿Descargar el Word?`, 'Descargar Word', 'primary')) await downloadWord(c);
+    return;
+  }
   const missing = missingVariables(c);
   if (missing.length) {
     const ok = await confirmDialog('Faltan datos',
@@ -1038,6 +1148,7 @@ function renderEditorHeader() {
       <input id="doc-title" class="doc-title" value="${esc(c.title)}" aria-label="Título del contrato">
       <div class="title-meta">
         ${statusBadge(c)}
+        ${formatoChip(c)}
         ${plazoChip(c)}
         <span id="save-status" class="muted small">Guardado</span>
       </div>
@@ -1111,6 +1222,13 @@ let lastField = null;
 function renderSections() {
   const c = state.current;
   const box = tabBox();
+  if (c.conMolde) {
+    // Formato con texto fijo: se lee aquí, pero solo se llenan los datos (pestaña Variables)
+    box.innerHTML = `${avisoMolde(c)}
+      <div class="paper-wrap"><div class="paper full">${documentHTML(c)}</div></div>
+      <p class="muted small">Para cambiar la redacción, edita el Word que se descarga o pide que se actualice el formato.</p>`;
+    return;
+  }
   const nums = sectionNumbers(c);
   box.innerHTML = `
     ${efirmaEditBanner(c)}
@@ -1523,6 +1641,7 @@ function renderSigners() {
   const box = tabBox();
   box.innerHTML = `
     ${signedChangedBanner(c)}
+    ${c.conMolde ? `<div class="banner info">${icon('pen')} <span>Formato ${esc(c.formato)}: las firmas se recaban sobre el PDF que se saca del Word (o por DocuSign). Las firmas dibujadas o con e.firma de esta pestaña no se integran a ese Word. Cuando regrese firmado, márcalo como firmado.</span></div>` : ''}
     <div class="card soft sign-summary">
       <div>
         <strong>${signed} de ${c.signers.length} firmas</strong>
@@ -3126,9 +3245,10 @@ async function enviarDocuSign(c) {
     }
     return;
   }
-  const pendientes = c.signers.filter((sg) => !c.signatures[sg.id]);
+  // Con formato propio (Word original) las firmas hechas en la app no van en el documento: firman todos en DocuSign
+  const pendientes = c.signers.filter((sg) => c.conMolde || !c.signatures[sg.id]);
   if (!pendientes.length) return toast('Todos los firmantes ya firmaron en la app', 'error');
-  const firmados = c.signers.filter((sg) => c.signatures[sg.id]);
+  const firmados = c.signers.filter((sg) => !c.conMolde && c.signatures[sg.id]);
   const r = await modal({
     title: 'Enviar a firma con DocuSign',
     wide: true,
@@ -3159,11 +3279,14 @@ async function enviarDocuSign(c) {
   });
   toast('Enviando a DocuSign…');
   const base = safeName(nombreDe(c));
+  // Formato propio: va el Word del formato (DocuSign lo convierte a PDF respetando su estilo), con las marcas
+  // invisibles de firma que trae el molde en el bloque de firmas de cada parte
+  const porRol = Object.fromEntries(pendientes.filter((sg) => sg.bind?.prefix).map((sg) => [sg.bind.prefix, anchors[sg.id]]));
   const res = await ds.sendEnvelope({
     subject: `Firma: ${nombreDe(c)}`,
     message: r.data.msg,
-    pdf: buildPdf(c, { anchors }).blob,
-    fileName: `${base}.pdf`,
+    pdf: c.conMolde ? await wordDe(c, '', { anchors: porRol }) : buildPdf(c, { anchors }).blob,
+    fileName: `${base}.${c.conMolde ? 'docx' : 'pdf'}`,
     recipients,
   });
   if (r.data.guardar) await guardarCorreos(c, pendientes, recipients);
@@ -3280,30 +3403,32 @@ function renderDocumento() {
       ${STATUS_STEPS.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
     </ol>
     ${missing ? `<div class="banner warn">${icon('alert')} <span>${missing} dato(s) sin completar: aparecerán entre corchetes en el documento.</span></div>` : ''}
+    ${conflictoFormato(c, state.contracts) ? `<div class="banner danger">${icon('alert')} <span>${esc(conflictoFormato(c, state.contracts))} No se puede aprobar así.</span></div>` : ''}
+    ${avisoMolde(c)}
     <section class="card form-block">
       ${c.status === 'borrador' ? `
         <h3>Enviar a revisión</h3>
-        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'} con la leyenda “EN REVISIÓN” para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
+        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'}${c.conMolde ? ' del formato' : ' con la leyenda “EN REVISIÓN”'} para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
         <div class="row"><button class="btn primary" data-wf="review">${icon('doc')} Generar Word para revisión</button></div>`
       : c.status === 'revision' ? `
         <h3>En revisión · v${rev}</h3>
-        <p class="muted">Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.</p>
+        <p class="muted">${c.conMolde ? 'Si hay correcciones de datos, edítalas en Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se genera el Word final del formato.' : 'Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.'}</p>
         <div class="row">
           <button class="btn" data-wf="review">${icon('doc')} Nueva versión v${rev + 1}</button>
-          <button class="btn primary" data-wf="approve">${icon('check')} Aprobar y generar PDF</button>
+          <button class="btn primary" data-wf="approve">${icon('check')} ${c.conMolde ? 'Aprobar y generar Word' : 'Aprobar y generar PDF'}</button>
         </div>`
       : c.status === 'aprobado' ? `
         <h3>Aprobado</h3>
         <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado${esServicios(c) ? ', o envíalo a firma por correo con DocuSign' : ''}.</p>
         <div class="row wrap">
-          <button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>
+          ${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`}
           <a class="btn ${esServicios(c) && !envioActivo(c) ? '' : 'primary'}" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
           ${esServicios(c) && !envioActivo(c) ? `<button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>` : ''}
         </div>`
       : `
         <h3>Firmado</h3>
         <p class="muted">El contrato está firmado. Cualquier edición lo regresa a borrador.</p>
-        <div class="row"><button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button></div>`}
+        <div class="row">${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button>`}</div>`}
       <button class="link" data-wf="word">Descargar Word de trabajo (sin guardar en Dropbox)</button>
     </section>
     ${c.docusign ? envioHTML(c) : ''}
@@ -3389,7 +3514,7 @@ async function sendToReview(c, btn) {
   btn.disabled = true;
   const D = await loadDocx();
   const n = (c.revision || 0) + 1;
-  const blob = await buildDocxBlob(D, c, { label: `EN REVISIÓN · v${n}` });
+  const blob = await wordDe(c, `EN REVISIÓN · v${n}`);
   // Si la entrega falla (sin conexión, token vencido) el contrato vuelve a como estaba: sin "v2" fantasma
   const prev = { revision: c.revision, status: c.status, documentos: c.documentos };
   c.revision = n;
@@ -3410,12 +3535,12 @@ async function sendToReview(c, btn) {
 
 async function approve(c, btn) {
   const missing = missingVariables(c).length;
-  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}Se generarán el Word y el PDF finales (sin leyendas) y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
+  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}${c.conMolde ? `Se generará el Word final del formato ${c.formato} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
   renderEditorHeader();
   renderDocumento();
-  toast(`Contrato aprobado${dbx.isConnected() ? '; Word y PDF guardados en Dropbox' : ''}`, 'ok');
+  toast(`Contrato aprobado${dbx.isConnected() ? `; ${c.conMolde ? 'Word guardado' : 'Word y PDF guardados'} en Dropbox` : ''}`, 'ok');
 }
 
 /** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
@@ -3423,12 +3548,16 @@ async function approve(c, btn) {
 async function finalFiles(c, D) {
   const base = safeName(nombreDe(c));
   return [
-    { name: `${base} - APROBADO.docx`, blob: await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
-    { name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' },
+    { name: `${base} - APROBADO.docx`, blob: c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
+    // Con formato propio el PDF lo saca el abogado desde Word: el generador de la app no reproduce su estilo
+    ...(c.conMolde ? [] : [{ name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' }]),
   ];
 }
 
 async function approveContract(c, { descargar = true } = {}) {
+  // Regla de formatos por cliente: puede romperse si se cambió el prestador o el cliente a mano
+  const conflicto = conflictoFormato(c, state.contracts);
+  if (conflicto) throw new Error(conflicto);
   const prev = { status: c.status, documentos: c.documentos };
   c.status = 'aprobado';
   let files;
@@ -3497,6 +3626,7 @@ function renderTemplateEditor(id) {
       <span id="tpl-save" class="muted small">Guardado</span>
     </header>
     <div class="banner info">${icon('alert')} <span>Los cambios aplican a los contratos nuevos. Los contratos ya creados no se modifican.</span></div>
+    ${t.molde ? `<div class="banner warn">${icon('doc')} <span>Esta plantilla genera el Word desde el formato original (${esc(t.molde.nombre || 'molde')}). Las secciones de aquí solo sirven para la vista previa y para saber qué datos pide: cambiar su texto no cambia el Word.</span></div>` : ''}
     <form class="party-form" id="tpl-form" autocomplete="off">
       <section class="card form-block">
         <div class="form-grid">
@@ -3506,6 +3636,7 @@ function renderTemplateEditor(id) {
           </select></label>
         </div>
         <label class="field"><span>Descripción</span><input data-k="description" value="${esc(t.description || '')}"></label>
+        ${isServiciosTemplate(t) ? `<label class="field"><span>Código de formato (F1, F2…; solo en la app, no aparece en el documento)</span><input data-k="formato" value="${esc(t.formato || '')}" maxlength="8" placeholder="Sin código"></label>` : ''}
       </section>
       <section class="card form-block">
         <h3>Secciones</h3>
