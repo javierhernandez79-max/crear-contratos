@@ -91,11 +91,17 @@ export function syncAll(opts) {
     try {
       await loadState();
       await dbx.ensureAccount();
-      const root = dbx.config().folder;
+      let root = dbx.config().folder;
       // Nunca crear la carpeta en otro lugar: si no existe donde se espera, se detiene con un aviso
       const rootMeta = await dbx.getMetadata(root);
       if (!rootMeta || rootMeta['.tag'] !== 'folder') {
-        throw new dbx.DropboxError(`No se encontró la carpeta "${root}" en Dropbox (${dbx.rootLabel() || 'raíz desconocida'}). Revisa la ruta en Ajustes.`);
+        // Compartida desde otro equipo: vive en la carpeta personal del usuario
+        const alt = await dbx.findInHome(root);
+        if (!alt) {
+          throw new dbx.DropboxError(`No se encontró la carpeta "${root}" en Dropbox (${dbx.rootLabel() || 'raíz desconocida'}). Si te la compartieron, acepta la invitación en dropbox.com y vuelve a sincronizar; si no, revisa la ruta en Ajustes.`);
+        }
+        await dbx.setOptions({ folder: alt });
+        root = alt;
       }
       const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set() }, conflicts: [] };
       await syncCatalog(root, opts, report);
