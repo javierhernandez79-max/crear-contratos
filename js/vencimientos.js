@@ -1,3 +1,4 @@
+import { habilesEntre, sumarHabiles } from './habiles.js';
 // Vencimientos: contratos de trabajo por tiempo determinado (Fecha de Terminación del P1)
 // de los lotes aprobados. Se avisa desde N días antes; los vencidos siguen apareciendo
 // hasta que alguien los marca como atendidos (renovado o terminado).
@@ -48,3 +49,32 @@ export function textoDias(dias) {
   if (dias > 0) return `En ${dias} días`;
   return dias === -1 ? 'Venció ayer' : `Venció hace ${-dias} días`;
 }
+
+// ---------- Contratos de prestación de servicios sin firma del cliente ----------
+// Se cuenta desde que se generó el contrato; pasados PLAZO_FIRMA días hábiles sin marcarse como
+// firmado, se avisa. Se puede descartar el aviso (p. ej. el cliente canceló) con una nota.
+
+export const PLAZO_FIRMA = 15;
+
+const isoLocal = (ms) => {
+  const d = new Date(ms);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
+/** Días hábiles que lleva el contrato sin firmar y fecha límite. null si ya está firmado. */
+export function plazoFirma(c, hoy) {
+  if (c.status === 'final' || !c.createdAt) return null;
+  const inicio = isoLocal(c.createdAt);
+  const habiles = habilesEntre(inicio, hoy);
+  return { inicio, habiles, limite: sumarHabiles(inicio, PLAZO_FIRMA), atrasado: habiles >= PLAZO_FIRMA };
+}
+
+/** Contratos de servicios sin firma: [{ c, inicio, habiles, limite, atrasado, descartada }], los más atrasados primero. */
+export function listaFirmasPendientes(contracts, { hoy, esServicios }) {
+  return contracts.filter(esServicios)
+    .map((c) => ({ c, ...plazoFirma(c, hoy), descartada: c.alertaFirma?.descartada ? c.alertaFirma : null }))
+    .filter((x) => x.inicio)
+    .sort((a, b) => b.habiles - a.habiles);
+}
+
+export const firmasPorAtender = (lista) => lista.filter((x) => x.atrasado && !x.descartada);

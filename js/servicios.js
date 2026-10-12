@@ -104,3 +104,7 @@ export function listaServicios(conceptos) {
 export const isServiciosTemplate = (t) =>
   t.vars?.some(([k]) => k === 'servicios') &&
   t.signers?.some((s) => s.bind?.prefix === 'prestador') && t.signers?.some((s) => s.bind?.prefix === 'cliente');
+
+/** Contrato de prestación de servicios: tiene {{servicios}} o firmantes prestador y cliente. */
+export const esContratoServicios = (c) => !!c.varDefs?.some((d) => d.key === 'servicios')
+  || (c.signers?.some((s) => s.bind?.prefix === 'prestador') && c.signers?.some((s) => s.bind?.prefix === 'cliente'));

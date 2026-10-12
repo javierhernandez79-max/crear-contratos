@@ -580,6 +580,17 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
   .venc-list .ll-row > span:nth-child(4) { display: none; }
   .venc-list .ll-row > span:nth-child(5) { display: flex; }
 }
+.firma-list .ll-row { grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.6fr) minmax(0, 1.2fr) 90px minmax(0, 1.5fr) 84px; }
+.firma-list .ll-row > span:first-child .badge { align-self: flex-start; margin-top: 4px; }
+.firma-list .v-vencido .venc-dias { color: var(--danger); font-weight: 700; }
+.firma-list .v-vencido { box-shadow: inset 3px 0 0 var(--danger); }
+@media (max-width: 760px) {
+  .firma-list .ll-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .firma-list .ll-row > span:nth-child(4) { display: flex; }
+}
+.section-title { font-size: 1.15rem; margin: 26px 0 6px; }
+.plazo-chip { display: inline-block; margin-left: 6px; white-space: nowrap; }
+.contract-list .plazo-chip { display: block; margin: 4px 0 0; }
 .p1-grid.full { width: 100%; }
 .serv-list .ll-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 1.2fr) minmax(0, 2fr); align-items: start; }
 @media (max-width: 760px) {
