@@ -6,8 +6,7 @@ import {
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
-  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate,
-} from './parties.js';
+  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate, rfcDuplicado } from './parties.js';
 import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
@@ -1830,7 +1829,7 @@ function renderCatalog() {
           <span class="mono small">${esc(p.rfc || 'Sin RFC')}</span>
           <span>${partyBadges(p)}</span>
           <span>${p.kind === 'pm' ? `${apos} vigente${apos === 1 ? '' : 's'}` : '<span class="muted">—</span>'}</span>
-          <span>${gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Completos</span>'}</span>
+          <span>${rfcDuplicado(p.rfc, state.parties, p.id) ? '<span class="warn-text" title="Otra ficha tiene el mismo RFC: elimina la que sobre">RFC repetido</span>' : gaps.length ? `<span class="warn-text" title="${esc(gaps.join(', '))}">Faltan ${gaps.length} dato${gaps.length === 1 ? '' : 's'}</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
             <button class="icon-btn sm" data-act="edit" title="Editar" aria-label="Editar">${icon('pen')}</button>
@@ -1902,12 +1901,40 @@ async function viewParty(p) {
 async function deleteParty(p) {
   const used = state.contracts.filter((c) => c.signers.some((s) => s.party?.id === p.id)).length;
   if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa".`, 'Eliminar'))) return false;
+  await removeParty(p);
+  toast('Eliminada del catálogo');
+  return true;
+}
+
+async function removeParty(p) {
   await db.remove('parties', p.id);
   await sync.markDeleted('parties', p.id);
   scheduleSync();
   state.parties = state.parties.filter((x) => x.id !== p.id);
-  toast('Eliminada del catálogo');
-  return true;
+}
+
+/** Ficha recién creada sin datos propios (se puede descartar al ir a la que ya existe). */
+const fichaVacia = (p) => !p.nombre?.trim() && !p.rfc?.trim()
+  && !p.apoderados.some((a) => a.nombre?.trim()) && !(p.accionistas || []).some((a) => a.nombre?.trim());
+
+/**
+ * Evita dos fichas con el mismo RFC. Devuelve la ficha existente si el usuario decide ir a ella
+ * (la actual se descarta si estaba vacía), o null si decide corregir el RFC.
+ */
+async function avisoRfcDuplicado(p, rfc, otra, { vacia, conDatos } = {}) {
+  const r = await modal({
+    title: 'RFC ya registrado',
+    body: `<p>El RFC <strong class="mono">${esc(rfc)}</strong> ya es de <strong>${esc(otra.nombre || 'otra parte')}</strong>${otra.activa === false ? ' (inactiva)' : ''}. No se pueden tener dos fichas con el mismo RFC.</p>
+      ${conDatos ? '<p class="muted small">Los datos marcados se aplicarán a esa ficha.</p>' : ''}
+      ${vacia ? '<p class="muted small">Esta ficha nueva está vacía y se descartará.</p>' : ''}`,
+    actions: [
+      { label: conDatos ? 'Cancelar' : 'Corregir el RFC', value: '', kind: 'ghost' },
+      { label: conDatos ? 'Aplicar a la existente' : 'Abrir la existente', value: 'ok', kind: 'primary' },
+    ],
+  });
+  if (r.value !== 'ok') return null;
+  if (vacia) await removeParty(p);
+  return otra;
 }
 
 async function createParty(defaults = {}) {
@@ -2103,6 +2130,15 @@ function renderPartyEditor(id) {
     if (e.target.type === 'checkbox') target(e.target)[k] = e.target.checked;
     else if (k === 'kind') p.kind = e.target.value;
     else if (k === 'rfc' || k === 'curp') e.target.value = e.target.value.toUpperCase();
+    const otra = k === 'rfc' && e.target.closest('[data-list]') == null && rfcDuplicado(p.rfc, state.parties, p.id);
+    if (otra) {
+      const rfc = p.rfc;
+      p.rfc = '';
+      await saveParty(p);
+      const ir = await avisoRfcDuplicado(p, rfc, otra, { vacia: fichaVacia(p) && !p.nombre?.trim() });
+      if (ir) return go(`#/catalogo/${ir.id}`);
+      return renderPartyEditor(p.id);
+    }
     await saveParty(p);
     // Redibuja para recalcular faltantes, porcentajes y la vista previa (si seguimos en la ficha)
     if (location.hash !== `#/catalogo/${p.id}`) return;
@@ -2139,7 +2175,8 @@ function renderPartyEditor(id) {
     window.scrollTo(0, y);
   });
   $('#party-extract').addEventListener('click', conAviso(async () => {
-    if (!(await extraerDePdf(p))) return;
+    const res = await extraerDePdf(p);
+    if (!res || res === 'otra') return;
     const y = window.scrollY;
     renderPartyEditor(p.id);
     window.scrollTo(0, y);
@@ -2279,6 +2316,23 @@ async function extraerDePdf(p) {
   if (r.value !== 'ok') return false;
   const usar = Object.keys(r.data).filter((k) => k.startsWith('u_')).map((k) => k.slice(2));
   if (!usar.length) { toast('No marcaste ningún dato'); return false; }
+  // Si el RFC de la constancia ya es de otra ficha, los datos van a esa (no se duplica)
+  if (usar.includes('rfc') && r.data.tipo !== 'poder') {
+    const rfc = String(r.data.v_rfc ?? '').trim().toUpperCase();
+    const otra = rfcDuplicado(rfc, state.parties, p.id);
+    if (otra) {
+      const ir = await avisoRfcDuplicado(p, rfc, otra, { vacia: fichaVacia(p), conDatos: true });
+      if (!ir) return false;
+      for (const k of usar) {
+        const v = String(r.data[`v_${k}`] ?? '').trim();
+        ir[k] = k === 'rfc' || k === 'curp' ? v.toUpperCase() : v;
+      }
+      await saveParty(ir);
+      toast(`${usar.length} dato${usar.length === 1 ? '' : 's'} aplicado${usar.length === 1 ? '' : 's'} a ${ir.nombre || 'la ficha existente'}`, 'ok');
+      go(`#/catalogo/${ir.id}`);
+      return 'otra';
+    }
+  }
   let destino = p;
   if (r.data.tipo === 'poder') {
     destino = p.apoderados.find((a) => a.id === r.data.apo);

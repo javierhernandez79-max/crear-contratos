@@ -172,4 +172,12 @@ export function applyParty(c, sg, party, apoderado) {
 
 const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 export const partyKey = (p) => (p.rfc ? 'RFC:' + norm(p.rfc) : 'N:' + norm(p.nombre));
+// RFC genéricos del SAT (público en general / extranjeros): pueden repetirse
+const RFC_GENERICO = /^X[AE]XX010101000$/;
+/** Otra parte del catálogo con el mismo RFC (sin contar espacios ni guiones), o undefined. */
+export const rfcDuplicado = (rfc, parties, exceptId) => {
+  const k = norm(rfc);
+  if (!k || RFC_GENERICO.test(k)) return undefined;
+  return parties.find((x) => x.id !== exceptId && norm(x.rfc) === k);
+};
 export const matchesQuery = (p, q) => !q || norm(`${p.nombre} ${p.rfc}`).includes(norm(q));
