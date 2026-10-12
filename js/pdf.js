@@ -6,7 +6,7 @@ const M = { top: 25, bottom: 25, left: 25, right: 25 };
 const CONTENT_W = PAGE.w - M.left - M.right;
 const LINE = 5.6; // mm por línea a 11pt
 
-export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.status) } = {}) {
+export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.status), anchors = {} } = {}) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'letter', compress: true });
   doc.setProperties({ title: fill(c, c.title), creator: 'Crear Contratos' });
@@ -105,6 +105,14 @@ export function buildPdf(c, { watermark = !['aprobado', 'final'].includes(c.stat
           doc.setTextColor(20);
         } else if (sig?.image) {
           try { doc.addImage(sig.image, 'PNG', x + colW / 2 - 30, y, 60, 22, undefined, 'FAST'); } catch { /* imagen inválida */ }
+        }
+        if (anchors[sg.id]) {
+          // Marca invisible (texto blanco) donde DocuSign coloca la firma de este firmante
+          doc.setTextColor(255);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(6);
+          doc.text(anchors[sg.id], x + colW / 2 - 25, y + 20);
+          doc.setTextColor(20);
         }
         doc.setDrawColor(60);
         doc.line(x + 5, y + 25, x + colW - 5, y + 25);
