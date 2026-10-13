@@ -29,6 +29,7 @@ const ASSETS = [
   './js/extraccion.js',
   './js/docusign.js',
   './js/zip.js',
+  './js/carpetas.js',
   './js/ia.js',
   './vendor/forge.min.js',
   './vendor/jspdf.umd.min.js',

@@ -16,6 +16,7 @@ import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
 import { planAlta } from './alta-pdf.js';
+import { subcarpetaDe, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
@@ -3346,19 +3347,20 @@ function loadDocx() {
 
 const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
-/** Parte a cuya carpeta va el contrato: el cliente o contraparte (primera parte vinculada que no es del grupo);
- *  si todas son del grupo, la primera vinculada. Así cada cliente concentra todo lo que se le genera. */
+const categoriaDe = (c) => allTemplates().find((t) => t.id === c.templateId)?.category;
+
+/** Parte a cuyo expediente va el contrato: el cliente o contraparte; en trabajo y comisión, la empresa (ver carpetas.js). */
 function clientParty(c) {
-  const linked = c.signers.map((sg) => sg.party && state.parties.find((p) => p.id === sg.party.id)).filter(Boolean);
-  return linked.find((p) => !p.propia) || linked[0] || null;
+  const partes = c.signers.map((sg) => ({ sg, p: sg.party && state.parties.find((p) => p.id === sg.party.id) })).filter((x) => x.p);
+  return duenoCarpeta(c, partes, categoriaDe(c));
 }
 
-/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente del cliente>/CONTRATOS/<título>. */
+/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente>/<tipo de contrato>/<título>. */
 function contractFolder(c) {
   if (c.carpeta) return c.carpeta;
   const p = clientParty(c);
   const base = p ? expedienteOf(p) : dbx.joinPath(sync.clientesRoot(), 'SIN CLIENTE');
-  return dbx.joinPath(base, 'CONTRATOS', safeName(nombreDe(c)));
+  return dbx.joinPath(base, subcarpetaDe(c, categoriaDe(c)), safeName(nombreDe(c)));
 }
 
 /** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
