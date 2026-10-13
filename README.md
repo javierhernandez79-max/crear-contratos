@@ -31,6 +31,12 @@ App web instalable para crear, personalizar, firmar y exportar contratos. Funcio
   - Verificación desde la app y descarga del `.p7s` y del texto firmado (`.txt`). Verificación externa: `openssl cms -verify -inform DER -in firma.p7s -content texto-firmado.txt -binary -noverify -out /dev/null`.
 - **Firma remota con DocuSign** (contratos de prestación de servicios aprobados): pestaña *Word y PDF* → *Enviar a firma (DocuSign)*. Cada firmante recibe un correo de DocuSign; nuestra parte puede firmar ahí o antes en la app (autógrafa o e.firma) y su firma va en el PDF. Los correos se toman del catálogo (apoderados y personas físicas) y se guardan ahí. La app consulta el estado al abrir el contrato y cada 5 minutos; cuando todos firman guarda en el expediente `… - FIRMADO DocuSign.pdf` y el certificado, y marca el contrato como Firmado. Se puede cancelar un envío y volver a enviar.
   - Configuración: *Ajustes → DocuSign* (Integration Key y ambiente pruebas/producción; también en `js/config.js`). Sin servidor: CORS + Authorization Code Grant con PKCE (app pública, sin secreto); el token se renueva solo con el refresh token. En la app de DocuSign registrar la Redirect URI (dirección de la app) y el origen CORS.
+- **Lectura con IA de PDFs escaneados** (constancias, escrituras constitutivas y poderes que son imagen): al usar *Llenar desde PDF* o *Alta desde PDFs*, los escaneados se envían a la API de Claude (modelo `claude-sonnet-5-5`) a través de una función de Cloudflare Pages (`functions/api/leer-pdf.js`); los PDF con texto se siguen leyendo en el navegador. Lo leído pasa por la misma revisión antes de guardarse. Se enciende y apaga en *Ajustes → Lectura con IA*, con fecha de fin opcional; solo los correos de `IA_ADMIN` ven y usan el interruptor, y el servidor lo valida con el token de Cloudflare Access.
+  - Configuración en Cloudflare (*Workers & Pages → documentos-legales → Settings*):
+    - *Variables and Secrets*: `ANTHROPIC_API_KEY` (tipo **Secret**, la llave de console.anthropic.com), `IA_ADMIN` (correo o correos separados por coma), `ACCESS_TEAM` (dominio del equipo de Zero Trust, p. ej. `miequipo.cloudflareaccess.com`) y, opcional, `ACCESS_AUD` (Application Audience Tag de la aplicación de Access).
+    - *Bindings*: un espacio **KV** con nombre de variable `IA_KV` (guarda el estado del interruptor).
+    - Después, volver a desplegar (*Deployments → Retry deployment*) para que tome los cambios.
+  - Sin esa configuración (o en otro hosting), la tarjeta no aparece y los escaneados se capturan a mano como antes.
 - Estado Borrador/Final.
 - Versiones con nota (ver, restaurar, eliminar) y registro de cambios automático.
 - Exportar PDF (tamaño carta, justificado, numeración, firmas, marca de agua "BORRADOR") y compartir con la hoja nativa del teléfono.
@@ -45,7 +51,7 @@ python3 -m http.server 5173
 Abrir http://localhost:5173. (El service worker requiere `localhost` o HTTPS; no funciona abriendo `index.html` como archivo.)
 
 ## Publicar
-Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (Netlify, Vercel, GitHub Pages, Cloudflare Pages). Al cambiar archivos, sube el número en `CACHE` de `sw.js` para forzar la actualización offline.
+Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (Netlify, Vercel, GitHub Pages, Cloudflare Pages). La carpeta `functions/` solo la usa Cloudflare Pages (lectura con IA); en otro hosting se ignora. Al cambiar archivos, sube el número en `CACHE` de `sw.js` para forzar la actualización offline.
 
 ## Estructura
 - `index.html`, `manifest.webmanifest`, `sw.js` — cascarón de la PWA
@@ -63,5 +69,7 @@ Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (N
 - `js/sync.js` — sincronización de contratos, plantillas y catálogo con la carpeta compartida
 - `js/config.js` — App key de Dropbox y carpeta compartida
 - `js/db.js` — IndexedDB
+- `js/ia.js` — cliente de la lectura con IA (estado del interruptor y envío del PDF escaneado)
+- `functions/api/ia.js`, `functions/api/leer-pdf.js`, `functions/_lib/acceso.js` — funciones de Cloudflare Pages: interruptor, llamada a la API de Claude y validación del token de Cloudflare Access
 
 > Las plantillas son modelos generales y no sustituyen asesoría legal.
