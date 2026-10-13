@@ -3,6 +3,8 @@
 // DocuSign; el token dura 8 horas y se renueva solo con el refresh token. Se acepta también el regreso de
 // "Implicit Grant" (#access_token=…) por si la app de DocuSign quedó configurada así.
 // La configuración y el token se guardan en IndexedDB (store "meta") de cada equipo.
+// Si el servidor (Cloudflare) tiene la conexión global del despacho, se usa esa: nadie se conecta, todos envían
+// desde la misma cuenta y todos ven el estado de todos los sobres (functions/api/docusign).
 import * as db from './db.js';
 import { DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_ENV } from './config.js';
 
@@ -18,18 +20,38 @@ export class DocuSignError extends Error {
 }
 
 let cfg = null; // { id, key, env, token, expiresAt, user: {name, email}, account: {id, name, baseUri} }
+let global = null; // estado de la conexión del despacho: { configurada, conectada, env, cuenta, remitente, admin, error, consentimiento }
+
+/** Pide al servidor el estado de la conexión global (sin servidor queda como no configurada). */
+export async function cargarGlobal() {
+  try {
+    const r = await fetch('api/docusign/estado', { cache: 'no-store', credentials: 'same-origin' });
+    global = r.ok && /json/.test(r.headers.get('content-type') || '') ? await r.json() : null;
+  } catch {
+    global = null;
+  }
+  return global;
+}
+export const estadoGlobal = () => global;
+/** La app usa la conexión del despacho (servidor) en lugar de la de cada usuario. */
+export const isGlobal = () => !!global?.configurada;
 
 export async function loadConfig() {
   cfg = (await db.get('meta', 'docusign')) || { id: 'docusign' };
   cfg.key ||= DOCUSIGN_INTEGRATION_KEY;
   cfg.env ||= DOCUSIGN_ENV || 'demo';
+  await cargarGlobal();
   return cfg;
 }
-export const config = () => cfg;
+export const config = () => (isGlobal()
+  ? { env: global.env, global: true, user: global.remitente || null, account: global.cuenta || null }
+  : cfg);
 /** Hay cuenta enlazada (aunque el token haya vencido). */
-export const isLinked = () => !!cfg?.account;
+export const isLinked = () => (isGlobal() ? !!global.conectada : !!cfg?.account);
 /** El token sigue vigente. */
-export const isConnected = () => !!cfg?.account && (!!cfg.refreshToken || (!!cfg.token && Date.now() < (cfg.expiresAt || 0)));
+export const isConnected = () => (isGlobal()
+  ? !!global.conectada
+  : !!cfg?.account && (!!cfg.refreshToken || (!!cfg.token && Date.now() < (cfg.expiresAt || 0))));
 async function save() { await db.put('meta', structuredClone(cfg)); }
 
 export async function setOptions({ key, env }) {
@@ -136,7 +158,31 @@ export async function disconnect() {
   await save();
 }
 
-async function call(url, { method = 'GET', body, raw = false, absolute = false, sinCuenta = false, reintento = false } = {}) {
+async function callGlobal(url, { method = 'GET', body, raw = false } = {}) {
+  let res;
+  try {
+    res = await fetch(`api/docusign/rest${url}`, {
+      method, credentials: 'same-origin',
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), Accept: raw ? 'application/pdf' : 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new DocuSignError('Sin conexión con el servidor: DocuSign necesita internet.');
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.errorCode === 'consent_required') global = { ...global, conectada: false };
+    throw new DocuSignError(data.message || `Error de DocuSign (${res.status})`, { status: res.status, code: data.errorCode });
+  }
+  return raw ? res.blob() : res.json();
+}
+
+async function call(url, opts = {}) {
+  if (isGlobal() && !opts.absolute) return callGlobal(url, opts);
+  return callUsuario(url, opts);
+}
+
+async function callUsuario(url, { method = 'GET', body, raw = false, absolute = false, sinCuenta = false, reintento = false } = {}) {
   if (!sinCuenta) {
     if (!cfg.account) throw new DocuSignError('Conecta DocuSign en Ajustes.', { status: 401 });
     await ensureToken();
@@ -151,7 +197,7 @@ async function call(url, { method = 'GET', body, raw = false, absolute = false, 
     // Token revocado o vencido antes de tiempo: se renueva una vez y se reintenta
     if (!reintento && !sinCuenta && cfg.refreshToken) {
       await ensureToken(true);
-      return call(url, { method, body, raw, absolute, sinCuenta, reintento: true });
+      return callUsuario(url, { method, body, raw, absolute, sinCuenta, reintento: true });
     }
     cfg.token = null;
     await save();
