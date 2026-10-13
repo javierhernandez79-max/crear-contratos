@@ -3015,8 +3015,16 @@ async function loadExpedienteFolders() {
 function expedienteOf(p) {
   if (p.expediente) return dbx.normalizePath(p.expediente);
   const raiz = p.propia ? sync.expedientesRoot() : sync.clientesRoot();
+  if (!p.propia) {
+    // Clientes: misma carpeta con o sin tipo de sociedad ("SEGURIDOC" = "Seguridoc, S.A. de C.V."), pero sin
+    // confundir nombres que solo empiezan igual ("BETA" ≠ "BETA LOGÍSTICA")
+    const k = nucleo(p.nombre);
+    const igual = k && clienteFolders.find((f) => nucleo(f.name) === k);
+    if (igual) return igual.path_display;
+    return dbx.joinPath(raiz, (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim());
+  }
   const key = folderKey(p.nombre);
-  const match = key.length >= 5 && (p.propia ? expedienteFolders : clienteFolders)
+  const match = key.length >= 5 && expedienteFolders
     .filter((f) => { const k = folderKey(f.name); return k.length >= 5 && (key.startsWith(k) || k.startsWith(key)); })
     .sort((a, b) => b.name.length - a.name.length)[0];
   if (match) return match.path_display;
@@ -4743,7 +4751,9 @@ function loteFolder(l) {
   if (l.dropbox?.carpeta) return l.dropbox.carpeta;
   const nombre = String(l.cliente || '').trim();
   const k = nucleo(nombre);
-  const ficha = nombre && state.parties.find((p) => !p.propia && ((k.length >= 4 && nucleo(p.nombre) === k) || parecido(nombre, p.nombre) >= 0.85));
+  // Con o sin tipo de sociedad: primero el mismo núcleo del nombre; si no, uno muy parecido
+  const clientes = state.parties.filter((p) => !p.propia);
+  const ficha = nombre && (clientes.find((p) => k && nucleo(p.nombre) === k) || clientes.find((p) => parecido(nombre, p.nombre) >= 0.9));
   const base = expedienteOf(ficha || { nombre: nombre || 'SIN CLIENTE', propia: false });
   return dbx.joinPath(base, subcarpetaLote(l.tipo), safeName(l.title));
 }
