@@ -120,6 +120,9 @@ const PF_VARS = [
   ['identificacion', 'Identificación', 'text', (p) => p.identificacion],
 ];
 
+/** Datos de una parte que se llenan del catálogo: [sufijo, etiqueta, tipo] (p. ej. cliente_rfc → 'rfc'). */
+export const DATOS_PARTE = [...PARTY_VARS, ...PM_VARS, ...PF_VARS].map(([k, l, t]) => [k, l, t]);
+
 /** Prefijo de variables para un firmante: el de la plantilla o uno derivado del rol, sin repetir. */
 export function signerPrefix(c, sg) {
   if (sg.bind?.prefix) return sg.bind.prefix;

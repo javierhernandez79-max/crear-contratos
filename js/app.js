@@ -6,7 +6,7 @@ import {
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
-  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate, rfcDuplicado } from './parties.js';
+  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate, rfcDuplicado, DATOS_PARTE } from './parties.js';
 import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
@@ -15,6 +15,7 @@ import { verifySignature, base64ToBlob } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
+import { plantillaDesdeWord } from './plantilla-word.js';
 import { planAlta } from './alta-pdf.js';
 import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
@@ -83,7 +84,7 @@ const allTemplates = () => {
 const go = (hash) => { location.hash = hash; };
 
 /** Word original del formato (molde) del contrato, o null si el contrato sale del generador de la app. */
-const moldeDe = (c) => (c.formato && allTemplates().find((t) => t.id === c.templateId)?.molde) || null;
+const moldeDe = (c) => ((c.conMolde || c.formato) && allTemplates().find((t) => t.id === c.templateId)?.molde) || null;
 /** Contrato que sale del molde pero cuya plantilla ya no está en este equipo (p. ej., falta sincronizar). */
 const sinMolde = (c) => !!c.conMolde && !moldeDe(c);
 /** Word del contrato: del molde del formato (conserva su estilo) o del generador de la app. */
@@ -96,7 +97,7 @@ async function wordDe(c, label = '', opts = {}) {
   return buildDocxBlob(await loadDocx(), c, { label });
 }
 const avisoMolde = (c) => (c.conMolde
-  ? `<div class="banner info">${icon('doc')} <span>Formato ${esc(c.formato)}: el Word sale del formato original (letra, márgenes y encabezados intactos) con los datos llenos. El texto de las cláusulas es fijo; el PDF se saca desde Word (Archivo › Guardar como › PDF).${sinMolde(c) ? ' <strong>Falta la plantilla de este formato en este equipo: sincroniza.</strong>' : ''}</span></div>`
+  ? `<div class="banner info">${icon('doc')} <span>${c.formato ? `Formato ${esc(c.formato)}` : 'Word de la plantilla'}: el Word sale del formato original (letra, márgenes y encabezados intactos) con los datos llenos. El texto de las cláusulas es fijo; el PDF se saca desde Word (Archivo › Guardar como › PDF).${sinMolde(c) ? ' <strong>Falta la plantilla en este equipo: sincroniza.</strong>' : ''}</span></div>`
   : '');
 
 const ICONS = {
@@ -1026,6 +1027,7 @@ function renderTemplates() {
         <p class="eyebrow">Biblioteca</p>
         <h1>Plantillas</h1>
       </div>
+      <button class="btn primary" id="tpl-word">${icon('upload')} Subir Word</button>
     </header>
     <div class="toolbar">
       <label class="search">${icon('search')}<input id="tpl-q" type="search" placeholder="Buscar plantilla" value="${esc(state.tplQuery)}"></label>
@@ -1063,6 +1065,7 @@ function renderTemplates() {
   });
   $$('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.tplCategory = b.dataset.cat; renderTemplates(); }));
   $('#tpl-fmt')?.addEventListener('click', () => { state.verFormatos = !state.verFormatos; renderTemplates(); });
+  $('#tpl-word').addEventListener('click', conAviso(subirPlantillaWord));
   $$('.tpl-list .ll-row[data-id]').forEach((row) => {
     const t = allTemplates().find((x) => x.id === row.dataset.id);
     row.addEventListener('click', (e) => {
@@ -1100,6 +1103,56 @@ async function previewTemplate(t) {
   } else if (r.value === 'del') {
     await deleteTemplate(t);
   }
+}
+
+/** Nueva plantilla desde un Word con marcas {{dato}}: el Word se conserva tal cual y se llenan sus marcas. */
+async function subirPlantillaWord() {
+  const marcas = (lista) => lista.map(([k, l]) => `<li><code>{{cliente_${esc(k)}}}</code> ${esc(l)}</li>`).join('');
+  const r = await modal({
+    title: 'Subir Word como plantilla',
+    wide: true,
+    body: `
+      <p class="muted small">Escribe en el Word los datos que cambian como marcas entre llaves dobles, p. ej. <code>{{cliente_nombre}}</code> o <code>{{fecha_firma}}</code>. La letra, márgenes y encabezados se conservan.</p>
+      <label class="field"><span>Archivo Word (.docx)</span><input type="file" name="docx" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required></label>
+      <div class="form-grid">
+        <label class="field"><span>Nombre de la plantilla</span><input name="nombre" required maxlength="120" placeholder="Ej. Contrato de arrendamiento"></label>
+        <label class="field"><span>Categoría</span><select name="categoria">${CATEGORIES.map((c) => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join('')}</select></label>
+      </div>
+      <details class="small">
+        <summary>Marcas que reconoce la app</summary>
+        <p><b>Partes</b> (se llenan desde el catálogo): un prefijo por parte, el que quieras (<code>cliente</code>, <code>prestador</code>, <code>arrendador</code>…) seguido del dato. Con <code>{{prefijo_nombre}}</code> la app reconoce la parte y la agrega como firmante. Ejemplos con <code>cliente</code>:</p>
+        <ul class="marcas">${marcas(DATOS_PARTE)}</ul>
+        <p><b>Firma por DocuSign</b>: <code>{{_ds_cliente}}</code> donde va la firma de esa parte (queda invisible).</p>
+        <p><b>Cualquier otro dato</b>: <code>{{monto_renta}}</code>, <code>{{fecha_inicio}}</code>… Si la clave dice fecha, monto, domicilio o correo, la app le da ese tipo.</p>
+      </details>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Crear plantilla', value: 'ok', kind: 'primary' }],
+    onOpen: (dlg) => {
+      const nombre = $('[name=nombre]', dlg);
+      $('[name=docx]', dlg).addEventListener('change', (e) => {
+        const f = e.target.files[0];
+        if (f && !nombre.value.trim()) nombre.value = f.name.replace(/\.docx$/i, '');
+      });
+    },
+  });
+  const file = r.data?.docx;
+  if (r.value !== 'ok' || !file?.size) return;
+  if (file.size > 10 * 1024 * 1024) return toast('El Word pasa de 10 MB', 'error');
+  const nombre = String(r.data.nombre).trim();
+  if (allTemplates().some((t) => t.name.toLowerCase() === nombre.toLowerCase())) return toast(`Ya existe una plantilla “${nombre}”`, 'error');
+  const { plantilla, avisos } = await plantillaDesdeWord(new Uint8Array(await file.arrayBuffer()), { nombre, categoria: r.data.categoria, archivo: file.name, id: `u-${uid()}` });
+  const ok = await modal({
+    title: 'Revisa la plantilla',
+    body: `
+      <p><strong>${esc(nombre)}</strong>: ${plantilla.vars.length} dato${plantilla.vars.length === 1 ? '' : 's'}${plantilla.signers.length ? ` y ${plantilla.signers.length} firmante${plantilla.signers.length === 1 ? '' : 's'} (${plantilla.signers.map((s) => esc(s.role)).join(', ')})` : ''}.</p>
+      ${plantilla.vars.length ? `<p class="muted small">${plantilla.vars.map(([k, l]) => `${esc(l)} <code>{{${esc(k)}}}</code>`).join(' · ')}</p>` : ''}
+      ${avisos.map((a) => `<div class="banner warn">${icon('alert')} <span>${esc(a)}</span></div>`).join('')}`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost' }, { label: 'Guardar plantilla', value: 'ok', kind: 'primary' }],
+  });
+  if (ok.value !== 'ok') return;
+  await saveTemplate(plantilla);
+  toast(`Plantilla “${nombre}” creada`, 'ok');
+  state.tplCategory = 'mis';
+  renderTemplates();
 }
 
 async function deleteTemplate(t) {
@@ -3290,6 +3343,10 @@ async function enviarDocuSign(c) {
   // Con formato propio (Word original) las firmas hechas en la app no van en el documento: firman todos en DocuSign
   const pendientes = c.signers.filter((sg) => c.conMolde || !c.signatures[sg.id]);
   if (!pendientes.length) return toast('Todos los firmantes ya firmaron en la app', 'error');
+  // Word subido como plantilla: DocuSign necesita en el Word la marca de firma {{_ds_<parte>}} de cada firmante
+  const firmasDS = c.conMolde && allTemplates().find((t) => t.id === c.templateId)?.firmasDS;
+  const sinMarca = firmasDS ? pendientes.filter((sg) => !firmasDS.includes(sg.bind?.prefix)) : [];
+  if (sinMarca.length) return toast(`El Word de la plantilla no tiene dónde firmar ${sinMarca.map((sg) => fill(c, sg.role)).join(', ')}: agrega ${sinMarca.map((sg) => `{{_ds_${sg.bind?.prefix || 'parte'}}}`).join(', ')} en el Word y vuelve a subir la plantilla, o fírmalo en papel.`, 'error');
   const firmados = c.signers.filter((sg) => !c.conMolde && c.signatures[sg.id]);
   const r = await modal({
     title: 'Enviar a firma con DocuSign',
@@ -3568,7 +3625,7 @@ function renderDocumento() {
 async function approve(c, btn) {
   const missing = missingVariables(c).length;
   if (missing) return toast(`Faltan ${missing} dato(s): complétalos antes de aprobar`, 'error');
-  if (!(await confirmDialog('Aprobar contrato', `${c.conMolde ? `Se generará el Word final del formato ${c.formato} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
+  if (!(await confirmDialog('Aprobar contrato', `${c.conMolde ? `Se generará el Word final ${c.formato ? `del formato ${c.formato}` : 'de la plantilla'} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
   renderEditorHeader();
@@ -4046,7 +4103,7 @@ function renderLotes() {
           <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
           <span>${esc(TIPO_LOTE[l.tipo] || l.tipo)}</span>
           <span>${l.trabajadores.length}${l.excluidos?.length ? `<span class="warn-text small">${l.excluidos.length} con errores</span>` : ''}</span>
-          <span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span>${l.status === 'aprobado' ? `<span class="muted small">${esc(l.approvedBy || '')}</span>` : ''}</span>
+          <span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span>${l.status === 'aprobado' ? `<span class="muted small">${esc(l.approvedBy || '')} · ${firmadosLote(l)}/${l.trabajadores.length} firmados</span>` : ''}</span>
           <span class="small">${esc(l.createdBy || '')}<span class="muted">${fmtRelative(l.createdAt)}</span></span>
           <span class="ll-acts">
             <button class="icon-btn sm" data-act="view" title="Visualizar resumen y contratos" aria-label="Visualizar">${icon('eye')}</button>
@@ -4375,6 +4432,7 @@ function renderLote(id) {
           ? `<p class="small"><span class="warn-text">Aún no está en Dropbox.</span> Se guardará en <code id="lote-dbx-dest">${esc(loteFolder(l))}</code> <button class="btn sm" id="lote-dbx">${icon('folder')} Guardar en Dropbox</button></p>`
           : '<p class="muted small">Conecta Dropbox en Ajustes para guardar los contratos en el expediente del cliente.</p>') : ''}
     </section>
+    ${l.status === 'aprobado' ? `<p class="small"><strong>Firmados:</strong> ${firmadosLote(l)} de ${l.trabajadores.length}${firmadosLote(l) < l.trabajadores.length ? ' · imprime, firma en persona y sube el PDF escaneado de cada uno con “Subir firmado”.' : ''}</p>` : ''}
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
     ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (cada uno sale marcado “EN REVISIÓN”). Cuando estén bien, cualquiera del equipo puede aprobar el lote.</span></div>` : ''}
     <div class="card lote-table">
@@ -4385,7 +4443,12 @@ function renderLote(id) {
           <span><strong>${esc(w.nombre)}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
           <span${l.tipo === 'COMISION' ? ' class="mono small"' : ''}>${esc(l.tipo === 'COMISION' ? w.rfc : w.puesto)}</span>
           <span>${esc(fmtLongDate(w.firma))}</span>
-          <span><button class="btn sm" data-word="${i}">${icon('doc')} Word</button></span>
+          <span class="row wrap">
+            <button class="btn sm" data-word="${i}">${icon('doc')} Word</button>
+            ${l.status !== 'aprobado' ? '' : w.firmado
+              ? `<span class="badge final" title="Subido por ${esc(w.firmado.by || '')} el ${fmtDateTime(w.firmado.at)}">Firmado</span>${dbx.isConnected() ? `<button class="btn sm" data-firmado-abrir="${i}">Abrir</button>` : ''}`
+              : `<button class="btn sm" data-firmado="${i}">${icon('upload')} Subir firmado</button>`}
+          </span>
         </div>`).join('')}
     </div>
     ${l.excluidos?.length ? `
@@ -4404,6 +4467,10 @@ function renderLote(id) {
       <button class="btn" id="lote-err-word">${icon('doc')} Word con la lista de errores</button>` : ''}
     ${l.history?.length ? `<h4 class="sub">Historial</h4><ul class="history">${l.history.map((h) => `<li><span class="muted small">${fmtDateTime(h.date)}</span> ${esc(h.by || '')}: ${esc(h.text)}</li>`).join('')}</ul>` : ''}`;
 
+  $$('[data-firmado]').forEach((b) => b.addEventListener('click', conAviso(async () => {
+    if (await subirFirmadoLote(l, Number(b.dataset.firmado))) renderLote(id);
+  })));
+  $$('[data-firmado-abrir]').forEach((b) => b.addEventListener('click', conAviso(() => openDropboxFile(l.trabajadores[Number(b.dataset.firmadoAbrir)].firmado.path))));
   $$('[data-word]').forEach((b) => b.addEventListener('click', conAviso(async () => {
     const i = Number(b.dataset.word);
     const D = await loadDocx();
@@ -4581,6 +4648,31 @@ async function p1DelLote(d) {
 const p1Blob = (l) => new Blob([fromBase64(l.p1.data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
 /** Archivos finales del lote: un Word por persona, la lista de errores (si hubo) y el P1. */
+const firmadosLote = (l) => l.trabajadores.filter((w) => w.firmado).length;
+
+/** Sube el PDF escaneado del contrato firmado de un trabajador a la carpeta del lote. true si se guardó. */
+async function subirFirmadoLote(l, i) {
+  if (!dbx.isConnected()) { toast('Conecta Dropbox en Ajustes para guardar el contrato firmado', 'error'); return false; }
+  const w = l.trabajadores[i];
+  const nombre = fileNameFor(i, w).replace(/\.docx$/i, '') + ' - FIRMADO.pdf';
+  const r = await modal({
+    title: `Contrato firmado · ${w.nombre}`,
+    body: `
+      <p class="muted small">Sube el PDF escaneado del contrato firmado. Se guarda en la carpeta del lote como “${esc(nombre)}”.</p>
+      <label class="field"><span>PDF firmado</span><input type="file" name="pdf" accept="application/pdf,.pdf" required></label>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Guardar', value: 'ok', kind: 'primary' }],
+  });
+  const file = r.data?.pdf;
+  if (r.value !== 'ok' || !file?.size) return false;
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { toast('El archivo debe ser PDF', 'error'); return false; }
+  await loadExpedienteFolders();
+  const meta = await dbx.upload(dbx.joinPath(loteFolder(l), nombre), file, { reemplazar: true });
+  w.firmado = { path: meta.path_display, at: Date.now(), by: whoAmI() };
+  await saveLote(l, `Subió el contrato firmado de ${w.nombre}`);
+  toast('Contrato firmado guardado en Dropbox', 'ok');
+  return true;
+}
+
 async function archivosLote(l) {
   const D = await loadDocx();
   const files = [];
