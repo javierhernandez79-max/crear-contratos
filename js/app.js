@@ -22,7 +22,7 @@ import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate,
 import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
-import { TIPOS, pdfText, sinTexto, detectarTipo, extraer } from './extraccion.js';
+import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
 import { estadoIA, cambiarIA, leerConIA } from './ia.js';
 
 // ---------- Estado ----------
@@ -2507,24 +2507,31 @@ async function revisarPdf(p, pdf, prefijo = '') {
   toast(`Leyendo ${pdf.name}…`);
   const text = await pdfText(pdf.data);
   let ia = null;
-  if (sinTexto(text)) {
-    const aviso = (msg) => modal({
-      title: 'PDF sin texto',
-      body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). ${msg}</p>`,
-      actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
-    });
-    if (!(await estadoIA()).activa) { await aviso('Captura los datos a mano: la lectura con IA está apagada.'); return false; }
+  const escaneado = sinTexto(text);
+  const aviso = (msg) => modal({
+    title: 'PDF sin texto',
+    body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). ${msg}</p>`,
+    actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
+  });
+  // Con IA encendida también se usa cuando el texto del PDF no alcanza (p. ej. escaneado con una capa de texto pobre)
+  const tipoTxt = escaneado ? null : detectarTipo(text);
+  const pobre = escaneado || lecturaPobre(tipoTxt, tipoTxt ? extraer(tipoTxt, text) : {});
+  if (pobre && (await estadoIA()).activa) {
     toast(`Leyendo ${pdf.name} con IA (puede tardar hasta un minuto)…`);
     try {
       ia = await leerConIA(pdf);
+      if (ia.tipo === 'otro' || !Object.keys(ia.datos).length) ia = null;
     } catch (err) {
-      await aviso(`No se pudo leer con IA: ${esc(err.message)}`);
-      return false;
+      if (escaneado) { await aviso(`No se pudo leer con IA: ${esc(err.message)}`); return false; }
+      toast(`No se pudo leer con IA (${err.message}); se muestra lo leído del texto`, 'error');
     }
-    if (ia.tipo === 'otro' || !Object.keys(ia.datos).length) {
+    if (!ia && escaneado) {
       await aviso('La IA no lo reconoció como constancia fiscal, escritura constitutiva ni poder. Captura los datos a mano.');
       return false;
     }
+  } else if (escaneado) {
+    await aviso('Captura los datos a mano: la lectura con IA está apagada.');
+    return false;
   }
   const detectado = ia ? ia.tipo : detectarTipo(text);
   let tipo = detectado || (p.kind === 'pm' ? 'acta' : 'csf');
@@ -2640,12 +2647,17 @@ async function altaDesdePdfs() {
     } catch (err) {
       console.error(err);
     }
-    if (conIA && sinTexto(d.text)) {
+    const escaneado = sinTexto(d.text);
+    const tipoTxt = escaneado ? null : detectarTipo(d.text);
+    // También va a la IA el PDF con texto del que no se pudo sacar el dato principal
+    if (conIA && (escaneado || lecturaPobre(tipoTxt, tipoTxt ? extraer(tipoTxt, d.text) : {}))) {
       toast(`Leyendo con IA ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
       try {
-        d.ia = await leerConIA(pdfs[i]);
+        const ia = await leerConIA(pdfs[i]);
+        // Con texto, si la IA no lo reconoce se queda lo leído del texto
+        if (escaneado || ia.tipo !== 'otro') d.ia = ia;
       } catch (err) {
-        d.errorIA = `Escaneado: no se pudo leer con IA (${err.message}).`;
+        if (escaneado) d.errorIA = `Escaneado: no se pudo leer con IA (${err.message}).`;
       }
     }
     docs.push(d);

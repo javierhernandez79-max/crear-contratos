@@ -17,7 +17,8 @@ export async function pdfText(data) {
   const pdfjs = await loadPdfjs();
   let doc;
   try {
-    doc = await pdfjs.getDocument({ data: new Uint8Array(data), isEvalSupported: false }).promise;
+    // Copia: pdf.js se queda con el búfer que recibe (lo vacía), y el original se usa después (p. ej. para la IA)
+    doc = await pdfjs.getDocument({ data: new Uint8Array(data).slice(), isEvalSupported: false }).promise;
   } catch (err) {
     throw new Error(err?.name === 'PasswordException' ? 'El PDF está protegido con contraseña.' : 'El archivo no es un PDF válido.', { cause: err });
   }
@@ -48,8 +49,11 @@ export const TIPOS = { csf: 'Constancia de Situación Fiscal', acta: 'Escritura 
 
 export function detectarTipo(text) {
   const t = plano(espacios(text));
+  const acta = /CONSTITUTIVA|CONSTITUCION DE (LA |UNA )?SOCIEDAD|CONSTITUIR (UNA )?SOCIEDAD|SE CONSTITUYE/.test(t);
+  // Una escritura suele traer agregada la cédula fiscal: si es larga y es constitutiva, manda la escritura
+  if (acta && t.length > 8000) return 'acta';
   if (/CONSTANCIA DE SITUACION FISCAL|CEDULA DE IDENTIFICACION FISCAL/.test(t)) return 'csf';
-  if (/CONSTITUTIVA|CONSTITUCION DE (LA |UNA )?SOCIEDAD|CONSTITUIR (UNA )?SOCIEDAD|SE CONSTITUYE/.test(t)) return 'acta';
+  if (acta) return 'acta';
   if (/\bPODER(ES)?\b/.test(t) && /OTORGA|CONFIERE|OTORGAMIENTO/.test(t)) return 'poder';
   return null;
 }
@@ -262,6 +266,14 @@ export function extraerPoder(text) {
   const f = fac.filter(([, re]) => re.test(t)).map(([l]) => l);
   if (f.length) out.facultades = f.join(', ');
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v));
+}
+
+/** Lo leído del texto no sirve (falta el dato que identifica el documento): conviene intentar con IA. */
+export function lecturaPobre(tipo, data) {
+  if (tipo === 'csf') return !data.rfc;
+  if (tipo === 'acta') return !data.escrituraNumero && !data.nombre;
+  if (tipo === 'poder') return !data.nombre;
+  return true;
 }
 
 export function extraer(tipo, text) {
