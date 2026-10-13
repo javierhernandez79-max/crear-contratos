@@ -11,14 +11,13 @@ import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
 import * as ds from './docusign.js';
-import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlob, loadForge } from './efirma.js';
+import { verifySignature, base64ToBlob } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
 import { planAlta } from './alta-pdf.js';
 import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
-import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
@@ -48,7 +47,8 @@ const state = {
   installPrompt: null,
 };
 
-const STATUS = { borrador: 'Borrador', revision: 'En revisión', aprobado: 'Aprobado', final: 'Firmado' };
+// 'revision' ya no se usa (el flujo es Documento → Aprobación → Firma); los contratos viejos en revisión se leen como borrador
+const STATUS = { borrador: 'Borrador', revision: 'Borrador', aprobado: 'Aprobado', final: 'Firmado' };
 // Nombre para listas y archivos; el título (c.title) es el encabezado impreso del documento
 const nombreDe = (c) => c.etiqueta || fill(c, c.title);
 const statusBadge = (c) => `<span class="badge ${esc(c.status)}">${esc(STATUS[c.status] || c.status)}</span>`;
@@ -207,6 +207,7 @@ async function loadAll() {
   state.lotes = await db.getAll('lotes');
   // Contratos del Sugerido creados antes de separar etiqueta y título: el título largo salía como encabezado
   for (const c of state.contracts) {
+    if (c.status === 'revision') c.status = 'borrador';
     if (!c.etiqueta && /^Contrato de Prestación de Servicios · .+ · .+/.test(c.title)) {
       c.etiqueta = c.title.replace(/^Contrato de Prestación de Servicios/, 'Prestación de servicios');
       c.title = 'Contrato de Prestación de Servicios';
@@ -252,7 +253,7 @@ function touched({ log, groupKey, content = true } = {}) {
   if (content && c.status !== 'borrador') {
     logChange(c, `El contrato pasó de "${STATUS[c.status]}" a borrador por una edición`);
     c.status = 'borrador';
-    toast('El contrato volvió a borrador: genera una nueva versión para revisión');
+    toast('El contrato volvió a borrador: hay que aprobarlo de nuevo');
     // Solo la etiqueta de estado: redibujar el encabezado sacaría el cursor del título si se está escribiendo ahí
     const badge = $('#editor-head .title-meta .badge');
     if (badge) badge.outerHTML = statusBadge(c); else renderEditorHeader();
@@ -557,6 +558,7 @@ function renderServiciosRevision(gid) {
   if (!list.length) { toast('No se encontraron esos contratos', 'error'); return go('#/'); }
   const g = list[0].grupoServicios;
   const pendientes = list.filter((c) => !['aprobado', 'final'].includes(c.status));
+  const incompletos = pendientes.filter((c) => missingVariables(c).length).length;
   app.innerHTML = `
     <header class="page-head">
       <div>
@@ -564,6 +566,7 @@ function renderServiciosRevision(gid) {
         <h1>${list.length} contrato${list.length === 1 ? '' : 's'} para ${esc(g.cliente)}</h1>
       </div>
     </header>
+    ${incompletos ? `<div class="banner warn">${icon('alert')} <span>${incompletos === 1 ? 'Un contrato tiene' : `${incompletos} contratos tienen`} datos por completar; no se puede aprobar hasta llenarlos (botón “Editar”).</span></div>` : ''}
     ${pendientes.length
       ? `<div class="banner info">${icon('doc')} <span>Revisa cada contrato completo. Si alguno necesita cambios, ábrelo con “Editar”; al final, cualquier usuario puede aprobarlos.</span></div>`
       : `<div class="banner ok">${icon('check')} <span>Todos aprobados.${dbx.isConnected() ? ' El Word y el PDF finales están en la carpeta de cada contrato en Dropbox.' : ''}</span></div>`}
@@ -583,12 +586,11 @@ function renderServiciosRevision(gid) {
     <div class="row wrap lote-actions">
       <a class="btn ghost" href="#/">Volver a contratos</a>
       ${list.some((c) => ['aprobado', 'final'].includes(c.status)) ? `<button class="btn" id="sr-zip">${icon('download')} Descargar .zip (Word y PDF)</button>` : ''}
-      ${pendientes.length ? `<button class="btn primary" id="sr-approve">${icon('check')} Aprobar ${pendientes.length === list.length ? (list.length === 1 ? 'el contrato' : `los ${list.length} contratos`) : `los ${pendientes.length} pendientes`}</button>` : ''}
+      ${pendientes.length ? `<button class="btn primary" id="sr-approve" ${incompletos ? 'disabled' : ''}>${icon('check')} Aprobar ${pendientes.length === list.length ? (list.length === 1 ? 'el contrato' : `los ${list.length} contratos`) : `los ${pendientes.length} pendientes`}</button>` : ''}
     </div>`;
 
   $('#sr-approve')?.addEventListener('click', async (e) => {
-    const faltan = pendientes.reduce((n, c) => n + missingVariables(c).length, 0);
-    if (!(await confirmDialog('Aprobar contratos', `${faltan ? `Hay ${faltan} dato(s) sin completar en total; aparecerán entre corchetes. ` : ''}Se generarán el Word y el PDF finales de ${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'}${dbx.isConnected() ? ', se guardarán en Dropbox' : ''} y se descargará un .zip con todos.`, 'Aprobar', 'primary'))) return;
+    if (!(await confirmDialog('Aprobar contratos', `Se generarán el Word y el PDF finales de ${pendientes.length} contrato${pendientes.length === 1 ? '' : 's'}${dbx.isConnected() ? ', se guardarán en Dropbox' : ''} y se descargará un .zip con todos.`, 'Aprobar', 'primary'))) return;
     e.target.disabled = true;
     let ok = 0;
     try {
@@ -759,9 +761,9 @@ function renderVencimientos() {
         updateVencBadge();
         return renderVencimientos();
       }
-      go(`#/c/${c.id}/firmas`);
+      go(`#/c/${c.id}/documento`);
     });
-    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/c/${c.id}/firmas`); });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/c/${c.id}/documento`); });
   });
   $$('.venc-list .ll-row[data-lote]').forEach((row) => {
     const l = state.lotes.find((x) => x.id === row.dataset.lote);
@@ -785,7 +787,7 @@ async function descartarAlertaFirma(c) {
   const r = await modal({
     title: `Descartar aviso: ${nombreDe(c)}`,
     body: `
-      <p class="muted">Si el cliente ya lo regresó firmado, mejor márcalo como firmado en la pestaña Firmas. Descarta el aviso solo si el contrato ya no se va a firmar.</p>
+      <p class="muted">Si el cliente ya lo regresó firmado, mejor súbelo en Aprobación y firma → Firmado en papel. Descarta el aviso solo si el contrato ya no se va a firmar.</p>
       <label class="field"><span>Motivo</span><input name="nota" required placeholder="Ej. el cliente canceló el servicio"></label>`,
     actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Descartar aviso', value: 'ok', kind: 'primary' }],
   });
@@ -818,8 +820,10 @@ async function atenderVencimiento(l, w) {
 // ---------- Inicio: mis contratos ----------
 function contractProgress(c) {
   const missing = missingVariables(c).length;
-  const signed = c.signers.filter((s) => c.signatures[s.id]).length;
-  return { missing, signed, total: c.signers.length };
+  // Firmas: las de DocuSign mientras el envío está abierto; firmado = todas
+  const total = c.signers.length;
+  const signed = c.status === 'final' ? total : (c.docusign?.recipients || []).filter((r) => r.status === 'completed').length;
+  return { missing, signed, total };
 }
 
 function renderHome() {
@@ -848,7 +852,7 @@ function renderHome() {
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar contrato" value="${esc(state.homeQuery)}"></label>
         <div class="chips" role="tablist">
-          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['revision', 'En revisión'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
+          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
         </div>
       </div>
@@ -1112,8 +1116,8 @@ const TABS = [
   ['secciones', 'Secciones'],
   ['variables', 'Variables'],
   ['vista', 'Vista previa'],
-  ['documento', 'Word y PDF'],
-  ['firmas', 'Firmas'],
+  ['documento', 'Aprobación y firma'],
+  ['firmas', 'Firmantes'],
   ['anexos', 'Anexos'],
   ['versiones', 'Versiones'],
 ];
@@ -1164,7 +1168,7 @@ function renderEditorHeader() {
         <span id="save-status" class="muted small">Guardado</span>
       </div>
     </div>
-    <a class="btn primary" href="#/c/${esc(c.id)}/documento">${icon('doc')}<span class="hide-xs">Word y PDF</span></a>
+    <a class="btn primary" href="#/c/${esc(c.id)}/documento">${icon('doc')}<span class="hide-xs">Aprobación y firma</span></a>
     <button class="icon-btn" id="btn-more" aria-label="Más acciones">${icon('more')}</button>`;
   $('#doc-title').addEventListener('input', (e) => {
     c.title = e.target.value;
@@ -1202,7 +1206,7 @@ function documentHTML(c, { interactive = false } = {}) {
   const parts = (txt) => fill(c, txt, 'parts').map((p) =>
     p.var ? `<span class="v ${p.missing ? 'missing' : ''}" ${interactive ? `data-var="${esc(p.var)}" role="button" tabindex="0"` : ''}>${esc(p.text)}</span>` : esc(p.text)).join('');
   return `
-    ${!['aprobado', 'final'].includes(c.status) ? `<div class="watermark">${c.status === 'revision' ? 'REVISIÓN' : 'BORRADOR'}</div>` : ''}
+    ${!['aprobado', 'final'].includes(c.status) ? `<div class="watermark">BORRADOR</div>` : ''}
     <h1 class="doc-h1">${parts(c.title)}</h1>
     ${layoutSections(c).map((l) => {
       const paras = l.s.body.split(/\n/).filter((p) => p.trim());
@@ -1645,24 +1649,14 @@ function efirmaEditBanner(c) {
   return `<div class="banner info">${icon('shield')} <span>Este contrato tiene firmas electrónicas avanzadas. Cualquier cambio en el texto, los datos o los firmantes las invalidará.</span></div>`;
 }
 
-// --- Pestaña: Firmas ---
+// --- Pestaña: Firmantes ---
 function renderSigners() {
   const c = state.current;
-  const signed = c.signers.filter((s) => c.signatures[s.id]).length;
   const box = tabBox();
+  // Quién firma el contrato (DocuSign toma de aquí nombre y correo). Las firmas se recaban en Aprobación y firma
   box.innerHTML = `
     ${signedChangedBanner(c)}
-    ${c.conMolde ? `<div class="banner info">${icon('pen')} <span>Formato ${esc(c.formato)}: las firmas se recaban sobre el PDF que se saca del Word (o por DocuSign). Las firmas dibujadas o con e.firma de esta pestaña no se integran a ese Word. Cuando regrese firmado, márcalo como firmado.</span></div>` : ''}
-    <div class="card soft sign-summary">
-      <div>
-        <strong>${signed} de ${c.signers.length} firmas</strong>
-        <p class="muted small">Elige por firmante: <b>firma autógrafa</b> (dibujada) o <b>firma electrónica avanzada</b> con e.firma del SAT.</p>
-        ${hasEfirma(c) ? `<button class="link" data-act="signed-txt">${icon('doc', 'xs')} Descargar texto firmado (.txt) para verificación</button>` : ''}
-      </div>
-      ${c.status === 'final'
-        ? `<button class="btn" data-act="draft">Volver a borrador</button>`
-        : `<button class="btn primary" data-act="final" ${missingVariables(c).length ? 'title="Hay datos pendientes"' : ''}>${icon('check')} Marcar como firmado</button>`}
-    </div>
+    <div class="banner info">${icon('pen')} <span>Aquí se define quién firma. Para firmar: pestaña <a href="#/c/${c.id}/documento">Aprobación y firma</a> → Enviar a firma (DocuSign) o Firmado en papel.</span></div>
     <div class="signers">
       ${c.signers.map((sg) => {
         const sig = c.signatures[sg.id];
@@ -1673,9 +1667,9 @@ function renderSigners() {
             <label class="field grow"><span>Nombre (admite variables)</span><input data-f="name" value="${esc(sg.name)}" placeholder="{{nombre}} o texto"></label>
           </div>
           <p class="muted small">Se mostrará como: <strong>${esc(fill(c, sg.name)) || '—'}</strong></p>
-          ${sig?.type === 'efirma' ? efirmaBox(c, sig) : `
-          <div class="sig-box ${sig ? 'has' : ''}">
-            ${sig ? `<img src="${esc(sig.image)}" alt="Firma de ${esc(fill(c, sg.name))}"><span class="muted small">Firma autógrafa · ${fmtDateTime(sig.date)}</span>` : '<span class="muted">Sin firma</span>'}
+          ${!sig ? '' : sig.type === 'efirma' ? efirmaBox(c, sig) : `
+          <div class="sig-box has">
+            <img src="${esc(sig.image)}" alt="Firma de ${esc(fill(c, sg.name))}"><span class="muted small">Firma autógrafa · ${fmtDateTime(sig.date)}</span>
           </div>`}
           <div class="row end">
             <button class="link danger" data-act="remove-signer">Quitar firmante</button>
@@ -1684,11 +1678,6 @@ function renderSigners() {
               <button class="btn sm" data-act="verify">${icon('check')} Verificar</button>
               <button class="btn sm" data-act="p7s">Descargar .p7s</button>` : ''}
           </div>
-          ${sig ? '' : `
-          <div class="sign-options">
-            <button class="btn" data-act="sign">${icon('pen')} Firma autógrafa</button>
-            <button class="btn primary" data-act="efirma">${icon('shield')} Firmar con e.firma</button>
-          </div>`}
         </div>`;
       }).join('')}
     </div>
@@ -1709,18 +1698,11 @@ function renderSigners() {
     const id = btn.closest('.signer')?.dataset.id;
     const sg = c.signers.find((s) => s.id === id);
     switch (btn.dataset.act) {
-      case 'sign': return signFor(sg);
-      case 'efirma': return signWithEfirma(sg);
       case 'verify': return verifyEfirma(sg);
       case 'p7s': {
         const sig = c.signatures[id];
         download(base64ToBlob(sig.p7s, 'application/pkcs7-signature'), `firma-${slugify(sig.info.rfc || sig.info.name)}.p7s`);
         return toast('Firma .p7s descargada', 'ok');
-      }
-      case 'signed-txt': {
-        const sig = Object.values(c.signatures).find((x) => x.type === 'efirma');
-        download(new Blob([sig.signedText], { type: 'text/plain;charset=utf-8' }), `${slugify(fill(c, c.title)).slice(0, 50)}-texto-firmado.txt`);
-        return toast('Texto firmado descargado', 'ok');
       }
       case 'clear-sig':
         if (c.signatures[id]?.type === 'efirma' &&
@@ -1739,61 +1721,8 @@ function renderSigners() {
         c.signers.push({ id: uid(), role: 'Firmante', name: '' });
         touched({ log: 'Agregó un firmante' });
         return renderSigners();
-      case 'final': {
-        const pending = c.signers.length - c.signers.filter((s) => c.signatures[s.id]).length;
-        const missing = missingVariables(c).length;
-        if (missing || pending) {
-          const msg = [missing && `${missing} dato(s) sin completar`, pending && `${pending} firma(s) pendiente(s)`].filter(Boolean).join(' y ');
-          if (!(await confirmDialog('Marcar como firmado', `Hay ${msg}. ¿Marcar como firmado de todos modos?`, 'Marcar firmado', 'primary'))) return;
-        }
-        c.status = 'final';
-        addVersion(c, 'Versión firmada');
-        logChange(c, 'Marcó el contrato como firmado');
-        await saveContract(c);
-        renderEditorHeader();
-        toast('Contrato marcado como firmado y versión guardada', 'ok');
-        return renderSigners();
-      }
-      case 'draft':
-        c.status = 'borrador';
-        touched({ log: 'Regresó el contrato a borrador', content: false });
-        renderEditorHeader();
-        return renderSigners();
     }
   });
-}
-
-async function signFor(sg) {
-  const c = state.current;
-  let pad;
-  const r = await modal({
-    title: `Firma: ${fill(c, sg.name) || sg.role}`,
-    body: `
-      <p class="muted small">${esc(sg.role)} · Firma dentro del recuadro.</p>
-      <div class="pad-wrap"><canvas class="sig-pad" aria-label="Área de firma"></canvas><span class="pad-hint">Firma aquí</span></div>
-      <label class="check"><input type="checkbox" name="agree" required> Confirmo que he leído el contrato y estoy de acuerdo con su contenido.</label>`,
-    actions: [
-      { label: 'Limpiar', value: 'clear', kind: 'ghost', formnovalidate: true },
-      { label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true },
-      { label: 'Aceptar firma', value: 'ok', kind: 'primary' },
-    ],
-    onOpen: (dlg) => {
-      const canvas = $('.sig-pad', dlg);
-      pad = createSignaturePad(canvas);
-      canvas.addEventListener('pointerdown', () => $('.pad-hint', dlg)?.remove(), { once: true });
-      $('button[value="clear"]', dlg).addEventListener('click', (e) => { e.preventDefault(); pad.clear(); });
-      $('button[value="ok"]', dlg).addEventListener('click', (e) => {
-        if (pad.isEmpty()) { e.preventDefault(); toast('Dibuja tu firma primero', 'error'); }
-      });
-    },
-  });
-  if (r.value !== 'ok') return;
-  if (state.current !== c) return toast('El contrato se actualizó desde otro equipo mientras firmabas; vuelve a firmar', 'error');
-  if (!Object.keys(c.signatures).length) c.signedHash = contentHash(c);
-  c.signatures[sg.id] = { image: pad.toDataURL(), date: Date.now() };
-  touched({ log: `Firmó ${fill(c, sg.name) || sg.role}`, content: false });
-  renderSigners();
-  toast('Firma agregada', 'ok');
 }
 
 function efirmaBox(c, sig) {
@@ -1812,96 +1741,6 @@ function efirmaBox(c, sig) {
         <dt>Huella SHA-256</dt><dd class="mono small">${esc(sig.hash.slice(0, 32))}…</dd>
       </dl>
     </div>`;
-}
-
-async function signWithEfirma(sg) {
-  const c = state.current;
-  const missing = missingVariables(c);
-  if (missing.length) {
-    toast(`Completa los ${missing.length} dato(s) pendientes antes de firmar con e.firma`, 'error');
-    state.focusVar = missing[0];
-    return go(`#/c/${c.id}/variables`);
-  }
-  loadForge().catch(() => {}); // precarga mientras se llenan los campos
-  let loaded = null; // { cert, info }
-  const r = await modal({
-    title: `Firmar con e.firma: ${fill(c, sg.name) || sg.role}`,
-    body: `
-      <p class="muted small">Firma electrónica avanzada con los archivos de tu <b>e.firma del SAT</b> (también funciona con otro certificado X.509 RSA).
-      Los archivos y la contraseña se usan solo en este dispositivo: <b>no se guardan ni se envían a ningún servidor</b>.</p>
-      <label class="field"><span>Certificado (.cer)</span><input type="file" name="cer" accept=".cer,.crt,.pem" required></label>
-      <div class="cert-preview" hidden></div>
-      <label class="field"><span>Llave privada (.key)</span><input type="file" name="key" accept=".key,.pem" required></label>
-      <label class="field"><span>Contraseña de la llave privada</span><input type="password" name="pass" autocomplete="off" required></label>
-      <label class="check"><input type="checkbox" name="agree" required> He leído el contrato y lo firmo con mi firma electrónica avanzada, con la misma validez que mi firma autógrafa.</label>
-      <p class="error-text" hidden></p>`,
-    actions: [
-      { label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true },
-      { label: 'Firmar', value: 'ok', kind: 'primary' },
-    ],
-    onOpen: (dlg) => {
-      const preview = $('.cert-preview', dlg);
-      const err = $('.error-text', dlg);
-      const showErr = (m) => { err.textContent = m; err.hidden = !m; };
-      $('input[name=cer]', dlg).addEventListener('change', async (e) => {
-        loaded = null;
-        preview.hidden = true;
-        showErr('');
-        const file = e.target.files[0];
-        if (!file) return;
-        try {
-          loaded = await readCertificate(file);
-          const i = loaded.info;
-          const now = Date.now();
-          const expired = now > i.validTo || now < i.validFrom;
-          const signerName = fill(c, sg.name).trim();
-          const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-          const mismatch = signerName && norm(signerName) !== norm(i.name);
-          preview.innerHTML = `
-            <strong>${esc(i.name)}</strong>
-            <span>${i.rfc ? `RFC ${esc(i.rfc)} · ` : ''}Certificado ${esc(i.certNumber)}</span>
-            <span>Emitido por ${esc(i.issuer)}</span>
-            <span class="${expired ? 'warn-text' : 'ok-text'}">${expired ? 'Certificado NO vigente' : 'Vigente'} (${new Date(i.validFrom).toLocaleDateString('es-MX')} – ${new Date(i.validTo).toLocaleDateString('es-MX')})</span>
-            ${i.isSAT ? '' : '<span class="warn-text">No es un certificado emitido por el SAT.</span>'}
-            ${mismatch ? `<span class="warn-text">El titular no coincide con el firmante "${esc(signerName)}".</span>` : ''}`;
-          preview.hidden = false;
-          if (expired) { showErr('El certificado no está vigente; no se puede usar para firmar.'); loaded = null; }
-        } catch (ex) {
-          showErr(ex.message);
-        }
-      });
-      $('button[value="ok"]', dlg).addEventListener('click', async (e) => {
-        const form = $('form', dlg);
-        if (!form.checkValidity()) return; // deja que el navegador marque los campos
-        e.preventDefault();
-        if (!loaded) return showErr(err.textContent || 'Selecciona un certificado .cer válido.');
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        btn.textContent = 'Firmando…';
-        try {
-          const key = await readPrivateKey($('input[name=key]', dlg).files[0], $('input[name=pass]', dlg).value, loaded.cert);
-          // El nombre del firmante forma parte del texto firmado: se fija antes de firmar, no después
-          if (!sg.name.trim()) sg.name = loaded.info.name;
-          const text = canonicalText(c);
-          const result = await signText(text, loaded.cert, key);
-          dlg.signed = { type: 'efirma', date: Date.now(), signedText: text, ...result };
-          $('input[name=pass]', dlg).value = '';
-          dlg.close('ok');
-        } catch (ex) {
-          showErr(ex.message || 'No se pudo firmar.');
-          btn.disabled = false;
-          btn.textContent = 'Firmar';
-        }
-      });
-    },
-  });
-  const signed = r.value === 'ok' && r.dlg.signed;
-  if (!signed) return;
-  if (state.current !== c) return toast('El contrato se actualizó desde otro equipo mientras firmabas; vuelve a firmar', 'error');
-  c.signatures[sg.id] = signed;
-  touched({ log: `Firmó con e.firma ${signed.info.name}${signed.info.rfc ? ` (RFC ${signed.info.rfc})` : ''}, certificado ${signed.info.certNumber}`, content: false });
-  renderSigners();
-  toast('Firma electrónica avanzada agregada', 'ok');
 }
 
 async function verifyEfirma(sg) {
@@ -3340,7 +3179,7 @@ function bindDropboxSettings() {
   });
 }
 
-// ---------- Word y PDF: flujo Borrador → En revisión → Aprobado → Firmado ----------
+// ---------- Aprobación y firma: flujo 1. Documento → 2. Aprobación → 3. Firma ----------
 let docxReady;
 function loadDocx() {
   if (window.docx) return Promise.resolve(window.docx);
@@ -3372,12 +3211,13 @@ function contractFolder(c) {
 }
 
 /** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
-async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
+/** `reemplazar` → sobrescribe el archivo del mismo nombre (p. ej. el APROBADO al volver a aprobar) en lugar de crear "(1)". */
+async function deliverFile(c, blob, filename, kind, { descargar = true, reemplazar = false } = {}) {
   let path = null;
   if (dbx.isConnected()) {
     await loadExpedienteFolders();
     const folder = contractFolder(c);
-    const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, { autorename: true });
+    const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, reemplazar ? { reemplazar } : { autorename: true });
     path = meta.path_display;
     // Si la carpeta de la empresa se creó ahora, queda guardada en su ficha del catálogo
     const p = clientParty(c);
@@ -3385,7 +3225,9 @@ async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
   }
   if (descargar) download(blob, filename);
   const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: cuenta(), status: c.status };
-  c.documentos = [rec, ...(c.documentos || [])];
+  // Un archivo reemplazado no se lista dos veces
+  const viejo = (d) => reemplazar && path && d.path?.toLowerCase() === path.toLowerCase();
+  c.documentos = [rec, ...(c.documentos || []).filter((d) => !viejo(d))];
   return rec;
 }
 
@@ -3453,7 +3295,7 @@ async function enviarDocuSign(c) {
     title: 'Enviar a firma con DocuSign',
     wide: true,
     body: `
-      <p class="muted small">Cada firmante recibe un correo de DocuSign con el PDF aprobado; todos firman a la vez. Si nuestro apoderado prefiere firmar en la app (autógrafa o e.firma), cancela, fírmalo en la pestaña <b>Firmas</b> y vuelve a enviar: su firma va incluida en el PDF.</p>
+      <p class="muted small">Cada firmante recibe un correo de DocuSign con el ${c.conMolde ? 'Word' : 'PDF'} aprobado; todos firman a la vez.</p>
       ${pendientes.map((sg) => {
         const f = firmantePersona(c, sg);
         return `
@@ -3547,6 +3389,7 @@ async function revisarEnvio(c, { aviso = false } = {}) {
     e.files = [f1.id, f2.id];
     e.completedAt = st.completedAt || Date.now();
     c.status = 'final';
+    delete c.firmadoPapel;
     addVersion(c, 'Firmado en DocuSign');
     logChange(c, 'Todas las partes firmaron en DocuSign; se guardaron el PDF firmado y el certificado');
     await saveContract(c);
@@ -3589,47 +3432,60 @@ async function revisarEnvios() {
   }
 }
 
-const STATUS_STEPS = [['borrador', 'Borrador'], ['revision', 'En revisión'], ['aprobado', 'Aprobado'], ['final', 'Firmado']];
+const PASOS = ['Documento', 'Aprobación', 'Firma'];
+
+/** Paso del flujo: 0 completar datos, 1 aprobar, 2 enviar a firma, 3 firmado. */
+function pasoDe(c) {
+  if (c.status === 'final') return 3;
+  if (c.status === 'aprobado') return 2;
+  return missingVariables(c).length ? 0 : 1;
+}
 
 function renderDocumento() {
   const c = state.current;
   c.documentos ||= [];
   const box = tabBox();
   const connected = dbx.isConnected();
-  const idx = STATUS_STEPS.findIndex(([k]) => k === c.status);
   const missing = missingVariables(c).length;
-  const rev = c.revision || 0;
+  const paso = pasoDe(c);
+  const conflicto = conflictoFormato(c, state.contracts);
+  const descargarFinal = c.conMolde
+    ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>`
+    : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`;
   box.innerHTML = `
     <ol class="stepper">
-      ${STATUS_STEPS.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
+      ${PASOS.map((l, i) => `<li class="${i < paso ? 'done' : i === paso ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
     </ol>
-    ${missing ? `<div class="banner warn">${icon('alert')} <span>${missing} dato(s) sin completar: aparecerán entre corchetes en el documento.</span></div>` : ''}
-    ${conflictoFormato(c, state.contracts) ? `<div class="banner danger">${icon('alert')} <span>${esc(conflictoFormato(c, state.contracts))} No se puede aprobar así.</span></div>` : ''}
+    ${conflicto ? `<div class="banner danger">${icon('alert')} <span>${esc(conflicto)} No se puede aprobar así.</span></div>` : ''}
     ${avisoMolde(c)}
     <section class="card form-block">
-      ${c.status === 'borrador' ? `
-        <h3>Enviar a revisión</h3>
-        <p class="muted">Genera el Word ${rev ? `v${rev + 1}` : 'v1'}${c.conMolde ? ' del formato' : ' con la leyenda “EN REVISIÓN”'} para que los abogados lo revisen y anoten con control de cambios. Las correcciones se aplican aquí en la app (la plantilla no cambia).</p>
-        <div class="row"><button class="btn primary" data-wf="review">${icon('doc')} Generar Word para revisión</button></div>`
-      : c.status === 'revision' ? `
-        <h3>En revisión · v${rev}</h3>
-        <p class="muted">${c.conMolde ? 'Si hay correcciones de datos, edítalas en Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se genera el Word final del formato.' : 'Si hay correcciones, edítalas en Secciones o Variables (el contrato regresa a borrador) y genera una nueva versión. Si todo está correcto, apruébalo: se generan el Word y el PDF finales sin leyendas.'}</p>
-        <div class="row">
-          <button class="btn" data-wf="review">${icon('doc')} Nueva versión v${rev + 1}</button>
-          <button class="btn primary" data-wf="approve">${icon('check')} ${c.conMolde ? 'Aprobar y generar Word' : 'Aprobar y generar PDF'}</button>
-        </div>`
-      : c.status === 'aprobado' ? `
-        <h3>Aprobado</h3>
-        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date)}.` : ''} Recaba las firmas en la pestaña Firmas y márcalo como firmado${esServicios(c) ? ', o envíalo a firma por correo con DocuSign' : ''}.</p>
+      ${paso === 0 ? `
+        <h3>1. Completa el documento</h3>
+        <p class="muted">Faltan <strong>${missing} dato${missing === 1 ? '' : 's'}</strong>. Mientras falten no se puede aprobar.</p>
         <div class="row wrap">
-          ${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`}
-          <a class="btn ${esServicios(c) && !envioActivo(c) ? '' : 'primary'}" href="#/c/${c.id}/firmas">${icon('pen')} Ir a Firmas</a>
-          ${esServicios(c) && !envioActivo(c) ? `<button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>` : ''}
+          <a class="btn primary" href="#/c/${c.id}/variables">${icon('pen')} Completar datos</a>
+          <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
+        </div>`
+      : paso === 1 ? `
+        <h3>2. Revisa y aprueba</h3>
+        <p class="muted">Revisa el contrato en la Vista previa; si hay que cambiar algo, corrígelo en Secciones o Variables. Al aprobar se ${c.conMolde ? 'genera el Word final del formato' : 'generan el Word y el PDF finales'}${connected ? ' y se guardan en Dropbox' : ''}.</p>
+        <div class="row wrap">
+          <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
+          <button class="btn primary" data-wf="approve" ${conflicto ? 'disabled' : ''}>${icon('check')} Aprobar</button>
+        </div>`
+      : paso === 2 ? `
+        <h3>3. Envía a firma</h3>
+        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa al paso 2.</p>
+        <div class="row wrap">
+          ${envioActivo(c) ? '' : `
+          <button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>
+          <button class="btn" data-wf="papel">${icon('upload')} Firmado en papel</button>`}
+          ${descargarFinal}
         </div>`
       : `
         <h3>Firmado</h3>
-        <p class="muted">El contrato está firmado. Cualquier edición lo regresa a borrador.</p>
-        <div class="row">${c.conMolde ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word</button>` : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF</button>`}</div>`}
+        <p class="muted">El contrato está firmado${c.firmadoPapel ? ' (en papel)' : c.docusign?.status === 'completed' ? ' en DocuSign' : ''}. Cualquier edición lo regresa a borrador.</p>
+        <div class="row">${descargarFinal}</div>`}
       <button class="link" data-wf="word">Descargar Word de trabajo (sin guardar en Dropbox)</button>
     </section>
     ${c.docusign ? envioHTML(c) : ''}
@@ -3673,8 +3529,8 @@ function renderDocumento() {
     if (!btn) return;
     const act = btn.dataset.wf;
     try {
-      if (act === 'review') return await sendToReview(c, btn);
       if (act === 'approve') return await approve(c, btn);
+      if (act === 'papel') return await firmadoEnPapel(c);
       if (act === 'pdf') return exportPdf(c);
       if (act === 'word') return downloadWord(c);
       if (act === 'ds-send') return await enviarDocuSign(c);
@@ -3709,39 +3565,38 @@ function renderDocumento() {
   });
 }
 
-async function sendToReview(c, btn) {
-  const missing = missingVariables(c).length;
-  if (missing && !(await confirmDialog('Faltan datos', `Hay ${missing} dato(s) sin completar; aparecerán entre corchetes. ¿Generar el Word de todos modos?`, 'Generar', 'primary'))) return;
-  btn.disabled = true;
-  const D = await loadDocx();
-  const n = (c.revision || 0) + 1;
-  const blob = await wordDe(c, `EN REVISIÓN · v${n}`);
-  // Si la entrega falla (sin conexión, token vencido) el contrato vuelve a como estaba: sin "v2" fantasma
-  const prev = { revision: c.revision, status: c.status, documentos: c.documentos };
-  c.revision = n;
-  c.status = 'revision';
-  try {
-    await deliverFile(c, blob, `${safeName(nombreDe(c))} - v${n} revision.docx`, 'docx');
-  } catch (err) {
-    Object.assign(c, prev);
-    throw err;
-  }
-  addVersion(c, `Revisión v${n}`);
-  logChange(c, `Generó el Word de revisión v${n}`);
-  await saveContract(c);
-  renderEditorHeader();
-  renderDocumento();
-  toast(`Word v${n} generado${dbx.isConnected() ? ' y guardado en Dropbox' : ''}`, 'ok');
-}
-
 async function approve(c, btn) {
   const missing = missingVariables(c).length;
-  if (!(await confirmDialog('Aprobar contrato', `${missing ? `Hay ${missing} dato(s) sin completar. ` : ''}${c.conMolde ? `Se generará el Word final del formato ${c.formato} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
+  if (missing) return toast(`Faltan ${missing} dato(s): complétalos antes de aprobar`, 'error');
+  if (!(await confirmDialog('Aprobar contrato', `${c.conMolde ? `Se generará el Word final del formato ${c.formato} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
   renderEditorHeader();
   renderDocumento();
   toast(`Contrato aprobado${dbx.isConnected() ? `; ${c.conMolde ? 'Word guardado' : 'Word y PDF guardados'} en Dropbox` : ''}`, 'ok');
+}
+
+/** Firmado en papel: guarda el PDF escaneado como "… - FIRMADO.pdf" en la carpeta del contrato y lo marca firmado. */
+async function firmadoEnPapel(c) {
+  const r = await modal({
+    title: 'Firmado en papel',
+    body: `
+      <p class="muted small">Sube el PDF escaneado con todas las firmas. ${dbx.isConnected() ? 'Se guarda en la carpeta del contrato en Dropbox' : 'Sin Dropbox conectado solo se descarga en este equipo'} como “${esc(safeName(nombreDe(c)))} - FIRMADO.pdf” y el contrato queda firmado.</p>
+      <label class="field"><span>PDF firmado</span><input type="file" name="pdf" accept="application/pdf,.pdf" required></label>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Guardar y marcar firmado', value: 'ok', kind: 'primary' }],
+  });
+  const file = r.data?.pdf;
+  if (r.value !== 'ok' || !file?.size) return;
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return toast('El archivo debe ser PDF', 'error');
+  await deliverFile(c, file, `${safeName(nombreDe(c))} - FIRMADO.pdf`, 'pdf', { descargar: !dbx.isConnected(), reemplazar: true });
+  c.status = 'final';
+  c.firmadoPapel = { by: cuenta(), date: Date.now() };
+  addVersion(c, 'Firmado en papel');
+  logChange(c, 'Subió el PDF firmado en papel y marcó el contrato como firmado');
+  await saveContract(c);
+  renderEditorHeader();
+  renderDocumento();
+  toast(`Contrato firmado${dbx.isConnected() ? '; PDF guardado en Dropbox' : ''}`, 'ok');
 }
 
 /** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
@@ -3759,13 +3614,17 @@ async function approveContract(c, { descargar = true } = {}) {
   // Regla de formatos por cliente: puede romperse si se cambió el prestador o el cliente a mano
   const conflicto = conflictoFormato(c, state.contracts);
   if (conflicto) throw new Error(conflicto);
+  // No se aprueba un contrato con datos pendientes: saldrían entre corchetes
+  const faltan = missingVariables(c).length;
+  if (faltan) throw new Error(`a “${nombreDe(c)}” le faltan ${faltan} dato(s)`);
   const prev = { status: c.status, documentos: c.documentos };
   c.status = 'aprobado';
   let files;
   try {
     // Primero se generan ambos archivos; así un error en el PDF no deja un Word "aprobado" huérfano
     files = await finalFiles(c, await loadDocx());
-    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar });
+    // Al volver a aprobar se reemplaza el APROBADO anterior: queda un solo archivo vigente
+    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar, reemplazar: true });
   } catch (err) {
     Object.assign(c, prev);
     throw err;
@@ -4764,7 +4623,7 @@ async function guardarLoteDropbox(l) {
   await loadExpedienteFolders();
   const carpeta = loteFolder(l);
   for (const f of await archivosLote(l)) {
-    await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { autorename: true });
+    await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { reemplazar: true });
   }
   l.dropbox = { carpeta, at: Date.now(), by: whoAmI() };
   await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);

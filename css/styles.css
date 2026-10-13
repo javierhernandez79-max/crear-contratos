@@ -316,10 +316,6 @@ textarea { resize: vertical; line-height: 1.55; }
 .sig-box.has { background: #fff; border-style: solid; }
 .sig-box img { max-height: 72px; max-width: 100%; }
 .sig-box.has .muted { color: #667085; }
-.pad-wrap { position: relative; }
-.sig-pad { display: block; width: 100%; height: 220px; background: #fff; border: 1px solid var(--border); border-radius: 12px; touch-action: none; cursor: crosshair; }
-.pad-hint { position: absolute; inset: 0; display: grid; place-items: center; color: #98a2b3; pointer-events: none; font-size: 15px; }
-.pad-wrap::after { content: ''; position: absolute; left: 10%; right: 10%; bottom: 52px; border-top: 1px dashed #c4cad3; pointer-events: none; }
 
 /* ---------- Versiones ---------- */
 .save-version { display: flex; gap: 10px; align-items: flex-end; padding: 14px 16px; flex-wrap: wrap; }
