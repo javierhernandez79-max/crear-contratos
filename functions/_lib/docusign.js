@@ -4,7 +4,11 @@
 //   DOCUSIGN_ENV ("demo" o "prod", por omisión demo) y, opcional, DOCUSIGN_ACCOUNT_ID.
 
 const AUTH = { demo: 'account-d.docusign.com', prod: 'account.docusign.com' };
-export const dsEnv = (env) => (env.DOCUSIGN_ENV === 'prod' ? 'prod' : 'demo');
+export const dsEnv = (env) => (String(env.DOCUSIGN_ENV || '').trim().toLowerCase() === 'prod' ? 'prod' : 'demo');
+// Los IDs de DocuSign son GUID: si se pegaron con texto alrededor ("correo: …", paréntesis, espacios), se toma solo el GUID
+const guid = (v) => (String(v || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [String(v || '').trim()])[0];
+const ik = (env) => guid(env.DOCUSIGN_INTEGRATION_KEY);
+const usuario = (env) => guid(env.DOCUSIGN_USER_ID);
 
 export class DSError extends Error {
   constructor(message, { status = 502, code = '' } = {}) {
@@ -22,7 +26,7 @@ export const faltantesDS = (env) => [
 
 /** URL para que el remitente autorice una sola vez que la app envíe a su nombre. */
 export const consentUrl = (env, origin) => `https://${AUTH[dsEnv(env)]}/oauth/auth?${new URLSearchParams({
-  response_type: 'code', scope: 'signature impersonation', client_id: env.DOCUSIGN_INTEGRATION_KEY,
+  response_type: 'code', scope: 'signature impersonation', client_id: ik(env),
   redirect_uri: `${origin}/api/docusign/consentido`,
 })}`;
 
@@ -50,7 +54,7 @@ async function firmarJWT(env) {
   const e = dsEnv(env);
   const now = Math.floor(Date.now() / 1000);
   const datos = `${b64urlTxt(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64urlTxt(JSON.stringify({
-    iss: env.DOCUSIGN_INTEGRATION_KEY, sub: env.DOCUSIGN_USER_ID, aud: AUTH[e], iat: now, exp: now + 3600, scope: 'signature impersonation',
+    iss: ik(env), sub: usuario(env), aud: AUTH[e], iat: now, exp: now + 3600, scope: 'signature impersonation',
   }))}`;
   let key;
   try {
@@ -64,7 +68,7 @@ async function firmarJWT(env) {
 
 /** Token de acceso (dura 1 hora; se guarda en memoria y se pide otro al vencer). */
 export async function tokenDS(env, forzar = false) {
-  const clave = `${dsEnv(env)}|${env.DOCUSIGN_INTEGRATION_KEY}|${env.DOCUSIGN_USER_ID}`;
+  const clave = `${dsEnv(env)}|${ik(env)}|${usuario(env)}`;
   if (!forzar && cache.clave === clave && cache.token && Date.now() < cache.exp) return cache.token;
   const r = await fetch(`https://${AUTH[dsEnv(env)]}/oauth/token`, {
     method: 'POST',
@@ -89,7 +93,8 @@ export async function cuentaDS(env) {
   const info = await r.json().catch(() => ({}));
   if (!r.ok) throw new DSError('No se pudo leer la cuenta de DocuSign.', { status: 502 });
   const accs = info.accounts || [];
-  const acc = (env.DOCUSIGN_ACCOUNT_ID && accs.find((a) => a.account_id === env.DOCUSIGN_ACCOUNT_ID)) || accs.find((a) => a.is_default) || accs[0];
+  const cuentaId = env.DOCUSIGN_ACCOUNT_ID && guid(env.DOCUSIGN_ACCOUNT_ID);
+  const acc = (cuentaId && accs.find((a) => a.account_id === cuentaId)) || accs.find((a) => a.is_default) || accs[0];
   if (!acc) throw new DSError('El usuario de DocuSign no tiene una cuenta para enviar documentos.', { status: 502 });
   cache.cuenta = { id: acc.account_id, name: acc.account_name, baseUri: acc.base_uri, usuario: { name: info.name, email: info.email } };
   return cache.cuenta;
