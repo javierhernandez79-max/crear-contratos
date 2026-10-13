@@ -2256,7 +2256,8 @@ const PARTY_FIELDS = {
     ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['folioLugar', 'Lugar de inscripción', 'text', 'Ciudad de México'], ['objetoSocial', 'Objeto social (resumen)', 'address']],
   pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['sexo', 'Sexo'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
   apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['correo', 'Correo (firma remota)', 'email'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
-    ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…']],
+    ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…'],
+    ['identificacion', 'Identificación (INE)', 'text', 'credencial para votar … con clave de elector …'], ['identificacionVigencia', 'Vigencia de la INE (año)', 'text', '2031']],
 };
 
 function fieldHTML(obj, [key, label, type = 'text', ph = ''], attrs = '') {
@@ -2448,8 +2449,14 @@ function renderPartyEditor(id) {
 const CAMPOS_PDF = {
   csf: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo']],
   acta: [['nombre', 'Razón social (sin tipo de sociedad)'], ...PARTY_FIELDS.pm.map(([k, l, t]) => [k, l, t])],
-  poder: PARTY_FIELDS.apoderado.filter(([k]) => k !== 'cargo').map(([k, l, t]) => [k, l, t]),
+  poder: PARTY_FIELDS.apoderado.filter(([k]) => !['cargo', 'identificacion', 'identificacionVigencia'].includes(k)).map(([k, l, t]) => [k, l, t]),
+  rpp: [['nombre', 'Razón social (sin tipo de sociedad)'], ['folioMercantil', 'Folio mercantil electrónico'], ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['folioLugar', 'Lugar de inscripción']],
+  // INE: en una persona moral va al apoderado; en una persona física, a la ficha
+  ine: [['nombre', 'Nombre del apoderado'], ['identificacion', 'Identificación (INE)'], ['identificacionVigencia', 'Vigencia de la INE (año)']],
+  inePf: [['nombre', 'Nombre'], ['curp', 'CURP'], ['identificacion', 'Identificación'], ['sexo', 'Sexo']],
 };
+/** El documento se aplica a un apoderado (poder, o INE de una persona moral). */
+const vaAlApoderado = (tipo, p) => tipo === 'poder' || (tipo === 'ine' && p.kind === 'pm');
 
 /** Elige uno o varios PDF del expediente en Dropbox o del equipo. Devuelve [{name, data}] (vacío si se cancela). */
 async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
@@ -2457,7 +2464,7 @@ async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
   const r = await modal({
     title: titulo,
     body: `
-      <p class="muted small">${texto || `Constancia de situación fiscal, escritura constitutiva o escritura de poder; puedes elegir varios a la vez. ${ia ? 'Los escaneados se leen con IA.' : 'Solo PDFs con texto: los escaneados se capturan a mano.'} Antes de aplicar, revisas cada dato.`}</p>
+      <p class="muted small">${texto || `Constancia de situación fiscal, escritura constitutiva, escritura de poder, boleta del Registro Público o INE del apoderado; puedes elegir varios a la vez. ${ia ? 'Los escaneados se leen con IA.' : 'Solo PDFs con texto: los escaneados se capturan a mano.'} Antes de aplicar, revisas cada dato.`}</p>
       <div class="menu-list">
         <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
         <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
@@ -2526,7 +2533,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
       toast(`No se pudo leer con IA (${err.message}); se muestra lo leído del texto`, 'error');
     }
     if (!ia && escaneado) {
-      await aviso('La IA no lo reconoció como constancia fiscal, escritura constitutiva ni poder. Captura los datos a mano.');
+      await aviso('La IA no lo reconoció como constancia fiscal, escritura constitutiva, poder, boleta del Registro Público ni INE. Captura los datos a mano.');
       return false;
     }
   } else if (escaneado) {
@@ -2535,22 +2542,26 @@ async function revisarPdf(p, pdf, prefijo = '') {
   }
   const detectado = ia ? ia.tipo : detectarTipo(text);
   let tipo = detectado || (p.kind === 'pm' ? 'acta' : 'csf');
+  if (p.kind === 'pf' && ['acta', 'rpp'].includes(tipo)) tipo = 'csf';
   const sugerirApo = (nombre) => p.apoderados.map((a) => ({ a, s: parecido(nombre || '', a.nombre) })).filter((x) => x.s >= 0.8).sort((x, y) => y.s - x.s)[0]?.a;
 
   // apoId: undefined = el apoderado que más se parece al del poder; '' = nuevo
   const filas = (t, apoId) => {
     // Lo leído con IA vale para cualquier tipo elegido (los campos de cada tipo son distintos)
     const data = ia ? { ...ia.datos, kind: ia.kind || undefined } : extraer(t, text);
-    const campos = CAMPOS_PDF[t].filter(([k]) => k !== 'curp' || p.kind === 'pf');
-    const apo = t !== 'poder' ? null : apoId === undefined ? sugerirApo(data.nombre) : p.apoderados.find((a) => a.id === apoId);
+    const campos = CAMPOS_PDF[t === 'ine' && p.kind === 'pf' ? 'inePf' : t].filter(([k]) => k !== 'curp' || p.kind === 'pf');
+    const alApo = vaAlApoderado(t, p);
+    const apo = !alApo ? null : apoId === undefined ? sugerirApo(data.nombre) : p.apoderados.find((a) => a.id === apoId);
     const actualDe = (k, destino) => String((destino ?? p)[k] ?? '');
     const hall = campos.filter(([k]) => data[k]);
     const faltan = campos.filter(([k]) => !data[k]).map(([, l]) => l);
+    const vencida = t === 'ine' && Number(data.identificacionVigencia) && Number(data.identificacionVigencia) < new Date().getFullYear();
     const aviso = t === 'csf' && data.kind && data.kind !== p.kind
-      ? `<div class="banner warn">${icon('alert')} <span>La constancia es de una ${data.kind === 'pm' ? 'persona moral' : 'persona física'} y esta ficha es de ${PARTY_KINDS[p.kind].toLowerCase()}.</span></div>` : '';
+      ? `<div class="banner warn">${icon('alert')} <span>La constancia es de una ${data.kind === 'pm' ? 'persona moral' : 'persona física'} y esta ficha es de ${PARTY_KINDS[p.kind].toLowerCase()}.</span></div>`
+      : vencida ? `<div class="banner warn">${icon('alert')} <span>La INE venció en ${esc(data.identificacionVigencia)}: pide una vigente antes de firmar.</span></div>` : '';
     return `
       ${aviso}
-      ${t === 'poder' ? `
+      ${alApo ? `
         <label class="field"><span>Aplicar al apoderado</span>
           <select name="apo" id="ex-apo">
             <option value="">Nuevo apoderado</option>
@@ -2560,7 +2571,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
       ${hall.length ? `
       <div class="ll-row ll-head ex-row"><span></span><span>Dato</span><span>Encontrado en el PDF (puedes corregirlo)</span></div>
       ${hall.map(([k, l, ty]) => {
-        const actual = t === 'poder' ? (apo ? actualDe(k, apo) : '') : actualDe(k);
+        const actual = alApo ? (apo ? actualDe(k, apo) : '') : actualDe(k);
         const v = data[k];
         const igual = folderKey(actual) === folderKey(v); // sin acentos, signos ni mayúsculas
         const input = ty === 'address' || k === 'objetoSocial'
@@ -2582,7 +2593,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
     wide: true,
     body: `
       <label class="field inline"><span>Tipo de documento</span>
-        <select name="tipo" id="ex-tipo">${Object.entries(TIPOS).filter(([k]) => k !== 'acta' || p.kind === 'pm').map(([k, l]) => `<option value="${k}" ${k === tipo ? 'selected' : ''}>${l}${k === detectado ? ' (detectado)' : ''}</option>`).join('')}</select>
+        <select name="tipo" id="ex-tipo">${Object.entries(TIPOS).filter(([k]) => !['acta', 'rpp'].includes(k) || p.kind === 'pm').map(([k, l]) => `<option value="${k}" ${k === tipo ? 'selected' : ''}>${l}${k === detectado ? ' (detectado)' : ''}</option>`).join('')}</select>
       </label>
       <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el PDF es más reciente o correcto.</p>
       ${ia ? `<div class="banner warn">${icon('alert')} <span>Documento escaneado leído con IA: compara cada dato con el PDF antes de aplicarlo.</span></div>` : ''}
@@ -2600,7 +2611,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
   const usar = Object.keys(r.data).filter((k) => k.startsWith('u_')).map((k) => k.slice(2));
   if (!usar.length) { toast('No marcaste ningún dato'); return false; }
   // Si el RFC de la constancia ya es de otra ficha, los datos van a esa (no se duplica)
-  if (usar.includes('rfc') && r.data.tipo !== 'poder') {
+  if (usar.includes('rfc') && !vaAlApoderado(r.data.tipo, p)) {
     const rfc = String(r.data.v_rfc ?? '').trim().toUpperCase();
     const otra = rfcDuplicado(rfc, state.parties, p.id);
     if (otra) {
@@ -2617,7 +2628,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
     }
   }
   let destino = p;
-  if (r.data.tipo === 'poder') {
+  if (vaAlApoderado(r.data.tipo, p)) {
     destino = p.apoderados.find((a) => a.id === r.data.apo);
     if (!destino) { destino = newApoderado(); p.apoderados.push(destino); }
   }
@@ -2634,7 +2645,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
 async function altaDesdePdfs() {
   const pdfs = await elegirPdfs(null, {
     titulo: 'Alta desde PDFs',
-    texto: 'Elige las constancias fiscales, escrituras constitutivas y poderes de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Antes de guardar revisas la lista.',
+    texto: 'Elige las constancias fiscales, escrituras constitutivas, poderes, boletas del Registro Público e INE de los apoderados de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Antes de guardar revisas la lista.',
   });
   if (!pdfs.length) return;
   const docs = [];
@@ -2663,7 +2674,7 @@ async function altaDesdePdfs() {
     docs.push(d);
   }
   const { filas, omitidos } = planAlta(docs, state.parties);
-  const TIPO_CORTO = { csf: 'Constancia', acta: 'Constitutiva', poder: 'Poder' };
+  const TIPO_CORTO = { csf: 'Constancia', acta: 'Constitutiva', poder: 'Poder', rpp: 'RPP', ine: 'INE' };
   const r = await modal({
     title: `Alta desde ${pdfs.length} PDF`,
     wide: true,

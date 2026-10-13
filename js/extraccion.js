@@ -1,5 +1,5 @@
-// Extracción de datos de PDFs del expediente (con texto; los escaneados se capturan a mano):
-// Constancia de Situación Fiscal, escritura constitutiva y escritura de poder.
+// Extracción de datos de PDFs del expediente con texto (los escaneados los lee la IA, si está encendida):
+// Constancia de Situación Fiscal, escritura constitutiva, escritura de poder, INE y boleta del Registro Público.
 // Todo es heurístico: lo encontrado se muestra para revisión y nada se aplica sin confirmarlo.
 
 let pdfjsReady;
@@ -45,7 +45,13 @@ const grupo = (o, m, k = 1) => (m?.indices?.[k] ? limpio(o.slice(...m.indices[k]
 const espacios = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const limpio = (s) => espacios(s).replace(/^[\s:.,;-]+|[\s:.,;-]+$/g, '');
 
-export const TIPOS = { csf: 'Constancia de Situación Fiscal', acta: 'Escritura constitutiva', poder: 'Escritura de poder' };
+export const TIPOS = {
+  csf: 'Constancia de Situación Fiscal', acta: 'Escritura constitutiva', poder: 'Escritura de poder',
+  rpp: 'Boleta del Registro Público (RPP)', ine: 'Credencial INE',
+};
+
+/** Texto de la identificación para la ficha a partir de la clave de elector. */
+export const identificacionINE = (clave) => `credencial para votar expedida por el Instituto Nacional Electoral${clave ? ` con clave de elector ${clave}` : ''}`;
 
 export function detectarTipo(text) {
   const t = plano(espacios(text));
@@ -53,8 +59,14 @@ export function detectarTipo(text) {
   // Una escritura suele traer agregada la cédula fiscal: si es larga y es constitutiva, manda la escritura
   if (acta && t.length > 8000) return 'acta';
   if (/CONSTANCIA DE SITUACION FISCAL|CEDULA DE IDENTIFICACION FISCAL/.test(t)) return 'csf';
+  // Boleta de inscripción del Registro Público: corta y con folio mercantil. Una escritura también menciona el
+  // Registro y el folio, así que sin la palabra "boleta" manda que no hable de escritura ni notario.
+  const rpp = t.length < 8000 && /FOLIO MERCANTIL|\bFME\b/.test(t) &&
+    (/BOLETA DE (INSCRIPCION|REGISTRO)/.test(t) || (/REGISTRO PUBLICO DE COMERCIO/.test(t) && !/ESCRITURA|NOTARI[OA]/.test(t)));
+  if (rpp) return 'rpp';
   if (acta) return 'acta';
   if (/\bPODER(ES)?\b/.test(t) && /OTORGA|CONFIERE|OTORGAMIENTO/.test(t)) return 'poder';
+  if (t.length < 4000 && /INSTITUTO (NACIONAL|FEDERAL) ELECTORAL|CREDENCIAL PARA VOTAR/.test(t)) return 'ine';
   return null;
 }
 
@@ -120,6 +132,7 @@ function porEtiquetas(text, etiquetas) {
 
 const RFC_RE = /\b([A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3})\b/;
 const CURP_RE = /\b([A-Z]{4}\d{6}[HMX][A-Z]{5}[A-Z0-9]\d)\b/;
+const FOLIO_RE = /FOLIO\s+(?:MERCANTIL\s+)?(?:ELECTRONICO\s+)?(?:NUMERO|NUM\.?|NO\.?|N[O°º]\.?)?\s*:?\s*([N0-9][-0-9*]{3,})/;
 
 export function extraerCSF(text) {
   const v = porEtiquetas(text, ETIQUETAS_CSF);
@@ -235,7 +248,7 @@ export function extraerActa(text) {
     escrituraNumero: d.numero, escrituraFecha: d.fecha, notario: d.notario,
     notariaNumero: d.notariaNumero, notariaCiudad: d.notariaCiudad,
   };
-  const folio = t.match(/FOLIO\s+(?:MERCANTIL\s+)?(?:ELECTRONICO\s+)?(?:NUMERO|NUM\.?|NO\.?|N[O°º]\.?)?\s*:?\s*([N0-9][-0-9*]{3,})/);
+  const folio = t.match(FOLIO_RE);
   if (folio) {
     out.folioMercantil = folio[1].replace(/[-*]$/, '');
     const f = primeraFecha(t.slice(folio.index, folio.index + 400));
@@ -268,14 +281,49 @@ export function extraerPoder(text) {
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v));
 }
 
+/** Boleta de inscripción en el Registro Público de Comercio: folio, fecha y lugar. */
+export function extraerRPP(text) {
+  const o = espacios(text);
+  const t = plano(o);
+  const out = {};
+  const folio = t.match(FOLIO_RE);
+  if (folio) out.folioMercantil = folio[1].replace(/[-*]$/, '');
+  const fi = t.match(/FECHA DE (?:INSCRIPCION|REGISTRO|PRELACION)/);
+  const f = primeraFecha(fi ? t.slice(fi.index, fi.index + 200) : t);
+  if (f) out.folioFecha = f.fecha;
+  const lugar = t.match(/(?:OFICINA REGISTRAL|LUGAR DE INSCRIPCION|OFICINA)\s*:?\s*([A-Z][A-Z .]{2,60}?)(?=\s{2}|,|\.|;|$|\s(?:FECHA|FOLIO|DENOMINACION))/d);
+  if (lugar) out.folioLugar = grupo(o, lugar);
+  const den = t.match(/(?:DENOMINACION|RAZON SOCIAL)(?:\s+O\s+RAZON SOCIAL)?\s*:?\s*([A-Z0-9][^:]{2,120}?)(?=\s{2}|\s(?:FOLIO|FECHA|RFC|DOMICILIO|ACTO|ACTOS|OFICINA)\b|$)/d);
+  if (den) out.nombre = grupo(o, den);
+  return Object.fromEntries(Object.entries(out).filter(([, v]) => v));
+}
+
+/** Credencial para votar: CURP, clave de elector y vigencia (el nombre casi siempre lo lee la IA). */
+export function extraerINE(text) {
+  const t = plano(espacios(text));
+  const out = {};
+  const curp = t.match(CURP_RE);
+  if (curp) out.curp = curp[1];
+  const clave = t.match(/\b([A-Z]{6}\d{8}[HMX]\d{3})\b/);
+  if (clave || /CREDENCIAL PARA VOTAR/.test(t)) out.identificacion = identificacionINE(clave?.[1]);
+  const vig = t.match(/VIGENCIA\s*:?\s*(?:(\d{4})\s*-\s*)?(\d{4})/);
+  if (vig) out.identificacionVigencia = vig[2];
+  const sexo = t.match(/\bSEXO\s*:?\s*([HM])\b/);
+  if (sexo) out.sexo = sexo[1] === 'H' ? 'masculino' : 'femenino';
+  return out;
+}
+
 /** Lo leído del texto no sirve (falta el dato que identifica el documento): conviene intentar con IA. */
 export function lecturaPobre(tipo, data) {
   if (tipo === 'csf') return !data.rfc;
   if (tipo === 'acta') return !data.escrituraNumero && !data.nombre;
   if (tipo === 'poder') return !data.nombre;
+  if (tipo === 'rpp') return !data.folioMercantil;
+  if (tipo === 'ine') return !data.nombre;
   return true;
 }
 
 export function extraer(tipo, text) {
-  return tipo === 'csf' ? extraerCSF(text) : tipo === 'acta' ? extraerActa(text) : tipo === 'poder' ? extraerPoder(text) : {};
+  const fn = { csf: extraerCSF, acta: extraerActa, poder: extraerPoder, rpp: extraerRPP, ine: extraerINE }[tipo];
+  return fn ? fn(text) : {};
 }
