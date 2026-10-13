@@ -3164,11 +3164,14 @@ async function uploadAnexos(linked) {
 
 // --- Ajustes: bloque de Dropbox ---
 function docusignSettingsHTML() {
+  if (ds.isGlobal()) return docusignGlobalHTML();
   const cfg = ds.config();
   const conn = ds.isConnected();
+  const faltan = ds.estadoGlobal()?.faltan;
   return `
     <section class="card settings-block" id="ds-block">
       <h3>DocuSign (firma remota)</h3>
+      ${faltan?.length ? `<div class="banner warn">${icon('alert')} <span>Conexión del despacho incompleta en Cloudflare: falta ${esc(faltan.join(', '))}. Mientras tanto, cada quien se conecta con su usuario.</span></div>` : ''}
       ${ds.isLinked() ? `
         <p>${conn ? 'Conectado' : 'Sesión vencida'} como <strong>${esc(cfg.user?.name || '')}</strong> <span class="muted">${esc(cfg.user?.email || '')}</span></p>
         <p class="muted small">Cuenta: ${esc(cfg.account?.name || '')} · ${esc(ds.ENVS[cfg.env])}</p>
@@ -3197,6 +3200,28 @@ function docusignSettingsHTML() {
     </section>`;
 }
 
+/** Conexión del despacho (servidor): nadie se conecta; solo se muestra el estado. */
+function docusignGlobalHTML() {
+  const g = ds.estadoGlobal();
+  return `
+    <section class="card settings-block" id="ds-block">
+      <h3>DocuSign (firma remota)</h3>
+      ${g.conectada ? `
+        <p><span class="badge final">Conectado</span> Conexión del despacho: los sobres se envían desde <strong>${esc(g.remitente?.name || '')}</strong> <span class="muted">${esc(g.remitente?.email || '')}</span></p>
+        <p class="muted small">Cuenta: ${esc(g.cuenta?.name || '')} · ${esc(ds.ENVS[g.env] || g.env)}. Nadie tiene que conectarse: todos los abogados envían y ven el estado de todos los contratos. La app registra quién envió cada uno.</p>`
+      : `
+        <div class="banner warn">${icon('alert')} <span>La conexión del despacho no está lista: ${esc(g.error || 'sin respuesta de DocuSign')}</span></div>
+        ${g.consentimiento ? `
+          <p class="small">Falta autorizarla una sola vez. Abre este enlace <strong>con el usuario de DocuSign que envía los contratos</strong> y acepta:</p>
+          <div class="row wrap">
+            <a class="btn primary" href="${esc(g.consentimiento)}" target="_blank" rel="noopener">${icon('link')} Autorizar en DocuSign</a>
+            <button class="btn" data-ds="recheck">Ya autoricé, revisar</button>
+          </div>`
+        : `<p class="muted small">${g.admin ? 'Revisa las variables DOCUSIGN_* en Cloudflare.' : 'Avísale al administrador.'}</p>
+          <button class="btn" data-ds="recheck">Revisar de nuevo</button>`}`}
+    </section>`;
+}
+
 function bindDocusignSettings() {
   const box = $('#ds-block');
   if (!box) return;
@@ -3204,6 +3229,11 @@ function bindDocusignSettings() {
     const act = e.target.closest('[data-ds]')?.dataset.ds;
     if (!act) return;
     try {
+      if (act === 'recheck') {
+        await ds.cargarGlobal();
+        toast(ds.isConnected() ? 'DocuSign del despacho conectado' : 'Todavía no está lista', ds.isConnected() ? 'ok' : 'error');
+        return renderSettings();
+      }
       if (act === 'connect') {
         if ($('#ds-key')) await ds.setOptions({ key: $('#ds-key').value, env: $('#ds-env').value });
         return await ds.startAuth();
@@ -3385,6 +3415,10 @@ function envioHTML(c) {
 }
 
 async function enviarDocuSign(c) {
+  if (!ds.isConnected() && ds.isGlobal()) {
+    if (await confirmDialog('DocuSign no está listo', 'La conexión de DocuSign del despacho no está lista. Revisa Ajustes → DocuSign.', 'Ir a Ajustes', 'primary')) go('#/ajustes');
+    return;
+  }
   if (!ds.isConnected()) {
     if (await confirmDialog('Conectar DocuSign', ds.isLinked() ? 'La sesión de DocuSign venció. ¿Conectar de nuevo?' : 'Primero conecta la cuenta de DocuSign en Ajustes.', ds.isLinked() ? 'Conectar' : 'Ir a Ajustes', 'primary')) {
       return ds.isLinked() ? await ds.startAuth() : go('#/ajustes');
@@ -3438,7 +3472,8 @@ async function enviarDocuSign(c) {
   if (r.data.guardar) await guardarCorreos(c, pendientes, recipients);
   c.docusign = {
     envelopeId: res.envelopeId, status: res.status || 'sent', env: ds.config().env,
-    sentAt: Date.now(), sentBy: ds.config().user?.name || cuenta(), hash: contentHash(c),
+    // Con la conexión del despacho, el remitente en DocuSign es siempre el mismo: se registra quién lo envió desde la app
+    sentAt: Date.now(), sentBy: (ds.isGlobal() ? cuenta() || ds.config().user?.name : ds.config().user?.name || cuenta()), hash: contentHash(c),
     recipients: recipients.map(({ signerId, name, email }) => ({ signerId, name, email, status: 'sent' })),
     enApp: firmados.map((sg) => fill(c, sg.name) || sg.role),
   };
@@ -3933,6 +3968,7 @@ function renderTemplateEditor(id) {
 // ---------- Ajustes ----------
 async function renderSettings() {
   setNav('settings');
+  await ds.cargarGlobal();
   let usage = '';
   try {
     const est = await navigator.storage?.estimate?.();
