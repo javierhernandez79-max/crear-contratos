@@ -24,6 +24,8 @@ export const newApoderado = () => ({
   id: uid(), nombre: '', cargo: 'Apoderado legal', correo: '',
   poderNumero: '', poderFecha: '', notario: '', notariaNumero: '', notariaCiudad: '',
   facultades: '', vigente: true,
+  // INE del apoderado: texto para el contrato y año en que vence
+  identificacion: '', identificacionVigencia: '',
 });
 
 export const newAccionista = () => ({ id: uid(), nombre: '', acciones: '', serie: '' });
@@ -72,6 +74,10 @@ export function partyGaps(p) {
     : [['nombre', 'Nombre'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio'], ['identificacion', 'Identificación']];
   const gaps = req.filter(([k]) => !String(p[k] ?? '').trim()).map(([, l]) => l);
   if (p.kind === 'pm' && !p.apoderados.some((a) => a.vigente && a.nombre.trim())) gaps.push('Apoderado vigente');
+  const anio = new Date().getFullYear();
+  for (const a of p.kind === 'pm' ? p.apoderados : []) {
+    if (a.vigente && Number(a.identificacionVigencia) && Number(a.identificacionVigencia) < anio) gaps.push(`INE vencida de ${a.nombre || 'un apoderado'}`);
+  }
   return gaps;
 }
 
@@ -86,6 +92,7 @@ const PARTY_VARS = [
 const PM_VARS = [
   ['representante', 'Representante legal', 'text', (p, a) => a?.nombre || ''],
   ['cargo_representante', 'Cargo del representante', 'text', (p, a) => a?.cargo || ''],
+  ['identificacion_representante', 'Identificación del representante', 'text', (p, a) => a?.identificacion || ''],
   ['constitucion', 'Datos de constitución', 'text', (p) => constitucionText(p)],
   ['poder', 'Datos del poder', 'text', (p, a) => (a ? poderText(a) : '')],
   // Datos sueltos para plantillas con redacción propia ("instrumento público número …, del …, pasado ante la fe del …")

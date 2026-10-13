@@ -47,6 +47,8 @@ const CATALOGO = [
   ['Poder vigente (Sí/No)', 'vigente', 'bool', 10, 'a'],
   ['Facultades', 'facultades', 'text', 40, 'a'],
   ['Sexo (persona física)', 'sexo', 'text', 12, 'p'],
+  ['INE del apoderado', 'identificacion', 'text', 36, 'a'],
+  ['Vigencia INE del apoderado (año)', 'identificacionVigencia', 'text', 12, 'a'],
 ];
 const ACCIONISTAS = [
   ['Empresa (RFC o razón social)', '_empresa', 'text', 30],

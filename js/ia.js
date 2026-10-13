@@ -1,5 +1,6 @@
 // Lectura con IA de PDFs escaneados: la app llama a la función del servidor (/api), que guarda la llave.
 // Si la app corre sin servidor (copia local, otro hosting), todo queda como "no disponible".
+import { identificacionINE } from './extraccion.js';
 
 let cache = null;
 
@@ -36,7 +37,7 @@ const aBase64 = async (data) => {
   return String(url).slice(String(url).indexOf(',') + 1);
 };
 
-/** Lee un PDF escaneado. Devuelve { tipo: 'csf'|'acta'|'poder'|'otro', kind, empresa, datos }. */
+/** Lee un PDF escaneado. Devuelve { tipo: 'csf'|'acta'|'poder'|'rpp'|'ine'|'otro', kind, empresa, datos }. */
 export async function leerConIA({ name, data }) {
   if (data.byteLength > 20 * 1024 * 1024) throw new Error(`${name} pasa de 20 MB: no se puede leer con IA.`);
   let r;
@@ -53,5 +54,11 @@ export async function leerConIA({ name, data }) {
     if (d.apagada) cache = null;
     throw new Error(d.error || `La IA no pudo leer ${name}.`);
   }
-  return d;
+  // La INE llega como clave de elector y vigencia; la ficha guarda el texto de la identificación
+  const { claveElector, vigencia, ...datos } = d.datos || {};
+  if (d.tipo === 'ine') {
+    datos.identificacion = identificacionINE(claveElector);
+    if (/^\d{4}$/.test(vigencia || '')) datos.identificacionVigencia = vigencia;
+  }
+  return { ...d, datos };
 }
