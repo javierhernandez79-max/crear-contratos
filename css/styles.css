@@ -614,3 +614,9 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 .ex-row .badge { align-self: flex-start; }
 .ex-row input[type="text"], .ex-row input[type="date"], .ex-row textarea { width: 100%; }
 @media (max-width: 640px) { .ex-row { grid-template-columns: 28px 1fr; } .ex-row > span:nth-child(3) { grid-column: 2; } }
+.alta-list .ll-row { grid-template-columns: 28px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
+@media (max-width: 760px) {
+  .alta-list .ll-row { grid-template-columns: 28px minmax(0, 1fr); }
+  .alta-list .ll-row > span:nth-child(n+3) { grid-column: 2; }
+  .alta-list .ll-head { display: none; }
+}

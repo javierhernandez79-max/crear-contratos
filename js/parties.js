@@ -11,7 +11,7 @@ export function newParty(kind = 'pm', propia = false) {
     id: uid(), kind, propia, activa: true,
     nombre: '', rfc: '', domicilio: '', correo: '', telefono: '',
     // Persona moral: escritura constitutiva
-    escrituraNumero: '', escrituraFecha: '', notario: '', notariaNumero: '', notariaCiudad: '', folioMercantil: '', folioFecha: '', objetoSocial: '',
+    escrituraNumero: '', escrituraFecha: '', notario: '', notariaNumero: '', notariaCiudad: '', folioMercantil: '', folioFecha: '', folioLugar: '', objetoSocial: '',
     // Persona física
     curp: '', nacionalidad: 'mexicana', sexo: '', estadoCivil: '', ocupacion: '', identificacion: '',
     expediente: '', notas: '',
@@ -96,6 +96,7 @@ const PM_VARS = [
   ['notaria_ciudad', 'Ciudad de la notaría de la constitutiva', 'text', (p) => p.notariaCiudad],
   ['folio', 'Folio mercantil', 'text', (p) => p.folioMercantil],
   ['folio_fecha', 'Fecha de inscripción del folio', 'text', (p) => fmtLongDate(p.folioFecha)],
+  ['folio_lugar', 'Lugar de inscripción del folio', 'text', (p) => p.folioLugar || ''],
   ['objeto_social', 'Objeto social', 'text', (p) => p.objetoSocial],
   ['poder_numero', 'Escritura del poder núm.', 'text', (p, a) => a?.poderNumero || ''],
   ['poder_fecha', 'Fecha del poder', 'text', (p, a) => fmtLongDate(a?.poderFecha)],
@@ -156,6 +157,12 @@ export function applyParty(c, sg, party, apoderado) {
     if (!src) continue;
     const def = c.varDefs.find((d) => d.key === key);
     set(key, def?.label || src[1], def?.type || src[2], src[3](party, apoderado));
+  }
+  // Formatos con su propio nombre para el lugar de inscripción (p. ej. {{registro_ciudad_cliente}})
+  if (party.kind === 'pm') {
+    for (const key of [`registro_ciudad_${prefix}`, `rpp_ciudad_${prefix}`]) {
+      if (c.varDefs.some((d) => d.key === key) && party.folioLugar) { c.variables[key] = party.folioLugar; written.push(key); }
+    }
   }
   // Nombre en el bloque de firma
   const nameVar = sg.bind?.nombre || `${prefix}_nombre`;
