@@ -2108,7 +2108,7 @@ async function viewParty(p) {
       ${row('Domicilio', p.domicilio)}${row('Correo', p.correo)}${row('Teléfono', p.telefono)}
       ${p.kind === 'pm' ? row('Escritura constitutiva', [p.escrituraNumero && `núm. ${p.escrituraNumero}`, fmtLongDate(p.escrituraFecha)].filter(Boolean).join(' del ')) +
         row('Notario', [p.notario, p.notariaNumero && `Notaría ${p.notariaNumero}`, p.notariaCiudad].filter(Boolean).join(', ')) +
-        row('Folio mercantil', [p.folioMercantil, fmtLongDate(p.folioFecha)].filter(Boolean).join(' · ')) + row('Objeto social', p.objetoSocial) : ''}
+        row('Folio mercantil', [p.folioMercantil, fmtLongDate(p.folioFecha), p.folioLugar].filter(Boolean).join(' · ')) + row('Objeto social', p.objetoSocial) : ''}
       ${row('Expediente', p.expediente)}${row('Notas', p.notas)}
     </table>
     ${p.kind === 'pm' ? `
@@ -2200,7 +2200,7 @@ async function importCatalog(file) {
     console.error(err);
     return toast(err.message?.startsWith('El archivo') ? err.message : 'No se pudo leer el Excel', 'error');
   }
-  if (!res.parties.length) return toast('El Excel no tiene filas en la hoja "Partes"', 'error');
+  if (!res.parties.length) return toast('El Excel no tiene empresas ni personas capturadas', 'error');
   const r = await modal({
     title: 'Importar catálogo',
     body: `
@@ -2227,7 +2227,7 @@ const PARTY_FIELDS = {
   general: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo', 'email'], ['telefono', 'Teléfono']],
   pm: [['escrituraNumero', 'Escritura constitutiva núm.'], ['escrituraFecha', 'Fecha de constitución', 'date'], ['notario', 'Notario (con título)', 'text', 'Lic. Juan Pérez López'],
     ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría', 'text', 'la Ciudad de México'], ['folioMercantil', 'Folio mercantil electrónico'],
-    ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['objetoSocial', 'Objeto social (resumen)', 'address']],
+    ['folioFecha', 'Fecha de inscripción del folio', 'date'], ['folioLugar', 'Lugar de inscripción', 'text', 'Ciudad de México'], ['objetoSocial', 'Objeto social (resumen)', 'address']],
   pf: [['curp', 'CURP'], ['nacionalidad', 'Nacionalidad'], ['sexo', 'Sexo'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación', 'text', 'credencial para votar con clave de elector …']],
   apoderado: [['nombre', 'Nombre'], ['cargo', 'Cargo'], ['correo', 'Correo (firma remota)', 'email'], ['poderNumero', 'Escritura de poder núm.'], ['poderFecha', 'Fecha del poder', 'date'],
     ['notario', 'Notario (con título)'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['facultades', 'Facultades', 'text', 'administración, dominio, títulos de crédito…']],
