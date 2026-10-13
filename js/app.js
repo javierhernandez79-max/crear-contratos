@@ -3122,8 +3122,8 @@ function docusignSettingsHTML() {
       <h3>DocuSign (firma remota)</h3>
       ${ds.isLinked() ? `
         <p>${conn ? 'Conectado' : 'Sesión vencida'} como <strong>${esc(cfg.user?.name || '')}</strong> <span class="muted">${esc(cfg.user?.email || '')}</span></p>
-        <p class="muted small">Cuenta: ${esc(cfg.account?.name || '')} · ${esc(ds.ENVS[cfg.env])}${conn ? ` · sesión vigente hasta ${fmtDateTime(cfg.expiresAt)}` : ''}</p>
-        <p class="muted small">DocuSign pide volver a entrar cada 8 horas. Los contratos ya enviados no se afectan.</p>
+        <p class="muted small">Cuenta: ${esc(cfg.account?.name || '')} · ${esc(ds.ENVS[cfg.env])}</p>
+        <p class="muted small">${cfg.refreshToken ? 'La sesión se renueva sola; si DocuSign la cierra, se vuelve a conectar aquí.' : 'DocuSign pide volver a entrar cada 8 horas.'} Los contratos ya enviados no se afectan.</p>
         <div class="row wrap">
           ${conn ? '' : '<button class="btn primary" data-ds="connect">Volver a conectar</button>'}
           <button class="btn ghost danger" data-ds="disconnect">Desconectar</button>
@@ -3138,7 +3138,7 @@ function docusignSettingsHTML() {
           <ol class="small muted steps">
             <li>Entra a <a href="https://developers.docusign.com" target="_blank" rel="noopener">developers.docusign.com</a> y crea una cuenta de desarrollador (gratis, ambiente de pruebas).</li>
             <li>En <em>Settings → Apps and Keys</em> pulsa <em>Add App and Integration Key</em> y ponle “Documentos Legales”.</li>
-            <li>En <em>Authentication</em> indica que la app <b>no</b> guarda un secreto (aplicación de navegador) y activa <em>Implicit Grant</em>.</li>
+            <li>En <em>Authentication</em>, a “Is your application able to securely store a client secret?” responde <b>No</b> y deja <em>Authorization Code Grant</em> (con PKCE). No generes <em>secret key</em>.</li>
             <li>En <em>Redirect URIs</em> agrega exactamente: <code>${esc(ds.redirectUri())}</code></li>
             <li>En <em>CORS configuration</em> agrega el origen <code>${esc(location.origin)}</code> y permite GET, POST y PUT.</li>
             <li>Copia el <em>Integration Key</em> aquí (o en <code>js/config.js</code> para que nadie lo capture). No uses ni compartas el <em>secret key</em>.</li>
@@ -3157,7 +3157,7 @@ function bindDocusignSettings() {
     try {
       if (act === 'connect') {
         if ($('#ds-key')) await ds.setOptions({ key: $('#ds-key').value, env: $('#ds-env').value });
-        return ds.startAuth();
+        return await ds.startAuth();
       }
       if (act === 'disconnect') {
         if (!(await confirmDialog('Desconectar DocuSign', 'Los contratos ya enviados siguen su curso en DocuSign; para ver su estado tendrás que volver a conectar.', 'Desconectar'))) return;
@@ -3337,8 +3337,8 @@ function envioHTML(c) {
 
 async function enviarDocuSign(c) {
   if (!ds.isConnected()) {
-    if (await confirmDialog('Conectar DocuSign', ds.isLinked() ? 'La sesión de DocuSign venció (dura 8 horas). ¿Conectar de nuevo?' : 'Primero conecta la cuenta de DocuSign en Ajustes.', ds.isLinked() ? 'Conectar' : 'Ir a Ajustes', 'primary')) {
-      return ds.isLinked() ? ds.startAuth() : go('#/ajustes');
+    if (await confirmDialog('Conectar DocuSign', ds.isLinked() ? 'La sesión de DocuSign venció. ¿Conectar de nuevo?' : 'Primero conecta la cuenta de DocuSign en Ajustes.', ds.isLinked() ? 'Conectar' : 'Ir a Ajustes', 'primary')) {
+      return ds.isLinked() ? await ds.startAuth() : go('#/ajustes');
     }
     return;
   }

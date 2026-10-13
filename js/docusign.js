@@ -1,5 +1,7 @@
 // Cliente mínimo de la API de firma de DocuSign, sin servidor: el navegador habla directo con DocuSign
-// (CORS) con un token de "Implicit Grant" que dura 8 horas; al vencer se vuelve a conectar.
+// (CORS). Se conecta con "Authorization Code Grant" + PKCE (app pública, sin secreto), como recomienda
+// DocuSign; el token dura 8 horas y se renueva solo con el refresh token. Se acepta también el regreso de
+// "Implicit Grant" (#access_token=…) por si la app de DocuSign quedó configurada así.
 // La configuración y el token se guardan en IndexedDB (store "meta") de cada equipo.
 import * as db from './db.js';
 import { DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_ENV } from './config.js';
@@ -27,7 +29,7 @@ export const config = () => cfg;
 /** Hay cuenta enlazada (aunque el token haya vencido). */
 export const isLinked = () => !!cfg?.account;
 /** El token sigue vigente. */
-export const isConnected = () => !!cfg?.token && Date.now() < (cfg.expiresAt || 0);
+export const isConnected = () => !!cfg?.account && (!!cfg.refreshToken || (!!cfg.token && Date.now() < (cfg.expiresAt || 0)));
 async function save() { await db.put('meta', structuredClone(cfg)); }
 
 export async function setOptions({ key, env }) {
@@ -35,36 +37,92 @@ export async function setOptions({ key, env }) {
   if (env !== undefined && env !== cfg.env) {
     // Otra plataforma: la sesión anterior no sirve
     cfg.env = env;
-    Object.assign(cfg, { token: null, expiresAt: 0, account: null, user: null });
+    Object.assign(cfg, { token: null, refreshToken: null, expiresAt: 0, account: null, user: null });
   }
   await save();
 }
 
-/** La URI de regreso debe registrarse tal cual en la app de DocuSign. */
-export const redirectUri = () => location.origin + location.pathname;
+/** La URI de regreso debe registrarse tal cual en la app de DocuSign: en la raíz va sin "/" final
+ *  (https://…pages.dev), que es como la consola de DocuSign suele guardarla. */
+export const redirectUri = () => location.origin + (location.pathname === '/' ? '' : location.pathname);
 
-export function startAuth() {
+const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// El "state" de DocuSign empieza con "ds." para no confundir su regreso (?code=…) con el de Dropbox
+const DS_STATE = 'ds.';
+
+export async function startAuth() {
   if (!cfg.key) throw new DocuSignError('Falta el Integration Key de DocuSign.');
-  const state = crypto.randomUUID();
-  sessionStorage.setItem('ds-auth', JSON.stringify({ state, hash: location.hash }));
-  const q = new URLSearchParams({ response_type: 'token', scope: 'signature cors', client_id: cfg.key, redirect_uri: redirectUri(), state });
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const state = DS_STATE + b64url(crypto.getRandomValues(new Uint8Array(16)));
+  sessionStorage.setItem('ds-auth', JSON.stringify({ state, verifier, hash: location.hash }));
+  const q = new URLSearchParams({
+    response_type: 'code', scope: 'signature cors', client_id: cfg.key, redirect_uri: redirectUri(), state,
+    code_challenge: challenge, code_challenge_method: 'S256',
+  });
   location.assign(`${AUTH[cfg.env]}/oauth/auth?${q}`);
 }
 
-/** Si la página viene de regreso de DocuSign (#access_token=…), guarda el token. Devuelve true si conectó. */
+async function tokenRequest(params) {
+  let res;
+  try {
+    res = await fetch(`${AUTH[cfg.env]}/oauth/token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: cfg.key, ...params }),
+    });
+  } catch {
+    throw new DocuSignError(`DocuSign no respondió desde el navegador. Revisa que en la app de DocuSign el origen ${location.origin} esté en "CORS configuration".`);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new DocuSignError(data.error_description || data.error || `DocuSign rechazó la conexión (${res.status})`, { status: res.status, code: data.error });
+  return data;
+}
+
+function setToken(tok) {
+  cfg.token = tok.access_token;
+  cfg.expiresAt = Date.now() + (Number(tok.expires_in) || 28800) * 1000 - 60000;
+  if (tok.refresh_token) cfg.refreshToken = tok.refresh_token;
+}
+
+/** Token vigente: si venció, se renueva con el refresh token (sin volver a entrar). */
+async function ensureToken(force = false) {
+  if (!force && cfg.token && Date.now() < cfg.expiresAt) return;
+  if (!cfg.refreshToken) {
+    cfg.token = null;
+    throw new DocuSignError('La sesión de DocuSign venció. Conéctate de nuevo en Ajustes.', { status: 401 });
+  }
+  try {
+    setToken(await tokenRequest({ grant_type: 'refresh_token', refresh_token: cfg.refreshToken }));
+    await save();
+  } catch (err) {
+    if (err.status === 400 || err.status === 401) {
+      Object.assign(cfg, { token: null, refreshToken: null });
+      await save();
+      throw new DocuSignError('La sesión de DocuSign venció. Conéctate de nuevo en Ajustes.', { status: 401 });
+    }
+    throw err;
+  }
+}
+
+/** Si la página viene de regreso de DocuSign (?code=… o #access_token=…), guarda el token. Devuelve true si conectó. */
 export async function handleRedirect() {
-  const h = location.hash.slice(1);
-  if (!/(^|&)(access_token|error)=/.test(h)) return false;
-  const q = new URLSearchParams(h);
+  const search = new URLSearchParams(location.search);
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const q = (search.get('state') || '').startsWith(DS_STATE) ? search
+    : /(^|&)(access_token|error)=/.test(location.hash.slice(1)) ? hash : null;
+  if (!q) return false;
   const saved = JSON.parse(sessionStorage.getItem('ds-auth') || 'null');
   sessionStorage.removeItem('ds-auth');
   history.replaceState(null, '', redirectUri() + (saved?.hash || '#/ajustes'));
   if (q.has('error') || !saved || q.get('state') !== saved.state) {
-    throw new DocuSignError(q.get('error_description') || 'Se canceló la conexión con DocuSign.');
+    throw new DocuSignError(q.get('error_description') || q.get('error_message') || 'Se canceló la conexión con DocuSign.');
   }
-  cfg.token = q.get('access_token');
-  cfg.expiresAt = Date.now() + (Number(q.get('expires_in')) || 28800) * 1000 - 60000;
-  const info = await call(`${AUTH[cfg.env]}/oauth/userinfo`, { raw: false, absolute: true });
+  if (q.has('code')) {
+    setToken(await tokenRequest({ grant_type: 'authorization_code', code: q.get('code'), code_verifier: saved.verifier, redirect_uri: redirectUri() }));
+  } else {
+    setToken({ access_token: q.get('access_token'), expires_in: q.get('expires_in') });
+    cfg.refreshToken = null;
+  }
+  const info = await call(`${AUTH[cfg.env]}/oauth/userinfo`, { raw: false, absolute: true, sinCuenta: true });
   const acc = (info.accounts || []).find((a) => a.is_default) || info.accounts?.[0];
   if (!acc) throw new DocuSignError('Tu usuario de DocuSign no tiene una cuenta para enviar documentos.');
   cfg.user = { name: info.name, email: info.email };
@@ -78,8 +136,11 @@ export async function disconnect() {
   await save();
 }
 
-async function call(url, { method = 'GET', body, raw = false, absolute = false } = {}) {
-  if (!isConnected()) throw new DocuSignError('La sesión de DocuSign venció (dura 8 horas). Conéctate de nuevo en Ajustes.', { status: 401 });
+async function call(url, { method = 'GET', body, raw = false, absolute = false, sinCuenta = false, reintento = false } = {}) {
+  if (!sinCuenta) {
+    if (!cfg.account) throw new DocuSignError('Conecta DocuSign en Ajustes.', { status: 401 });
+    await ensureToken();
+  }
   const full = absolute ? url : `${cfg.account.baseUri}/restapi/v2.1/accounts/${cfg.account.id}${url}`;
   const res = await fetch(full, {
     method,
@@ -87,6 +148,11 @@ async function call(url, { method = 'GET', body, raw = false, absolute = false }
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401) {
+    // Token revocado o vencido antes de tiempo: se renueva una vez y se reintenta
+    if (!reintento && !sinCuenta && cfg.refreshToken) {
+      await ensureToken(true);
+      return call(url, { method, body, raw, absolute, sinCuenta, reintento: true });
+    }
     cfg.token = null;
     await save();
     throw new DocuSignError('La sesión de DocuSign venció. Conéctate de nuevo en Ajustes.', { status: 401 });
