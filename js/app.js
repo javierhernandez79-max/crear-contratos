@@ -15,6 +15,7 @@ import { readCertificate, readPrivateKey, signText, verifySignature, base64ToBlo
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
+import { planAlta } from './alta-pdf.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
@@ -2029,6 +2030,7 @@ function renderCatalog() {
       <div class="row">
         <button class="btn" id="cat-export">${icon('download')}<span class="hide-xs">Exportar Excel</span></button>
         <label class="btn">${icon('upload')}<span class="hide-xs">Importar Excel</span><input type="file" id="cat-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+        <button class="btn" id="cat-pdf" title="Constancias fiscales, escrituras constitutivas o poderes de varias empresas">${icon('upload')}<span class="hide-xs">Alta desde PDFs</span></button>
         <button class="btn primary" id="cat-new">${icon('plus')} Nueva</button>
       </div>
     </header>
@@ -2086,6 +2088,7 @@ function renderCatalog() {
     row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === row) go(`#/catalogo/${p.id}`); });
   });
   $('#cat-new').addEventListener('click', () => createParty());
+  $('#cat-pdf').addEventListener('click', conAviso(altaDesdePdfs));
   $('#cat-export').addEventListener('click', exportCatalog);
   $('#cat-import').addEventListener('change', (e) => {
     const f = e.target.files[0];
@@ -2425,12 +2428,12 @@ const CAMPOS_PDF = {
   poder: PARTY_FIELDS.apoderado.filter(([k]) => k !== 'cargo').map(([k, l, t]) => [k, l, t]),
 };
 
-/** Elige un PDF del expediente en Dropbox o del equipo. Devuelve {name, data} o null. */
-async function elegirPdf(p) {
+/** Elige uno o varios PDF del expediente en Dropbox o del equipo. Devuelve [{name, data}] (vacío si se cancela). */
+async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
   const r = await modal({
-    title: 'Llenar desde PDF',
+    title: titulo,
     body: `
-      <p class="muted small">Constancia de situación fiscal, escritura constitutiva o escritura de poder. Solo PDFs con texto: los escaneados se capturan a mano. Antes de aplicar, revisas cada dato.</p>
+      <p class="muted small">${texto || 'Constancia de situación fiscal, escritura constitutiva o escritura de poder; puedes elegir varios a la vez. Solo PDFs con texto: los escaneados se capturan a mano. Antes de aplicar, revisas cada dato.'}</p>
       <div class="menu-list">
         <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
         <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
@@ -2438,34 +2441,46 @@ async function elegirPdf(p) {
   });
   if (r.value === 'dbx' && !dbx.isConnected()) {
     toast('Dropbox no está conectado en este navegador: conéctalo en Ajustes o usa “Desde este equipo”', 'error');
-    return null;
+    return [];
   }
   if (r.value === 'dbx') {
-    const start = p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot());
-    let files = await browseDropbox({ start, title: 'Elegir el PDF', shortcuts: [{ label: 'Expedientes', path: sync.expedientesRoot() }] });
+    const start = p ? (p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot())) : sync.expedientesRoot();
+    let files = await browseDropbox({ start, title: 'Elegir los PDF', shortcuts: [{ label: 'Expedientes', path: sync.expedientesRoot() }] });
     files = files?.filter((f) => /\.pdf$/i.test(f.name));
-    if (!files) return null;
-    if (!files.length) { toast('Elige un archivo PDF', 'error'); return null; }
-    const { data } = await dbx.download(files[0].path_lower || files[0].path_display);
-    return { name: files[0].name, data };
+    if (!files) return [];
+    if (!files.length) { toast('Elige al menos un archivo PDF', 'error'); return []; }
+    toast(`Descargando ${files.length} PDF…`);
+    const out = [];
+    for (const f of files) out.push({ name: f.name, data: (await dbx.download(f.path_lower || f.path_display)).data });
+    return out;
   }
   if (r.value === 'local') {
-    const file = await new Promise((resolve) => {
-      const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.pdf,application/pdf' });
-      input.addEventListener('change', () => resolve(input.files[0] || null));
-      input.addEventListener('cancel', () => resolve(null));
+    const files = await new Promise((resolve) => {
+      const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.pdf,application/pdf', multiple: true });
+      input.addEventListener('change', () => resolve([...input.files]));
+      input.addEventListener('cancel', () => resolve([]));
       input.click();
     });
-    return file ? { name: file.name, data: await file.arrayBuffer() } : null;
+    return Promise.all(files.map(async (f) => ({ name: f.name, data: await f.arrayBuffer() })));
   }
-  return null;
+  return [];
 }
 
-/** Lee el PDF, muestra lo encontrado para revisión y aplica lo marcado. true si cambió la ficha. */
+/** Lee uno o varios PDF de la misma parte y los revisa uno por uno. true si cambió la ficha; 'otra' si se fue a otra ficha. */
 async function extraerDePdf(p) {
-  const pdf = await elegirPdf(p);
-  if (!pdf) return false;
-  toast('Leyendo el PDF…');
+  const pdfs = await elegirPdfs(p);
+  let cambio = false;
+  for (let i = 0; i < pdfs.length; i++) {
+    const r = await revisarPdf(p, pdfs[i], pdfs.length > 1 ? `${i + 1} de ${pdfs.length}: ` : '');
+    if (r === 'otra') return 'otra';
+    cambio ||= r;
+  }
+  return cambio;
+}
+
+/** Muestra lo encontrado en un PDF para revisión y aplica lo marcado. true si cambió la ficha. */
+async function revisarPdf(p, pdf, prefijo = '') {
+  toast(`Leyendo ${pdf.name}…`);
   const text = await pdfText(pdf.data);
   if (sinTexto(text)) {
     await modal({
@@ -2519,7 +2534,7 @@ async function extraerDePdf(p) {
   };
 
   const r = await modal({
-    title: `Datos de ${pdf.name}`,
+    title: `${prefijo}Datos de ${pdf.name}`,
     wide: true,
     body: `
       <label class="field inline"><span>Tipo de documento</span>
@@ -2527,7 +2542,7 @@ async function extraerDePdf(p) {
       </label>
       <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el PDF es más reciente o correcto.</p>
       <div id="ex-filas">${filas(tipo)}</div>`,
-    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Aplicar marcados', value: 'ok', kind: 'primary' }],
+    actions: [{ label: prefijo ? 'Omitir este' : 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Aplicar marcados', value: 'ok', kind: 'primary' }],
     onOpen: (dlg) => {
       $('#ex-tipo', dlg).addEventListener('change', (e) => { tipo = e.target.value; $('#ex-filas', dlg).innerHTML = filas(tipo); });
       // Al cambiar de apoderado se recalcula "Actual" y qué viene marcado
@@ -2568,6 +2583,60 @@ async function extraerDePdf(p) {
   await saveParty(p);
   toast(`${usar.length} dato${usar.length === 1 ? '' : 's'} aplicado${usar.length === 1 ? '' : 's'}`, 'ok');
   return true;
+}
+
+/** Alta o complemento de varias fichas a la vez desde PDF; se revisa todo en una tabla antes de guardar. */
+async function altaDesdePdfs() {
+  const pdfs = await elegirPdfs(null, {
+    titulo: 'Alta desde PDFs',
+    texto: 'Elige las constancias fiscales, escrituras constitutivas y poderes de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Solo PDFs con texto. Antes de guardar revisas la lista.',
+  });
+  if (!pdfs.length) return;
+  const docs = [];
+  for (let i = 0; i < pdfs.length; i++) {
+    toast(`Leyendo ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
+    try {
+      docs.push({ name: pdfs[i].name, text: await pdfText(pdfs[i].data) });
+    } catch (err) {
+      console.error(err);
+      docs.push({ name: pdfs[i].name, text: '' });
+    }
+  }
+  const { filas, omitidos } = planAlta(docs, state.parties);
+  const TIPO_CORTO = { csf: 'Constancia', acta: 'Constitutiva', poder: 'Poder' };
+  const r = await modal({
+    title: `Alta desde ${pdfs.length} PDF`,
+    wide: true,
+    body: `
+      ${filas.length ? `
+      <p class="muted small">Marcadas = se guardan. En fichas que ya existen solo se llenan datos vacíos.</p>
+      <label class="field inline"><span>Las fichas nuevas son</span>
+        <select name="propia"><option value="no">Contrapartes (clientes, proveedores)</option><option value="si">Empresas del grupo</option></select></label>
+      <div class="card lotes-list alta-list">
+        <div class="ll-row ll-head"><span></span><span>Empresa o persona</span><span>RFC</span><span>Documentos</span><span>Acción</span></div>
+        ${filas.map((f, i) => `
+        <div class="ll-row">
+          <span><input type="checkbox" name="f_${i}" ${f.nueva || f.llenos ? 'checked' : ''} aria-label="Guardar ${esc(f.party.nombre)}"></span>
+          <span><strong>${esc(f.party.nombre || 'Sin nombre')}</strong>${f.party.apoderados.length ? `<span class="muted small">Apoderados: ${esc(f.party.apoderados.map((a) => a.nombre).filter(Boolean).join(', '))}</span>` : ''}</span>
+          <span class="mono small">${esc(f.party.rfc || '—')}</span>
+          <span class="small">${f.docs.map((d) => `${TIPO_CORTO[d.tipo]}: ${esc(d.name)}`).join('<br>')}</span>
+          <span class="small">${f.nueva ? '<span class="badge final">Nueva</span>' : f.llenos ? `<span class="badge revision">Completa ${f.llenos} dato${f.llenos === 1 ? '' : 's'}</span>` : '<span class="muted">Sin cambios</span>'}</span>
+        </div>`).join('')}
+      </div>` : '<p>No encontré datos para dar de alta.</p>'}
+      ${omitidos.length ? `<h4 class="sub">No se usaron (${omitidos.length})</h4><ul class="err-list small">${omitidos.map((o) => `<li><strong>${esc(o.name)}</strong>: ${esc(o.motivo)}</li>`).join('')}</ul>` : ''}`,
+    actions: filas.length
+      ? [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Guardar marcadas', value: 'ok', kind: 'primary' }]
+      : [{ label: 'Cerrar', value: '', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return;
+  const elegidas = filas.filter((f, i) => r.data[`f_${i}`]);
+  for (const f of elegidas) {
+    if (f.nueva) f.party.propia = r.data.propia === 'si';
+    await saveParty(f.party);
+  }
+  const nuevas = elegidas.filter((f) => f.nueva).length;
+  toast(`${nuevas} ficha${nuevas === 1 ? '' : 's'} nueva${nuevas === 1 ? '' : 's'} y ${elegidas.length - nuevas} completada${elegidas.length - nuevas === 1 ? '' : 's'}`, 'ok');
+  renderCatalog();
 }
 
 // --- Partes dentro del contrato (pestaña Variables) ---

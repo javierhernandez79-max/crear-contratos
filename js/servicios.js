@@ -15,7 +15,7 @@ function palabras(nombre) {
 }
 
 /** "IA TECH-SYSTEMS S.A DE C.V." → "IATECHSYSTEMS". */
-const nucleo = (nombre) => palabras(nombre).join('');
+export const nucleo = (nombre) => palabras(nombre).join('');
 
 const bigramas = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const b = s.slice(i, i + 2); m.set(b, (m.get(b) || 0) + 1); } return m; };
 
