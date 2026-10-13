@@ -33,6 +33,10 @@ export function tipoCarpeta(c, categoria) {
 
 export const subcarpetaDe = (c, categoria) => SUBCARPETAS[tipoCarpeta(c, categoria)];
 
+/** Subcarpeta de un lote del Excel P1 según su tipo (DETERMINADO, INDETERMINADO o COMISION). */
+export const subcarpetaLote = (tipo) => SUBCARPETAS[
+  tipo === 'COMISION' ? 'comision' : tipo === 'DETERMINADO' ? 'trabajoDeterminado' : 'trabajoIndeterminado'];
+
 /**
  * Parte dueña del expediente donde se guarda el contrato. `partes` = [{ sg, p }] de los firmantes vinculados.
  * Trabajo y comisión: la empresa (patrón o comitente), no la persona. Los demás: el cliente o contraparte

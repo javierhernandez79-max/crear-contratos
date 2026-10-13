@@ -16,12 +16,12 @@ import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
 import { planAlta } from './alta-pdf.js';
-import { subcarpetaDe, duenoCarpeta } from './carpetas.js';
+import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
 import { estadoIA, cambiarIA, leerConIA } from './ia.js';
@@ -4502,6 +4502,11 @@ function renderLote(id) {
       <p><strong>${l.tipo === 'COMISION' ? 'Comitente' : 'Patrón'}:</strong> ${esc(l.empresa?.nombre || '')}${l.apoderado ? `, representada por ${esc(l.apoderado.nombre)}` : ' <span class="warn-text">(sin representante)</span>'}</p>
       <p>${l.periodicidad ? `<strong>Periodicidad de pago:</strong> ${esc(l.periodicidad)} · ` : ''}${l.lugarFirma ? `<strong>Lugar de firma:</strong> ${esc(l.lugarFirma)} · ` : ''}<strong>Excel:</strong> ${esc(l.archivo || '')}${l.p1 ? ` <button class="btn sm ghost" id="lote-p1">${icon('download')} ${l.p1.corregido ? 'P1 corregido' : 'P1'}</button>` : ''}</p>
       <p class="muted small">Creado por ${esc(l.createdBy || '')} el ${fmtDateTime(l.createdAt)}${l.status === 'aprobado' ? ` · Aprobado por ${esc(l.approvedBy || '')} el ${fmtDateTime(l.approvedAt)}` : ''}</p>
+      ${l.status === 'aprobado' ? (l.dropbox
+        ? `<p class="small"><strong>En Dropbox:</strong> <code>${esc(l.dropbox.carpeta)}</code></p>`
+        : dbx.isConnected()
+          ? `<p class="small"><span class="warn-text">Aún no está en Dropbox.</span> Se guardará en <code id="lote-dbx-dest">${esc(loteFolder(l))}</code> <button class="btn sm" id="lote-dbx">${icon('folder')} Guardar en Dropbox</button></p>`
+          : '<p class="muted small">Conecta Dropbox en Ajustes para guardar los contratos en el expediente del cliente.</p>') : ''}
     </section>
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
     ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (cada uno sale marcado “EN REVISIÓN”). Cuando estén bien, cualquiera del equipo puede aprobar el lote.</span></div>` : ''}
@@ -4546,9 +4551,27 @@ function renderLote(id) {
     l.approvedAt = Date.now();
     await saveLote(l, 'Aprobó el lote');
     toast('Lote aprobado', 'ok');
+    if (dbx.isConnected()) {
+      try {
+        toast('Guardando los contratos en Dropbox…');
+        await guardarLoteDropbox(l);
+        toast('Contratos guardados en Dropbox', 'ok');
+      } catch (err) {
+        console.error(err);
+        toast(`No se pudieron guardar en Dropbox: ${err.message}. Usa “Guardar en Dropbox”.`, 'error');
+      }
+    }
     renderLote(l.id);
   });
   $('#lote-zip')?.addEventListener('click', () => downloadLoteZip(l));
+  $('#lote-dbx')?.addEventListener('click', conAviso(async () => {
+    toast('Guardando los contratos en Dropbox…');
+    await guardarLoteDropbox(l);
+    toast('Contratos guardados en Dropbox', 'ok');
+    renderLote(l.id);
+  }));
+  // La ruta sugerida se afina al leer las carpetas que ya existen en Dropbox
+  if ($('#lote-dbx-dest')) loadExpedienteFolders().then(() => { const el = $('#lote-dbx-dest'); if (el) el.textContent = loteFolder(l); });
   $('#lote-p1')?.addEventListener('click', () => download(p1Blob(l), l.p1.name));
   $('#lote-err-word')?.addEventListener('click', async () => {
     const D = await loadDocx();
@@ -4690,8 +4713,8 @@ async function p1DelLote(d) {
 }
 const p1Blob = (l) => new Blob([fromBase64(l.p1.data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
-const downloadLoteZip = conAviso(async (l) => {
-  if (l.status !== 'aprobado') return toast('El lote aún no está aprobado', 'error');
+/** Archivos finales del lote: un Word por persona, la lista de errores (si hubo) y el P1. */
+async function archivosLote(l) {
   const D = await loadDocx();
   const files = [];
   for (const [i, w] of l.trabajadores.entries()) {
@@ -4703,8 +4726,40 @@ const downloadLoteZip = conAviso(async (l) => {
     files.push({ name: erroresFileName(l), data: new Uint8Array(await blob.arrayBuffer()) });
   }
   if (l.p1) files.push({ name: `00 - P1 - ${l.p1.name}`, data: fromBase64(l.p1.data) });
-  download(new Blob([buildZip(files)], { type: 'application/zip' }), `${safeName(l.title)}.zip`);
+  return files;
+}
+
+const downloadLoteZip = conAviso(async (l) => {
+  if (l.status !== 'aprobado') return toast('El lote aún no está aprobado', 'error');
+  download(new Blob([buildZip(await archivosLote(l))], { type: 'application/zip' }), `${safeName(l.title)}.zip`);
 });
+
+/**
+ * Carpeta de Dropbox del lote: expediente del cliente del lote (el de la ficha si está en el catálogo; si no,
+ * una carpeta con su nombre en EXPEDIENTES CLIENTES) / CONTRATOS DE TRABAJO/<DETERMINADOS|INDETERMINADOS>
+ * (o CONTRATOS DE COMISIÓN MERCANTIL) / <lote>.
+ */
+function loteFolder(l) {
+  if (l.dropbox?.carpeta) return l.dropbox.carpeta;
+  const nombre = String(l.cliente || '').trim();
+  const k = nucleo(nombre);
+  const ficha = nombre && state.parties.find((p) => !p.propia && ((k.length >= 4 && nucleo(p.nombre) === k) || parecido(nombre, p.nombre) >= 0.85));
+  const base = expedienteOf(ficha || { nombre: nombre || 'SIN CLIENTE', propia: false });
+  return dbx.joinPath(base, subcarpetaLote(l.tipo), safeName(l.title));
+}
+
+/** Sube a Dropbox los contratos finales del lote. Devuelve la carpeta, o null si Dropbox no está conectado. */
+async function guardarLoteDropbox(l) {
+  if (!dbx.isConnected() || l.status !== 'aprobado') return null;
+  await loadExpedienteFolders();
+  const carpeta = loteFolder(l);
+  for (const f of await archivosLote(l)) {
+    await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { autorename: true });
+  }
+  l.dropbox = { carpeta, at: Date.now(), by: whoAmI() };
+  await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);
+  return carpeta;
+}
 
 (async function init() {
   await loadAll();
