@@ -23,6 +23,7 @@ import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer } from './extraccion.js';
+import { estadoIA, cambiarIA, leerConIA } from './ia.js';
 
 // ---------- Estado ----------
 const state = {
@@ -2452,10 +2453,11 @@ const CAMPOS_PDF = {
 
 /** Elige uno o varios PDF del expediente en Dropbox o del equipo. Devuelve [{name, data}] (vacío si se cancela). */
 async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
+  const ia = (await estadoIA()).activa;
   const r = await modal({
     title: titulo,
     body: `
-      <p class="muted small">${texto || 'Constancia de situación fiscal, escritura constitutiva o escritura de poder; puedes elegir varios a la vez. Solo PDFs con texto: los escaneados se capturan a mano. Antes de aplicar, revisas cada dato.'}</p>
+      <p class="muted small">${texto || `Constancia de situación fiscal, escritura constitutiva o escritura de poder; puedes elegir varios a la vez. ${ia ? 'Los escaneados se leen con IA.' : 'Solo PDFs con texto: los escaneados se capturan a mano.'} Antes de aplicar, revisas cada dato.`}</p>
       <div class="menu-list">
         <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
         <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
@@ -2504,21 +2506,34 @@ async function extraerDePdf(p) {
 async function revisarPdf(p, pdf, prefijo = '') {
   toast(`Leyendo ${pdf.name}…`);
   const text = await pdfText(pdf.data);
+  let ia = null;
   if (sinTexto(text)) {
-    await modal({
+    const aviso = (msg) => modal({
       title: 'PDF sin texto',
-      body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). Captura los datos a mano.</p>`,
+      body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). ${msg}</p>`,
       actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
     });
-    return false;
+    if (!(await estadoIA()).activa) { await aviso('Captura los datos a mano: la lectura con IA está apagada.'); return false; }
+    toast(`Leyendo ${pdf.name} con IA (puede tardar hasta un minuto)…`);
+    try {
+      ia = await leerConIA(pdf);
+    } catch (err) {
+      await aviso(`No se pudo leer con IA: ${esc(err.message)}`);
+      return false;
+    }
+    if (ia.tipo === 'otro' || !Object.keys(ia.datos).length) {
+      await aviso('La IA no lo reconoció como constancia fiscal, escritura constitutiva ni poder. Captura los datos a mano.');
+      return false;
+    }
   }
-  let tipo = detectarTipo(text) || (p.kind === 'pm' ? 'acta' : 'csf');
-  const detectado = detectarTipo(text);
+  const detectado = ia ? ia.tipo : detectarTipo(text);
+  let tipo = detectado || (p.kind === 'pm' ? 'acta' : 'csf');
   const sugerirApo = (nombre) => p.apoderados.map((a) => ({ a, s: parecido(nombre || '', a.nombre) })).filter((x) => x.s >= 0.8).sort((x, y) => y.s - x.s)[0]?.a;
 
   // apoId: undefined = el apoderado que más se parece al del poder; '' = nuevo
   const filas = (t, apoId) => {
-    const data = extraer(t, text);
+    // Lo leído con IA vale para cualquier tipo elegido (los campos de cada tipo son distintos)
+    const data = ia ? { ...ia.datos, kind: ia.kind || undefined } : extraer(t, text);
     const campos = CAMPOS_PDF[t].filter(([k]) => k !== 'curp' || p.kind === 'pf');
     const apo = t !== 'poder' ? null : apoId === undefined ? sugerirApo(data.nombre) : p.apoderados.find((a) => a.id === apoId);
     const actualDe = (k, destino) => String((destino ?? p)[k] ?? '');
@@ -2563,6 +2578,7 @@ async function revisarPdf(p, pdf, prefijo = '') {
         <select name="tipo" id="ex-tipo">${Object.entries(TIPOS).filter(([k]) => k !== 'acta' || p.kind === 'pm').map(([k, l]) => `<option value="${k}" ${k === tipo ? 'selected' : ''}>${l}${k === detectado ? ' (detectado)' : ''}</option>`).join('')}</select>
       </label>
       <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el PDF es más reciente o correcto.</p>
+      ${ia ? `<div class="banner warn">${icon('alert')} <span>Documento escaneado leído con IA: compara cada dato con el PDF antes de aplicarlo.</span></div>` : ''}
       <div id="ex-filas">${filas(tipo)}</div>`,
     actions: [{ label: prefijo ? 'Omitir este' : 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Aplicar marcados', value: 'ok', kind: 'primary' }],
     onOpen: (dlg) => {
@@ -2611,18 +2627,28 @@ async function revisarPdf(p, pdf, prefijo = '') {
 async function altaDesdePdfs() {
   const pdfs = await elegirPdfs(null, {
     titulo: 'Alta desde PDFs',
-    texto: 'Elige las constancias fiscales, escrituras constitutivas y poderes de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Solo PDFs con texto. Antes de guardar revisas la lista.',
+    texto: 'Elige las constancias fiscales, escrituras constitutivas y poderes de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Antes de guardar revisas la lista.',
   });
   if (!pdfs.length) return;
   const docs = [];
+  const conIA = (await estadoIA()).activa;
   for (let i = 0; i < pdfs.length; i++) {
     toast(`Leyendo ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
+    const d = { name: pdfs[i].name, text: '' };
     try {
-      docs.push({ name: pdfs[i].name, text: await pdfText(pdfs[i].data) });
+      d.text = await pdfText(pdfs[i].data);
     } catch (err) {
       console.error(err);
-      docs.push({ name: pdfs[i].name, text: '' });
     }
+    if (conIA && sinTexto(d.text)) {
+      toast(`Leyendo con IA ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
+      try {
+        d.ia = await leerConIA(pdfs[i]);
+      } catch (err) {
+        d.errorIA = `Escaneado: no se pudo leer con IA (${err.message}).`;
+      }
+    }
+    docs.push(d);
   }
   const { filas, omitidos } = planAlta(docs, state.parties);
   const TIPO_CORTO = { csf: 'Constancia', acta: 'Constitutiva', poder: 'Poder' };
@@ -2631,7 +2657,7 @@ async function altaDesdePdfs() {
     wide: true,
     body: `
       ${filas.length ? `
-      <p class="muted small">Marcadas = se guardan. En fichas que ya existen solo se llenan datos vacíos.</p>
+      <p class="muted small">Marcadas = se guardan. En fichas que ya existen solo se llenan datos vacíos.${filas.some((f) => f.docs.some((d) => d.ia)) ? ' Los marcados “IA” eran escaneados: revisa esas fichas contra el PDF después de guardar.' : ''}</p>
       <label class="field inline"><span>Las fichas nuevas son</span>
         <select name="propia"><option value="no">Contrapartes (clientes, proveedores)</option><option value="si">Empresas del grupo</option></select></label>
       <div class="card lotes-list alta-list">
@@ -2641,7 +2667,7 @@ async function altaDesdePdfs() {
           <span><input type="checkbox" name="f_${i}" ${f.nueva || f.llenos ? 'checked' : ''} aria-label="Guardar ${esc(f.party.nombre)}"></span>
           <span><strong>${esc(f.party.nombre || 'Sin nombre')}</strong>${f.party.apoderados.length ? `<span class="muted small">Apoderados: ${esc(f.party.apoderados.map((a) => a.nombre).filter(Boolean).join(', '))}</span>` : ''}</span>
           <span class="mono small">${esc(f.party.rfc || '—')}</span>
-          <span class="small">${f.docs.map((d) => `${TIPO_CORTO[d.tipo]}: ${esc(d.name)}`).join('<br>')}</span>
+          <span class="small">${f.docs.map((d) => `${TIPO_CORTO[d.tipo]}: ${esc(d.name)}${d.ia ? ' <span class="badge revision">IA</span>' : ''}`).join('<br>')}</span>
           <span class="small">${f.nueva ? '<span class="badge final">Nueva</span>' : f.llenos ? `<span class="badge revision">Completa ${f.llenos} dato${f.llenos === 1 ? '' : 's'}</span>` : '<span class="muted">Sin cambios</span>'}</span>
         </div>`).join('')}
       </div>` : '<p>No encontré datos para dar de alta.</p>'}
@@ -3901,6 +3927,7 @@ async function renderSettings() {
     </section>
     ${await dropboxSettingsHTML()}
     ${docusignSettingsHTML()}
+    ${await iaSettingsHTML()}
     <section class="card settings-block">
       <h3>Vencimientos</h3>
       <p class="muted">Avisar de los contratos de trabajo por tiempo determinado que terminan dentro de estos días. Se guarda en este equipo.</p>
@@ -3926,6 +3953,7 @@ async function renderSettings() {
 
   bindDropboxSettings();
   bindDocusignSettings();
+  bindIaSettings();
   $('#pref-dias').addEventListener('change', async (e) => {
     const n = Math.round(Number(e.target.value));
     if (!(n >= 1 && n <= 365)) { e.target.value = state.prefs.anticipacion; return toast('Escribe un número de días entre 1 y 365', 'error'); }
@@ -3977,6 +4005,52 @@ async function renderSettings() {
     await loadAll();
     toast('Datos eliminados');
     renderSettings();
+  });
+}
+
+// --- Lectura con IA de PDFs escaneados: el interruptor solo lo cambia el administrador (lo valida el servidor) ---
+async function iaSettingsHTML() {
+  const e = await estadoIA(true);
+  if (!e.disponible) return '';
+  const estadoTxt = e.activa
+    ? `Encendida${e.hasta ? ` hasta el ${esc(fmtLongDate(e.hasta))}` : ''}.`
+    : e.vencida ? `Apagada: el periodo terminó el ${esc(fmtLongDate(e.hasta))}.` : 'Apagada.';
+  return `
+    <section class="card settings-block" id="ia-box">
+      <h3>Lectura con IA</h3>
+      <p class="muted">Lee constancias, escrituras y poderes escaneados (imagen) al usar “Llenar desde PDF” o “Alta desde PDFs”. Los escaneados se envían a la IA de Anthropic; los PDF con texto se siguen leyendo en este equipo.</p>
+      <p><span class="badge ${e.activa ? 'final' : 'borrador'}">${e.activa ? 'Encendida' : 'Apagada'}</span> <span class="small">${estadoTxt}</span></p>
+      ${e.admin ? `
+        ${e.faltan?.length ? `<div class="banner warn">${icon('alert')} <span>Falta configurar en Cloudflare: ${esc(e.faltan.join(', '))}.</span></div>` : ''}
+        <div class="row wrap">
+          <label class="field inline"><span>Encendida hasta</span><input type="date" id="ia-hasta" value="${esc(e.programada ? e.hasta : '')}"></label>
+          <span class="muted small">vacío = sin fecha de fin</span>
+        </div>
+        <div class="row wrap">
+          ${e.programada && !e.vencida ? '<button class="btn" id="ia-guardar">Cambiar fecha</button><button class="btn danger" id="ia-off">Apagar</button>' : '<button class="btn primary" id="ia-on">Encender</button>'}
+        </div>
+        <p class="muted small">Solo tú ves estos botones; el servidor rechaza el cambio si lo intenta otro usuario.</p>`
+        : '<p class="muted small">Solo el administrador puede encenderla o apagarla.</p>'}
+    </section>`;
+}
+
+function bindIaSettings() {
+  const box = $('#ia-box');
+  if (!box) return;
+  box.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('#ia-on, #ia-off, #ia-guardar');
+    if (!b) return;
+    const hasta = $('#ia-hasta', box)?.value || '';
+    if (b.id !== 'ia-off' && hasta && hasta < new Date().toLocaleDateString('en-CA')) return toast('La fecha ya pasó', 'error');
+    b.disabled = true;
+    try {
+      const e = await cambiarIA({ activa: b.id !== 'ia-off', hasta: b.id === 'ia-off' ? '' : hasta });
+      toast(e.activa ? 'Lectura con IA encendida' : 'Lectura con IA apagada', 'ok');
+      renderSettings();
+    } catch (err) {
+      toast(err.message, 'error');
+      b.disabled = false;
+    }
   });
 }
 

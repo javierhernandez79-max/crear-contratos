@@ -46,6 +46,7 @@ App de Dropbox "Documentos Legales" (App key en `js/config.js`; la App secret no
 - Plantilla marco de comisión mercantil: “cuenta con inscripción en el Registro Federal de Contribuyentes” (antes “empadronada”) y lugar de firma como variable `{{lugar_firma}}`.
 - Guía de uso para el equipo en Google Slides (13 diapositivas, con logo de COH), en el Drive de la cuenta del equipo.
 
+- Lectura con IA de PDFs escaneados (decidido 2026-10-13: Claude Sonnet 5.5 vía función de Cloudflare; se aceptó enviar los escaneados a la API de Anthropic). Interruptor con fecha de fin que solo controla el administrador.
 - Contratos de servicios con formato: elección de formato por empresa, regla por cliente (formato fijo / formato ocupado), bloqueo de aprobación si se rompe la regla y Word generado desde el formato original.
 
 ## Pendientes y limitaciones conocidas
@@ -53,5 +54,5 @@ App de Dropbox "Documentos Legales" (App key en `js/config.js`; la App secret no
 - Formatos con Word original: la versión “en revisión” no lleva leyenda; las firmas dibujadas o con e.firma de la app no se integran a ese Word (se firma sobre el PDF sacado de Word o por DocuSign, que recibe el Word del formato).
 - **Siguiente punto del backlog**: por decidir entre 7, 9 y 10 (4 espera las actas marco).
 - **e.firma**: no se valida la cadena del certificado contra las raíces del SAT.
-- **Extracción de PDF**: probada solo con documentos ficticios; falta probarla con CSF, escrituras y poderes reales del expediente.
+- **Extracción de PDF**: probada solo con documentos ficticios; falta probarla con CSF, escrituras y poderes reales del expediente. La lectura con IA se probó con la API simulada: falta la primera prueba real una vez configurada la llave.
 - **README**: la lista de plantillas aún menciona las que se quitaron.

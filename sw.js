@@ -1,5 +1,5 @@
 // Service worker: guarda la app en caché para que funcione sin conexión.
-const CACHE = 'crear-contratos-v49';
+const CACHE = 'crear-contratos-v50';
 const ASSETS = [
   './',
   './index.html',
@@ -29,6 +29,7 @@ const ASSETS = [
   './js/extraccion.js',
   './js/docusign.js',
   './js/zip.js',
+  './js/ia.js',
   './vendor/forge.min.js',
   './vendor/jspdf.umd.min.js',
   './vendor/exceljs.min.js',
@@ -54,7 +55,9 @@ self.addEventListener('activate', (e) => {
 
 // Red primero para tener siempre la última versión; si no hay conexión, caché.
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  // Las funciones del servidor (/api) nunca se guardan en caché
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/')) return;
   e.respondWith(
     fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
