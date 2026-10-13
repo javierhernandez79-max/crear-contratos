@@ -20,6 +20,7 @@ export function propagarPartes(contracts, cambiadas) {
   for (const c of contracts) {
     if (!editable(c)) continue;
     const antes = JSON.stringify([c.variables, c.signers.map((s) => [s.name, s.party])]);
+    const etiquetaAntes = c.etiqueta;
     const nombres = [];
     for (const sg of c.signers) {
       let p = sg.party && cambiadas.find((x) => x.id === sg.party.id);
@@ -37,7 +38,17 @@ export function propagarPartes(contracts, cambiadas) {
     }
     if (!nombres.length) continue;
     syncVarDefs(c);
-    if (JSON.stringify([c.variables, c.signers.map((s) => [s.name, s.party])]) === antes) continue;
+    // El nombre que se puso al crearlo desde el Sugerido ("Prestación de servicios · prestador · cliente") se
+    // rehace con los nombres nuevos; un nombre escrito a mano no se toca
+    if (/^Prestación de servicios · /.test(c.etiqueta || '') && c.variables.prestador_nombre && c.variables.cliente_nombre) {
+      c.etiqueta = `Prestación de servicios · ${c.variables.prestador_nombre} · ${c.variables.cliente_nombre}`;
+      if (c.grupoServicios) c.grupoServicios = { ...c.grupoServicios, cliente: c.variables.cliente_nombre };
+    }
+    if (JSON.stringify([c.variables, c.signers.map((s) => [s.name, s.party])]) === antes) {
+      // Solo cambió el nombre en la lista (el documento es el mismo): se guarda sin tocar el estado
+      if (c.etiqueta !== etiquetaAntes) out.push(c);
+      continue;
+    }
     logChange(c, `Datos de ${nombres.join(' y ')} actualizados desde el catálogo`);
     if (c.status !== 'borrador') {
       logChange(c, 'El contrato volvió a borrador porque cambiaron los datos de una parte');
