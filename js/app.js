@@ -16,6 +16,7 @@ import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
 import { planAlta } from './alta-pdf.js';
+import { propagarPartes } from './propagar.js';
 import { createSignaturePad } from './signature.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
@@ -266,9 +267,11 @@ function route(opts) {
   if (y !== null) Promise.resolve(r).then(() => window.scrollTo(0, y));
 }
 
-function routeView() {
+async function routeView() {
   const [, view, id, tab] = location.hash.split('/');
   saveNow();
+  // Al salir de la ficha (o de cualquier pantalla) se copian a los contratos los datos del catálogo que cambiaron
+  if (partesPorPropagar.size && !(view === 'catalogo' && id)) await propagarCatalogo();
   if (view === 'c' && id) return openEditor(id, tab || 'secciones');
   state.current = null;
   document.body.classList.remove('in-editor');
@@ -1993,7 +1996,25 @@ function loadExcel() {
   return excelReady;
 }
 
+// Partes editadas cuyos datos falta copiar a los contratos (se hace al salir de la ficha, no a cada tecla)
+const partesPorPropagar = new Set();
+
+/** Copia los datos nuevos del catálogo a los contratos no firmados que usan esas partes. */
+async function propagarCatalogo() {
+  if (!partesPorPropagar.size) return;
+  const cambiadas = state.parties.filter((p) => partesPorPropagar.has(p.id));
+  partesPorPropagar.clear();
+  const tocados = propagarPartes(state.contracts, cambiadas);
+  for (const c of tocados) await saveContract(c);
+  if (tocados.length) {
+    const aprob = tocados.filter((c) => c.history?.[0]?.text?.includes('volvió a borrador')).length;
+    toast(`${tocados.length} contrato${tocados.length === 1 ? '' : 's'} actualizado${tocados.length === 1 ? '' : 's'} con los datos nuevos del catálogo${aprob ? `; ${aprob} volvi${aprob === 1 ? 'ó' : 'eron'} a borrador para aprobarse de nuevo` : ''}`, 'ok');
+  }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) propagarCatalogo(); });
+
 async function saveParty(p) {
+  partesPorPropagar.add(p.id);
   p.updatedAt = Date.now();
   await db.put('parties', structuredClone(p));
   await sync.markDirty('parties', p.id);
@@ -2220,6 +2241,7 @@ async function importCatalog(file) {
     await remapPartyId(oldId, newId);
   }
   for (const p of res.parties) await saveParty(p);
+  await propagarCatalogo();
   if (res.renamed.length) await loadAll();
   toast('Catálogo actualizado', 'ok');
   renderCatalog();
@@ -2634,6 +2656,7 @@ async function altaDesdePdfs() {
     if (f.nueva) f.party.propia = r.data.propia === 'si';
     await saveParty(f.party);
   }
+  await propagarCatalogo();
   const nuevas = elegidas.filter((f) => f.nueva).length;
   toast(`${nuevas} ficha${nuevas === 1 ? '' : 's'} nueva${nuevas === 1 ? '' : 's'} y ${elegidas.length - nuevas} completada${elegidas.length - nuevas === 1 ? '' : 's'}`, 'ok');
   renderCatalog();
