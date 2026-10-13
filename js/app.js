@@ -2409,7 +2409,7 @@ function renderPartyEditor(id) {
         break;
       }
       case 'browse-exp': {
-        const folder = await browseDropbox({ mode: 'folder', start: p.expediente || sync.expedientesRoot(), title: `Expediente de ${p.nombre || 'la parte'}` });
+        const folder = await browseDropbox({ mode: 'folder', start: p.expediente || (p.propia ? sync.expedientesRoot() : sync.clientesRoot()), title: `Expediente de ${p.nombre || 'la parte'}` });
         if (!folder) return;
         p.expediente = folder;
         break;
@@ -2476,7 +2476,7 @@ async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
   }
   if (r.value === 'dbx') {
     const start = p ? (p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot())) : sync.expedientesRoot();
-    let files = await browseDropbox({ start, title: 'Elegir los PDF', shortcuts: [{ label: 'Expedientes', path: sync.expedientesRoot() }] });
+    let files = await browseDropbox({ start, title: 'Elegir los PDF', shortcuts: [{ label: 'Expedientes del grupo', path: sync.expedientesRoot() }, { label: 'Clientes', path: sync.clientesRoot() }] });
     files = files?.filter((f) => /\.pdf$/i.test(f.name));
     if (!files) return [];
     if (!files.length) { toast('Elige al menos un archivo PDF', 'error'); return []; }
@@ -2987,8 +2987,9 @@ async function browseDropbox({ start, mode = 'files', title, shortcuts = [] }) {
 
 const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`);
 
-// Carpetas que ya existen en la raíz de expedientes (se leen al abrir Anexos)
+// Carpetas que ya existen en la raíz de expedientes del grupo y en la de clientes (se leen al abrir Anexos)
 let expedienteFolders = [];
+let clienteFolders = [];
 const folderKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 async function loadExpedienteFolders() {
@@ -2997,22 +2998,29 @@ async function loadExpedienteFolders() {
   } catch (err) {
     console.warn(err);
   }
+  try {
+    clienteFolders = (await dbx.listFolder(sync.clientesRoot())).filter((e) => e['.tag'] === 'folder');
+  } catch {
+    clienteFolders = []; // todavía no existe: se crea con el primer contrato
+  }
 }
 
 /**
  * Carpeta del expediente de una parte: la guardada en el catálogo; si no hay, la carpeta existente
  * cuyo nombre coincide (p. ej. "MERCASA DEL BAJIO" ↔ "Mercasa del Bajío, S.A. de C.V."); si tampoco,
- * una nueva con el nombre de la parte.
+ * una nueva con el nombre de la parte. Las empresas del grupo viven en EXPEDIENTES CORPORATIVOS y los
+ * clientes y contrapartes en EXPEDIENTES CLIENTES.
  */
 function expedienteOf(p) {
   if (p.expediente) return dbx.normalizePath(p.expediente);
+  const raiz = p.propia ? sync.expedientesRoot() : sync.clientesRoot();
   const key = folderKey(p.nombre);
-  const match = key.length >= 5 && expedienteFolders
+  const match = key.length >= 5 && (p.propia ? expedienteFolders : clienteFolders)
     .filter((f) => { const k = folderKey(f.name); return k.length >= 5 && (key.startsWith(k) || k.startsWith(key)); })
     .sort((a, b) => b.name.length - a.name.length)[0];
   if (match) return match.path_display;
   const name = (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim();
-  return dbx.joinPath(sync.expedientesRoot(), name);
+  return dbx.joinPath(raiz, name);
 }
 
 async function openDropboxFile(path) {
@@ -3078,7 +3086,8 @@ function renderAnexos() {
         await loadExpedienteFolders();
         const shortcuts = [
           ...linked.map(({ sg, p }) => ({ label: `${sg.role}: ${p.nombre}`, path: expedienteOf(p) })),
-          { label: 'Expedientes', path: sync.expedientesRoot() },
+          { label: 'Expedientes del grupo', path: sync.expedientesRoot() },
+          { label: 'Clientes', path: sync.clientesRoot() },
         ];
         const files = await browseDropbox({ start: shortcuts[0].path, shortcuts });
         if (!files?.length) return;
@@ -3337,17 +3346,18 @@ function loadDocx() {
 
 const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
-/** Empresa a cuya carpeta va el contrato: la primera del grupo vinculada; si no, la primera parte vinculada. */
+/** Parte a cuya carpeta va el contrato: el cliente o contraparte (primera parte vinculada que no es del grupo);
+ *  si todas son del grupo, la primera vinculada. Así cada cliente concentra todo lo que se le genera. */
 function clientParty(c) {
   const linked = c.signers.map((sg) => sg.party && state.parties.find((p) => p.id === sg.party.id)).filter(Boolean);
-  return linked.find((p) => p.propia) || linked[0] || null;
+  return linked.find((p) => !p.propia) || linked[0] || null;
 }
 
-/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente de la empresa>/CONTRATOS/<título>. */
+/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente del cliente>/CONTRATOS/<título>. */
 function contractFolder(c) {
   if (c.carpeta) return c.carpeta;
   const p = clientParty(c);
-  const base = p ? expedienteOf(p) : dbx.joinPath(sync.expedientesRoot(), 'SIN EMPRESA');
+  const base = p ? expedienteOf(p) : dbx.joinPath(sync.clientesRoot(), 'SIN CLIENTE');
   return dbx.joinPath(base, 'CONTRATOS', safeName(nombreDe(c)));
 }
 
@@ -3616,7 +3626,7 @@ function renderDocumento() {
     <section class="card form-block">
       <h3>Dónde se guarda</h3>
       ${connected ? `
-        <p class="muted small">En Dropbox, dentro del expediente de ${clientParty(c) ? `<strong>${esc(clientParty(c).nombre)}</strong>` : 'la empresa (vincula una parte en Variables)'}. Si la carpeta no existe, se crea sola.</p>
+        <p class="muted small">En Dropbox, dentro del expediente de ${clientParty(c) ? `<strong>${esc(clientParty(c).nombre)}</strong>` : 'el cliente (vincula una parte en Variables)'}. Si la carpeta no existe, se crea sola.</p>
         <p><code id="doc-folder">${esc(contractFolder(c))}</code></p>
         <div class="row">
           <button class="btn sm" data-wf="folder">${icon('folder')} Cambiar carpeta</button>
