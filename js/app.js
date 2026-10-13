@@ -3372,12 +3372,13 @@ function contractFolder(c) {
 }
 
 /** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
-async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
+/** `reemplazar` → sobrescribe el archivo del mismo nombre (p. ej. el APROBADO al volver a aprobar) en lugar de crear "(1)". */
+async function deliverFile(c, blob, filename, kind, { descargar = true, reemplazar = false } = {}) {
   let path = null;
   if (dbx.isConnected()) {
     await loadExpedienteFolders();
     const folder = contractFolder(c);
-    const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, { autorename: true });
+    const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, reemplazar ? { reemplazar } : { autorename: true });
     path = meta.path_display;
     // Si la carpeta de la empresa se creó ahora, queda guardada en su ficha del catálogo
     const p = clientParty(c);
@@ -3385,7 +3386,9 @@ async function deliverFile(c, blob, filename, kind, { descargar = true } = {}) {
   }
   if (descargar) download(blob, filename);
   const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: cuenta(), status: c.status };
-  c.documentos = [rec, ...(c.documentos || [])];
+  // Un archivo reemplazado no se lista dos veces
+  const viejo = (d) => reemplazar && path && d.path?.toLowerCase() === path.toLowerCase();
+  c.documentos = [rec, ...(c.documentos || []).filter((d) => !viejo(d))];
   return rec;
 }
 
@@ -3765,7 +3768,8 @@ async function approveContract(c, { descargar = true } = {}) {
   try {
     // Primero se generan ambos archivos; así un error en el PDF no deja un Word "aprobado" huérfano
     files = await finalFiles(c, await loadDocx());
-    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar });
+    // Al volver a aprobar se reemplaza el APROBADO anterior: queda un solo archivo vigente
+    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar, reemplazar: true });
   } catch (err) {
     Object.assign(c, prev);
     throw err;
@@ -4764,7 +4768,7 @@ async function guardarLoteDropbox(l) {
   await loadExpedienteFolders();
   const carpeta = loteFolder(l);
   for (const f of await archivosLote(l)) {
-    await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { autorename: true });
+    await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { reemplazar: true });
   }
   l.dropbox = { carpeta, at: Date.now(), by: whoAmI() };
   await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);

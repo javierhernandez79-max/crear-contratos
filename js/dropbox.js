@@ -218,9 +218,12 @@ export async function download(path) {
   return { data: await res.arrayBuffer(), meta };
 }
 
-/** `rev` → solo sobrescribe si nadie lo cambió (si no, lanza conflicto). Sin `rev` → archivo nuevo. */
-export function upload(path, data, { rev, autorename = false } = {}) {
-  const mode = rev ? { '.tag': 'update', update: rev } : { '.tag': 'add' };
+/**
+ * `rev` → solo sobrescribe si nadie lo cambió (si no, lanza conflicto). `reemplazar` → sobrescribe siempre
+ * (Dropbox guarda la versión anterior en su historial). Sin ninguno → archivo nuevo.
+ */
+export function upload(path, data, { rev, autorename = false, reemplazar = false } = {}) {
+  const mode = rev ? { '.tag': 'update', update: rev } : reemplazar ? { '.tag': 'overwrite' } : { '.tag': 'add' };
   return call(`${CONTENT}/files/upload`, {
     args: { path: normalizePath(path), mode, autorename, mute: true, strict_conflict: !!rev },
     argsInHeader: true, body: data, headers: { 'Content-Type': 'application/octet-stream' },
