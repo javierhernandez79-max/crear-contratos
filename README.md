@@ -19,6 +19,7 @@ App web instalable para crear, personalizar, firmar y exportar contratos. Funcio
   - Configuración: App key y carpeta en `js/config.js` (o en Ajustes). Pasos para crear la app de Dropbox en Ajustes → Dropbox → "Cómo obtener la App key". La Redirect URI a registrar es la dirección exacta donde se publica la app.
 - **Aprobación y firma (flujo lineal)**: pestaña *Aprobación y firma* del contrato, en tres pasos: **1. Documento** (completar datos) → **2. Aprobación** → **3. Firma**.
   - Con datos faltantes no se puede aprobar (tampoco en lote desde el Sugerido): el paso 1 lleva a *Variables*.
+    Cuenta como faltante cualquier dato vacío que use la plantilla y también los párrafos del catálogo (declaraciones, constitución, poder) que saldrían con *[falta: …]*; el paso 1 dice qué falta.
   - *Aprobar* (cualquier usuario) genera `… - APROBADO.docx` y `.pdf` sin leyendas y registra quién y cuándo. Se revisa en la *Vista previa* y se corrige en la app; cualquier edición regresa el contrato a borrador. Al volver a aprobar se reemplaza el APROBADO anterior (Dropbox guarda la versión previa en su historial).
   - **Fecha de firma retroactiva**: si la fecha de firma del contrato ya pasó (es anterior al día en que se va a firmar), no se puede enviar por DocuSign —su sello de tiempo no coincidiría—: se firma en persona con firma autógrafa y se sube con *Firmado en papel*. La lista lo marca como *Firma en persona*.
   - *Firma*: *Enviar a firma (DocuSign)* o *Firmado en papel* (se sube el PDF escaneado, se guarda como `… - FIRMADO.pdf` y el contrato queda Firmado).

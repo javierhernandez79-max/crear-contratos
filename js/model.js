@@ -147,8 +147,24 @@ function upperLine(text, i) {
   return letters.length >= 4 && letters === letters.toLocaleUpperCase('es-MX');
 }
 
+/** Datos que un texto armado del catálogo (declaraciones, constitución, poder) trae como "[falta: …]". */
+export const faltasDe = (v) => [...String(v ?? '').matchAll(/\[falta: ([^\]]+)\]/g)].map((m) => m[1]);
+
+/**
+ * Variables usadas que impiden aprobar: vacías, o con algún "[falta: …]" dentro (si no, un párrafo de
+ * declaraciones con la escritura incompleta contaba como completo y se podía aprobar así).
+ */
 export function missingVariables(c) {
-  return [...usedVariables(c)].filter((k) => formatValue(c.varDefs.find((d) => d.key === k), c.variables[k]) === null);
+  return [...usedVariables(c)].filter((k) => formatValue(c.varDefs.find((d) => d.key === k), c.variables[k]) === null || faltasDe(c.variables[k]).length);
+}
+
+/** Lo que falta, en palabras: "RFC (Cliente)", "Declaraciones (Cliente): notario, folio mercantil". */
+export function missingDetail(c) {
+  return missingVariables(c).map((k) => {
+    const label = c.varDefs.find((d) => d.key === k)?.label || humanize(k);
+    const faltas = [...new Set(faltasDe(c.variables[k]))];
+    return faltas.length ? `${label}: ${faltas.join(', ')}` : label;
+  });
 }
 
 const djb2 = (txt) => {

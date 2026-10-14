@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { TEMPLATES, CLAUSES, CATEGORIES } from './templates.js';
 import {
   uid, VAR_TYPES, slugify, humanize, newContractFromTemplate, syncVarDefs, usedVariables, fill,
-  missingVariables, contentHash, changedSinceSigned, addVersion, layoutSections, ordinal, restoreVersion, logChange, duplicateContract,
+  missingVariables, missingDetail, faltasDe, contentHash, changedSinceSigned, addVersion, layoutSections, ordinal, restoreVersion, logChange, duplicateContract,
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
@@ -1756,7 +1756,8 @@ function renderVariables(focusKey) {
 function varRow(d, used) {
   const c = state.current;
   const v = c.variables[d.key] ?? '';
-  const isMissing = formatValue(d, v) === null;
+  const faltas = faltasDe(v);
+  const isMissing = formatValue(d, v) === null || faltas.length > 0;
   const input = (() => {
     const common = `data-role="value" aria-label="${esc(d.label)}"`;
     switch (d.type) {
@@ -1773,6 +1774,7 @@ function varRow(d, used) {
     <div class="var-row card ${used && isMissing ? 'is-missing' : ''}" data-key="${esc(d.key)}">
       <input class="var-label" data-role="label" value="${esc(d.label)}" aria-label="Nombre de la variable">
       <div class="var-input">${input}<span class="var-fmt muted small">${esc(fmt)}</span></div>
+      ${used && faltas.length ? `<p class="warn-text small">Faltan en el catálogo: ${esc([...new Set(faltas)].join(', '))}. Complétalos en la ficha y pulsa “Actualizar” en Firmantes.</p>` : ''}
       <div class="var-foot">
         <select data-role="type" aria-label="Tipo">${Object.entries(VAR_TYPES).map(([k, l]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         ${used ? '' : `<button type="button" class="link danger" data-act="del">Eliminar</button>`}
@@ -3645,6 +3647,7 @@ function renderDocumento() {
       ${paso === 0 ? `
         <h3>1. Completa el documento</h3>
         <p class="muted">Faltan <strong>${missing} dato${missing === 1 ? '' : 's'}</strong>. Mientras falten no se puede aprobar.</p>
+        <ul class="muted small faltan-list">${missingDetail(c).map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
         <div class="row wrap">
           <a class="btn primary" href="#/c/${c.id}/variables">${icon('pen')} Completar datos</a>
           <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
@@ -3750,8 +3753,8 @@ function renderDocumento() {
 }
 
 async function approve(c, btn) {
-  const missing = missingVariables(c).length;
-  if (missing) return toast(`Faltan ${missing} dato(s): complétalos antes de aprobar`, 'error');
+  const missing = missingDetail(c);
+  if (missing.length) return toast(`No se puede aprobar, faltan: ${missing.join('; ')}`, 'error');
   if (!(await confirmDialog('Aprobar contrato', `${c.conMolde ? `Se generará el Word final ${c.formato ? `del formato ${c.formato}` : 'de la plantilla'} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
