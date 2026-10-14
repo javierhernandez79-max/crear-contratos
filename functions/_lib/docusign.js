@@ -97,7 +97,9 @@ export async function tokenDS(env, forzar = false, sub = usuario(env)) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (d.error === 'consent_required') throw new DSError('Falta autorizar la conexión en DocuSign (una sola vez).', { status: 409, code: 'consent_required' });
-    throw new DSError(`DocuSign rechazó la conexión: ${d.error_description || d.error || r.status}`, { status: 502, code: d.error || '' });
+    // Con el código HTTP y la descripción completa, una captura de pantalla basta para saber la causa
+    const detalle = [d.error, d.error_description].filter(Boolean).join(': ') || 'sin detalle';
+    throw new DSError(`DocuSign rechazó la conexión (HTTP ${r.status}, ${detalle})`, { status: 502, code: d.error || '' });
   }
   cache.set(clave, { ...(c || {}), token: d.access_token, exp: Date.now() + ((Number(d.expires_in) || 3600) - 120) * 1000 });
   return d.access_token;
