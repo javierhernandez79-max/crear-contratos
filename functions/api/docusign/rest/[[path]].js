@@ -1,7 +1,7 @@
 // La app llama aquí en lugar de a DocuSign: el servidor agrega el token de la cuenta del despacho.
 // Solo se permiten las llamadas que usa la app (crear, consultar y cancelar sobres, y bajar sus documentos).
 import { correoDe, respuesta } from '../../../_lib/acceso.js';
-import { cuentaDS, faltantesDS, tokenDS } from '../../../_lib/docusign.js';
+import { cuentaDS, faltantesDS, guid, tokenDS, usuarioDespacho, usuarioPara, usuariosDS } from '../../../_lib/docusign.js';
 
 const PERMITIDAS = [
   ['POST', /^\/envelopes$/],
@@ -18,12 +18,17 @@ export async function onRequest({ request, env, params }) {
   const ruta = `/${[].concat(params.path || []).join('/')}`;
   if (!PERMITIDAS.some(([m, re]) => m === request.method && re.test(ruta))) return respuesta({ message: 'Llamada no permitida' }, 403);
   const body = request.method === 'GET' ? undefined : await request.text();
+  // Un sobre nuevo sale con el remitente de quien lo envía. Consultar o cancelar uno existente se hace como su
+  // remitente (lo manda la app; solo uno de los configurados); sin dato, el del despacho (sobres anteriores).
+  const pedido = guid(request.headers.get('X-DS-Remitente') || '');
+  const sub = request.method === 'POST' ? usuarioPara(env, correo)
+    : usuariosDS(env).has(pedido) ? pedido : usuarioDespacho(env);
   try {
-    const c = await cuentaDS(env);
+    const c = await cuentaDS(env, sub);
     const pedir = async (forzar) => fetch(`${c.baseUri}/restapi/v2.1/accounts/${c.id}${ruta}`, {
       method: request.method,
       headers: {
-        Authorization: `Bearer ${await tokenDS(env, forzar)}`,
+        Authorization: `Bearer ${await tokenDS(env, forzar, sub)}`,
         Accept: request.headers.get('Accept') || 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },

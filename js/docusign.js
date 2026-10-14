@@ -158,12 +158,13 @@ export async function disconnect() {
   await save();
 }
 
-async function callGlobal(url, { method = 'GET', body, raw = false } = {}) {
+async function callGlobal(url, { method = 'GET', body, raw = false, remitente } = {}) {
   let res;
   try {
     res = await fetch(`api/docusign/rest${url}`, {
       method, credentials: 'same-origin',
-      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), Accept: raw ? 'application/pdf' : 'application/json' },
+      // Un sobre existente se consulta como el remitente que lo envió (con remitentes por usuario)
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(remitente ? { 'X-DS-Remitente': remitente } : {}), Accept: raw ? 'application/pdf' : 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -249,9 +250,9 @@ export async function sendEnvelope({ subject, message, pdf, fileName, recipients
   });
 }
 
-/** Estado del sobre y de cada firmante. */
-export async function envelopeStatus(id) {
-  const [env, rec] = await Promise.all([call(`/envelopes/${id}`), call(`/envelopes/${id}/recipients`)]);
+/** Estado del sobre y de cada firmante. `remitente` = User ID de DocuSign que lo envió (conexión del despacho). */
+export async function envelopeStatus(id, remitente) {
+  const [env, rec] = await Promise.all([call(`/envelopes/${id}`, { remitente }), call(`/envelopes/${id}/recipients`, { remitente })]);
   return {
     status: env.status,
     completedAt: env.completedDateTime ? Date.parse(env.completedDateTime) : null,
@@ -261,16 +262,16 @@ export async function envelopeStatus(id) {
 }
 
 /** PDF firmado y certificado de finalización de DocuSign. */
-export async function signedFiles(id) {
+export async function signedFiles(id, remitente) {
   const [signed, certificate] = await Promise.all([
-    call(`/envelopes/${id}/documents/combined`, { raw: true }),
-    call(`/envelopes/${id}/documents/certificate`, { raw: true }),
+    call(`/envelopes/${id}/documents/combined`, { raw: true, remitente }),
+    call(`/envelopes/${id}/documents/certificate`, { raw: true, remitente }),
   ]);
   return { signed, certificate };
 }
 
-export async function voidEnvelope(id, reason) {
-  return call(`/envelopes/${id}`, { method: 'PUT', body: { status: 'voided', voidedReason: reason.slice(0, 200) } });
+export async function voidEnvelope(id, reason, remitente) {
+  return call(`/envelopes/${id}`, { method: 'PUT', body: { status: 'voided', voidedReason: reason.slice(0, 200) }, remitente });
 }
 
 export const STATUS = {
