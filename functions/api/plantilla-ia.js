@@ -43,16 +43,16 @@ const ESQUEMA = {
   },
 };
 
-const INSTRUCCIONES = `Preparas plantillas de contratos mexicanos para un despacho legal. Recibes el texto de un contrato en Word, párrafo por párrafo, cada uno con su número entre corchetes. El contrato puede venir lleno con los datos de un caso real o con espacios en blanco (____, [   ], XXXX, "…") donde van los datos.
+const INSTRUCCIONES = `Preparas plantillas de contratos mexicanos para un despacho legal. Recibes el texto de un contrato en Word, párrafo por párrafo, cada uno con su número entre corchetes. El contrato puede venir lleno con los datos de un caso real o con espacios en blanco donde van los datos. Los espacios en blanco (XXXXXXXXX, ______, ……) vienen numerados como ⟦B0⟧, ⟦B1⟧, ⟦B2⟧…: cada número es un lugar distinto del documento, aunque en el Word todos se vean iguales.
 Tu tarea: señalar los textos que cambian de un contrato a otro, para que la app los sustituya por campos. No reescribes nada.
 
 titulo: el título del contrato tal como aparece (p. ej. "CONTRATO DE ARRENDAMIENTO"), o "" si no hay.
 
 partes: cada parte que firma. prefijo = rol en minúsculas, sin artículo, sin acentos y con guion bajo (prestador, cliente, arrendador, arrendatario, comodante, patron, trabajador, vendedor, comprador…). rol = como lo nombra el contrato con artículo (El “Arrendador”). kind = "pm" si es una sociedad o persona moral, "pf" si es persona física.
 
-campos: cada dato variable, UNA vez por valor distinto aunque se repita.
+campos: cada dato variable. Si es un texto escrito (un nombre, una fecha), UNA vez por texto distinto aunque se repita. Si es un espacio en blanco, un campo por cada ⟦B…⟧; varios ⟦B…⟧ que son el mismo dato (p. ej. el nombre del patrón en el proemio y en la firma) llevan la misma clave.
 - texto: cópialo EXACTAMENTE como aparece (mismas mayúsculas, acentos, signos y espacios), completo pero sin texto fijo alrededor. Nombres completos de sociedades con su tipo ("ACME SERVICIOS, S.A. DE C.V."); fechas completas ("1 de octubre de 2026"); un monto con su cifra y su letra juntos si aparecen juntos ("$15,000.00 (QUINCE MIL PESOS 00/100 M.N.)"); domicilios completos.
-- Si el dato es un espacio en blanco, texto = ese espacio tal cual (p. ej. "__________" o "[NOMBRE]").
+- Si el dato es un espacio en blanco, texto = su número exacto (p. ej. "⟦B3⟧"). Si un solo dato ocupa varios espacios con texto entre ellos, texto = todo el tramo tal cual (p. ej. "$ ⟦B17⟧ (⟦B18⟧ PESOS ⟦B19⟧/100 M.N.)" es un solo monto). Los espacios que no son datos (renglones para firmar, rellenos) no se incluyen.
 - parrafos: números de TODOS los párrafos donde aparece ese texto como dato.
 - clave: datos de una parte = "<prefijo>_<dato>" con uno de estos datos: nombre (razón social o nombre de la persona), representante (nombre de quien la representa), cargo_representante, identificacion_representante, rfc, curp, domicilio, correo, nacionalidad, estado_civil, ocupacion, escritura_numero, escritura_fecha, notario, notaria_numero, notaria_ciudad (de la escritura constitutiva), folio, folio_fecha, folio_lugar (inscripción en el Registro Público de Comercio), objeto_social, poder_numero, poder_fecha, poder_notario, poder_notaria_numero, poder_notaria_ciudad (de la escritura del poder del representante). Lugar y fecha de firma: ciudad_firma y fecha_firma. Cualquier otro dato: clave corta en español, minúsculas, sin acentos y con guion bajo (monto_renta, fecha_inicio, plazo_meses, descripcion_inmueble, uso_inmueble, deposito).
 - etiqueta: nombre corto del dato para un formulario ("Monto de la renta mensual").
@@ -93,7 +93,7 @@ export async function onRequestPost({ request, env }) {
       texto: String(c.texto ?? ''), clave: clave(c.clave), etiqueta: limpio(c.etiqueta), tipo: TIPOS.includes(c.tipo) ? c.tipo : 'text',
       parrafos: [...new Set((c.parrafos || []).filter((i) => Number.isInteger(i) && i >= 0 && i < n))],
     }))
-    .filter((c) => c.texto.trim().length >= 2 && c.clave && c.parrafos.length);
+    .filter((c) => (c.texto.trim().length >= 2 || /⟦B\d+⟧/.test(c.texto)) && c.clave && c.parrafos.length);
   const firmas = (out.firmas || []).map((f) => ({ prefijo: clave(f.prefijo), parrafo: f.parrafo })).filter((f) => f.prefijo && Number.isInteger(f.parrafo) && f.parrafo >= 0 && f.parrafo < n);
   console.log('plantilla-ia', correo, campos.length, uso?.input_tokens, uso?.output_tokens);
   return respuesta({ titulo: limpio(out.titulo), partes, campos, firmas, uso });

@@ -155,12 +155,26 @@ export async function leerWord(bytes) {
   return { parrafos: parrafosW, marcas };
 }
 
+// Espacios en blanco donde va un dato (XXXXXXXXX, ______, ……). Muchos formatos usan el mismo para todos los
+// datos, así que antes de mandar el texto a la IA cada uno se numera (⟦B0⟧, ⟦B1⟧…) y la IA dice cuál es cuál.
+const BLANCO = /X{3,}|_{3,}|\.{4,}|…{2,}/g;
+const FICHA = /⟦B(\d+)⟧/g;
+
+/** Párrafos con cada espacio en blanco numerado, en el mismo orden en que marcarWord los numera. */
+export function numerarBlancos(parrafosW) {
+  let n = 0;
+  return parrafosW.map((p) => p.replace(BLANCO, () => `⟦B${n++}⟧`));
+}
+
+/** Texto para mostrar: los espacios numerados vuelven a verse como blanco. */
+export const sinFichas = (t) => t.replace(FICHA, '____');
+
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Expresión para encontrar el texto de un campo: espacios flexibles; un blanco ("_____", "……") encaja con cualquier largo. */
 export function buscador(texto) {
   const t = texto.trim();
-  if (/^[_\s]+$/.test(t)) return /_{3,}/g;
-  if (/^[.…\s]+$/.test(t)) return /(?:\.{3,}|…+)/g;
+  // Un blanco sin número (la IA no usó ⟦B…⟧): cualquier blanco numerado de esos párrafos
+  if (/^(?:X{3,}|[_.…\s]+)$/.test(t)) return /⟦B\d+⟧/g;
   return new RegExp(escRe(t).replace(/\s+/g, '\\s+'), 'g');
 }
 
@@ -175,36 +189,48 @@ export function contarCampos(parrafosW, campos) {
   return campos.map((c) => c.parrafos.reduce((n, i) => n + coincidencias(parrafosW[i] || '', buscador(c.texto)).length, 0));
 }
 
-/** Sustituye en un párrafo del XML cada coincidencia de `re` por `reemplazo`, aunque el texto esté repartido en fragmentos. */
+/** Sustituye en un párrafo del XML cada coincidencia de `re` por `reemplazo` (texto o función de la coincidencia), aunque el texto esté repartido en fragmentos. */
+// Fragmentos de texto y, entre ellos, tabuladores y saltos (cuentan como un carácter fijo, igual que en parrafos())
+const PIEZA = /(<w:t(?:\s[^>]*)?>)([^<]*)(<\/w:t>)|<w:tab\/>|<w:br\/>/g;
+
 export function reemplazarEnParrafo(p, re, reemplazo) {
-  const nodos = [...p.matchAll(TEXTO)].map((m) => unesc(m[2]));
-  const texto = nodos.join('');
+  const piezas = [...p.matchAll(PIEZA)].map((m) => (m[1] ? { t: unesc(m[2]) } : { t: m[0] === '<w:tab/>' ? '\t' : '\n', fija: true }));
+  const texto = piezas.map((x) => x.t).join('');
   const ms = coincidencias(texto, re);
   if (!ms.length) return [p, 0];
   const dueño = [];
-  nodos.forEach((t, i) => { for (let k = 0; k < t.length; k++) dueño.push(i); });
-  const nuevos = nodos.map(() => '');
+  piezas.forEach((x, i) => { for (let k = 0; k < x.t.length; k++) dueño.push(i); });
+  const nuevos = piezas.map(() => '');
+  // El reemplazo va en el primer fragmento de texto de la coincidencia (un tabulador no puede llevar texto)
+  const destino = (k, fin) => { for (let j = k; j < fin; j++) if (!piezas[dueño[j]].fija) return dueño[j]; return piezas.findIndex((x) => !x.fija); };
   let k = 0;
   for (const m of ms) {
     for (; k < m.index; k++) nuevos[dueño[k]] += texto[k];
-    nuevos[dueño[m.index]] += reemplazo;
+    nuevos[destino(m.index, m.index + m[0].length)] += typeof reemplazo === 'function' ? reemplazo(m) : reemplazo;
     k = m.index + m[0].length;
   }
   for (; k < texto.length; k++) nuevos[dueño[k]] += texto[k];
   let i = 0;
-  const out = p.replace(TEXTO, (_m, abre, _t, cierra) => `${/xml:space=/.test(abre) ? abre : abre.replace('<w:t', '<w:t xml:space="preserve"')}${esc(nuevos[i++])}${cierra}`);
+  const out = p.replace(PIEZA, (m0, abre, _t, cierra) => {
+    const j = i++;
+    if (piezas[j].fija) return m0; // el tabulador o salto se queda
+    return `${/xml:space=/.test(abre) ? abre : abre.replace('<w:t', '<w:t xml:space="preserve"')}${esc(nuevos[j])}${cierra}`;
+  });
   return [out, ms.length];
 }
 
 /**
  * Pone las marcas en el Word: cada campo {texto, clave, parrafos} se sustituye por {{clave}} en sus párrafos
  * (los más largos primero, para no partir un nombre que contiene a otro) y cada firma {prefijo, parrafo}
- * agrega {{_ds_prefijo}} al final de ese párrafo. Devuelve los bytes del Word nuevo.
+ * agrega {{_ds_prefijo}} al final de ese párrafo. El texto de los campos usa los espacios numerados de
+ * numerarBlancos (⟦B3⟧); los que no se volvieron campo regresan a su texto original. Devuelve los bytes del Word nuevo.
  */
 export async function marcarWord(bytes, { campos = [], firmas = [] }) {
   const files = await readZip(bytes);
   const orden = files.filter((f) => PARTES.test(f.name)).sort((a, b) => (a.name === 'word/document.xml' ? -1 : b.name === 'word/document.xml' ? 1 : a.name.localeCompare(b.name)));
   let base = 0;
+  let nBlanco = 0;
+  const blancos = [];
   for (const f of orden) {
     const partesXml = [];
     let ult = 0;
@@ -213,6 +239,9 @@ export async function marcarWord(bytes, { campos = [], firmas = [] }) {
     partesXml.push(xml.slice(ult));
     const nP = (partesXml.length - 1) / 2;
     const enEste = (i) => i >= base && i < base + nP;
+    for (let j = 1; j < partesXml.length; j += 2) {
+      [partesXml[j]] = reemplazarEnParrafo(partesXml[j], BLANCO, (m) => { blancos[nBlanco] = m[0]; return `⟦B${nBlanco++}⟧`; });
+    }
     for (const c of [...campos].sort((a, b) => b.texto.trim().length - a.texto.trim().length)) {
       for (const i of c.parrafos.filter(enEste)) {
         const j = 2 * (i - base) + 1;
@@ -222,6 +251,9 @@ export async function marcarWord(bytes, { campos = [], firmas = [] }) {
     for (const fi of firmas.filter((x) => enEste(x.parrafo))) {
       const j = 2 * (fi.parrafo - base) + 1;
       if (!partesXml[j].includes(`_ds_${fi.prefijo}`)) partesXml[j] = partesXml[j].replace(/<\/w:p>$/, `<w:r><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="4"/></w:rPr><w:t>{{_ds_${fi.prefijo}}}</w:t></w:r></w:p>`);
+    }
+    for (let j = 1; j < partesXml.length; j += 2) {
+      if (partesXml[j].includes('⟦B')) [partesXml[j]] = reemplazarEnParrafo(partesXml[j], FICHA, (m) => blancos[m[1]]);
     }
     f.data = te.encode(partesXml.join(''));
     base += nP;
