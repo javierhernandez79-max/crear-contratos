@@ -18,8 +18,13 @@ export async function onRequestGet({ request, env }) {
   } catch (err) {
     return respuesta({
       configurada: true, conectada: false, env: dsEnv(env), admin, propio, error: err.message, codigo: err.code,
-      // El enlace lo debe abrir el usuario de DocuSign que envía: el administrador (remitente del despacho) o quien tiene remitente propio
-      consentimiento: (admin || propio) && err.code === 'consent_required' ? consentUrl(env, new URL(request.url).origin) : undefined,
+      // Para diagnosticar desde una captura: con qué correo se entró y qué usuario de DocuSign se intentó
+      correo, intentado: sub,
+      // El enlace lo debe abrir el usuario de DocuSign que envía: el administrador (remitente del despacho) o quien tiene
+      // remitente propio. Al remitente propio se le ofrece con cualquier rechazo: un usuario nuevo que aún no autoriza
+      // a veces recibe invalid_request en lugar de consent_required
+      consentimiento: (err.code === 'consent_required' && (admin || propio)) || (propio && err.code !== 'llave_invalida')
+        ? consentUrl(env, new URL(request.url).origin) : undefined,
     });
   }
 }

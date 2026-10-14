@@ -3234,8 +3234,9 @@ function docusignGlobalHTML() {
         <p class="muted small">Cuenta: ${esc(g.cuenta?.name || '')} · ${esc(ds.ENVS[g.env] || g.env)}. Nadie tiene que conectarse: todos los abogados envían y ven el estado de todos los contratos. La app registra quién envió cada uno.</p>`
       : `
         <div class="banner warn">${icon('alert')} <span>La conexión del despacho no está lista: ${esc(g.error || 'sin respuesta de DocuSign')}</span></div>
+        ${g.correo ? `<p class="muted small">Entraste como <strong>${esc(g.correo)}</strong> · usuario de DocuSign intentado: <span class="mono">${esc(g.intentado || '')}</span> (${g.propio ? 'tu remitente propio, de DOCUSIGN_REMITENTES' : 'remitente del despacho, DOCUSIGN_USER_ID'}) · ${esc(ds.ENVS[g.env] || g.env || '')}</p>` : ''}
         ${g.consentimiento ? `
-          <p class="small">Falta autorizarla una sola vez. Abre este enlace <strong>${g.propio ? 'con tu propio usuario de DocuSign (eres remitente)' : 'con el usuario de DocuSign que envía los contratos'}</strong> y acepta:</p>
+          <p class="small">${g.codigo === 'consent_required' ? 'Falta autorizarla una sola vez.' : 'Si tu usuario de DocuSign es nuevo, puede faltar autorizarla (una sola vez).'} Abre este enlace <strong>${g.propio ? 'con tu propio usuario de DocuSign (eres remitente)' : 'con el usuario de DocuSign que envía los contratos'}</strong> y acepta:</p>
           <div class="row wrap">
             <a class="btn primary" href="${esc(g.consentimiento)}" target="_blank" rel="noopener">${icon('link')} Autorizar en DocuSign</a>
             <button class="btn" data-ds="recheck">Ya autoricé, revisar</button>
