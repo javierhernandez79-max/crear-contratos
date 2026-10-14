@@ -3487,7 +3487,7 @@ async function enviarDocuSign(c) {
   const anchors = {};
   const recipients = pendientes.map((sg, i) => {
     anchors[sg.id] = ds.anchorOf(i + 1);
-    return { signerId: sg.id, name: String(r.data[`n_${sg.id}`]).trim(), email: String(r.data[`e_${sg.id}`]).trim(), anchor: anchors[sg.id], ...(c.conMolde ? { yOffset: '-36' } : {}) };
+    return { signerId: sg.id, name: String(r.data[`n_${sg.id}`]).trim(), email: String(r.data[`e_${sg.id}`]).trim(), anchor: anchors[sg.id], ...(c.conMolde ? { yOffset: '-6' } : {}) };
   });
   toast('Enviando a DocuSign…');
   const base = safeName(nombreDe(c));
