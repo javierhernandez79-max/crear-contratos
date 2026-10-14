@@ -223,7 +223,8 @@ export const anchorOf = (n) => `~dsf${n}~`;
 /**
  * Crea y envía un sobre con un PDF o un Word (`pdf`, tipo según `fileName`). `recipients` = [{ name, email, anchor, yOffset }]: todos firman a la vez.
  * `yOffset` (puntos, negativo = arriba): en el PDF de la app la marca ya está sobre la línea (-20); en un Word
- * la marca está al inicio de la línea de firma y el sello (~35 pt de alto) debe quedar encima (-36).
+ * la marca está al inicio de la línea de firma; con -6 el sello queda justo encima de la línea (medido en sobres
+ * reales: con -36 quedaba 36 pt más arriba).
  * Devuelve { envelopeId, status }.
  */
 export async function sendEnvelope({ subject, message, pdf, fileName, recipients }) {
