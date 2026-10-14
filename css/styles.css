@@ -616,3 +616,5 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
   .alta-list .ll-row > span:nth-child(n+3) { grid-column: 2; }
   .alta-list .ll-head { display: none; }
 }
+.marcas { columns: 2; margin: 6px 0 10px; padding-left: 18px; }
+@media (max-width: 640px) { .marcas { columns: 1; } }
