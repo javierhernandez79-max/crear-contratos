@@ -895,7 +895,7 @@ function contractRow(c) {
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
-          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}</span>
+          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
@@ -3441,6 +3441,8 @@ function envioHTML(c) {
 }
 
 async function enviarDocuSign(c) {
+  const retro = firmaRetroactiva(c);
+  if (retro) return toast(`La fecha de firma (${fmtLongDate(retro)}) ya pasó: este contrato se firma en persona y se sube con “Firmado en papel”`, 'error');
   if (!ds.isConnected() && ds.isGlobal()) {
     if (await confirmDialog('DocuSign no está listo', 'La conexión de DocuSign del despacho no está lista. Revisa Ajustes → DocuSign.', 'Ir a Ajustes', 'primary')) go('#/ajustes');
     return;
@@ -3602,6 +3604,15 @@ async function revisarEnvios() {
 
 const PASOS = ['Documento', 'Aprobación', 'Firma'];
 
+/**
+ * Fecha de firma ya pasada (retroactiva): DocuSign sellaría la fecha real y no coincidiría con la del contrato,
+ * así que se firma en persona (autógrafa) y se sube con "Firmado en papel". Devuelve la fecha ISO o null.
+ */
+const firmaRetroactiva = (c) => {
+  const f = String(c.variables?.fecha_firma || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(f) && f < todayISO() ? f : null;
+};
+
 /** Paso del flujo: 0 completar datos, 1 aprobar, 2 enviar a firma, 3 firmado. */
 function pasoDe(c) {
   if (c.status === 'final') return 3;
@@ -3617,6 +3628,7 @@ function renderDocumento() {
   const missing = missingVariables(c).length;
   const paso = pasoDe(c);
   const conflicto = conflictoFormato(c, state.contracts);
+  const retro = firmaRetroactiva(c);
   const descargarFinal = c.conMolde
     ? `<button class="btn" data-wf="word">${icon('doc')} Descargar Word final</button>`
     : `<button class="btn" data-wf="pdf">${icon('pdf')} Descargar PDF final</button>`;
@@ -3625,6 +3637,7 @@ function renderDocumento() {
       ${PASOS.map((l, i) => `<li class="${i < paso ? 'done' : i === paso ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
     </ol>
     ${conflicto ? `<div class="banner danger">${icon('alert')} <span>${esc(conflicto)} No se puede aprobar así.</span></div>` : ''}
+    ${retro && paso < 3 && !envioActivo(c) ? `<div class="banner warn">${icon('pen')} <span>La fecha de firma (${esc(fmtLongDate(retro))}) es anterior a hoy: este contrato se firma <strong>en persona, con firma autógrafa</strong>, no por DocuSign. Imprímelo, recaba las firmas y súbelo con “Firmado en papel”.</span></div>` : ''}
     ${avisoMolde(c)}
     <section class="card form-block">
       ${paso === 0 ? `
@@ -3643,9 +3656,10 @@ function renderDocumento() {
         </div>`
       : paso === 2 ? `
         <h3>3. Envía a firma</h3>
-        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa al paso 2.</p>
+        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : retro ? 'Imprímelo, recaba las firmas autógrafas y sube el PDF escaneado.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa al paso 2.</p>
         <div class="row wrap">
-          ${envioActivo(c) ? '' : `
+          ${envioActivo(c) ? '' : retro ? `
+          <button class="btn primary" data-wf="papel">${icon('upload')} Firmado en papel</button>` : `
           <button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>
           <button class="btn" data-wf="papel">${icon('upload')} Firmado en papel</button>`}
           ${descargarFinal}
