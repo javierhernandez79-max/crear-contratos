@@ -963,12 +963,13 @@ async function contractAction(act, c) {
     return;
   }
   if (act === 'del') {
-    if (!(await confirmDialog('Eliminar contrato', `Se eliminará "${nombreDe(c)}" con todas sus versiones y firmas. Esta acción no se puede deshacer.`, 'Eliminar'))) return;
+    if (!(await confirmDialog('Eliminar contrato', `Se eliminará "${nombreDe(c)}" con todas sus versiones y firmas. Se puede recuperar durante ${PAPELERA_DIAS} días en Ajustes → Papelera.`, 'Eliminar'))) return;
+    await aPapelera('contracts', c, nombreDe(c));
     await db.remove('contracts', c.id);
     await sync.markDeleted('contracts', c.id);
     scheduleSync();
     state.contracts = state.contracts.filter((x) => x.id !== c.id);
-    toast('Contrato eliminado');
+    toast('Contrato enviado a la papelera');
     if (state.current?.id === c.id) { state.current = null; go('#/'); } else renderHome();
   }
 }
@@ -1048,9 +1049,9 @@ function renderTemplates() {
         <span class="ll-acts">
           <button class="icon-btn sm" data-act="view" title="Visualizar" aria-label="Visualizar">${icon('eye')}</button>
           <button class="icon-btn sm" data-act="edit" title="Editar plantilla" aria-label="Editar">${icon('pen')}</button>
-          ${t.custom && !t.replaces
+          ${t.custom && !t.replaces && !esMarco(t)
             ? `<button class="icon-btn sm danger" data-act="del" title="Eliminar plantilla" aria-label="Eliminar">${icon('trash')}</button>`
-            : `<button class="icon-btn sm" disabled title="${t.replaces ? 'Es una modificación de una plantilla incluida: restáurala desde el editor' : 'Las plantillas incluidas no se eliminan'}" aria-label="No se puede eliminar">${icon('trash')}</button>`}
+            : `<button class="icon-btn sm" disabled title="${t.replaces ? 'Es una modificación de una plantilla incluida: restáurala desde el editor' : esMarco(t) ? 'Plantilla marco del despacho: no se elimina' : 'Las plantillas incluidas no se eliminan'}" aria-label="No se puede eliminar">${icon('trash')}</button>`}
         </span>
       </div>`).join('')}
     </div>` : '<p class="empty-inline">Sin resultados.</p>'}
@@ -1202,8 +1203,70 @@ async function revisarCamposIA(prop, parrafosW) {
   return { ...prop, campos };
 }
 
+// ---------- Papelera: lo borrado se guarda 30 días (sincronizado) y se puede restaurar ----------
+const PAPELERA_DIAS = 30;
+const TIPO_PAPELERA = { contracts: 'Contrato', templates: 'Plantilla', lotes: 'Lote', parties: 'Parte del catálogo' };
+/** Plantillas marco del despacho y formatos de servicios (F1, F2…): no se eliminan. */
+const esMarco = (t) => /^u-marco-/.test(t.id) || !!codigoFormato(t);
+
+async function aPapelera(store, item, nombre) {
+  const e = { id: uid(), store, itemId: item.id, item: structuredClone(item), nombre, at: Date.now(), by: whoAmI(), updatedAt: Date.now() };
+  await db.put('papelera', e);
+  await sync.markDirty('papelera', e.id);
+}
+
+async function quitarDePapelera(e) {
+  await db.remove('papelera', e.id);
+  await sync.markDeleted('papelera', e.id);
+}
+
+/** Borra para siempre lo que lleva más de 30 días en la papelera. */
+async function purgarPapelera() {
+  const limite = Date.now() - PAPELERA_DIAS * 864e5;
+  const viejos = (await db.getAll('papelera')).filter((e) => e.at < limite);
+  for (const e of viejos) await quitarDePapelera(e);
+  if (viejos.length) scheduleSync();
+}
+
+async function restaurarDePapelera(e) {
+  const existe = await db.get(e.store, e.itemId);
+  if (existe && !(await confirmDialog('Ya existe', `Ya hay ${TIPO_PAPELERA[e.store].toLowerCase()} con ese identificador (quizá se restauró antes). ¿Reemplazarlo con la versión de la papelera?`, 'Reemplazar', 'primary'))) return false;
+  await db.put(e.store, e.item);
+  await sync.markDirty(e.store, e.itemId);
+  await quitarDePapelera(e);
+  scheduleSync();
+  await loadAll();
+  toast(`${TIPO_PAPELERA[e.store]} restaurado: ${e.nombre}`, 'ok');
+  return true;
+}
+
+async function papeleraHTML() {
+  const lista = (await db.getAll('papelera')).sort((a, b) => b.at - a.at);
+  const dias = (e) => Math.max(0, Math.ceil((e.at + PAPELERA_DIAS * 864e5 - Date.now()) / 864e5));
+  return `
+    <section class="card settings-block" id="papelera">
+      <h3>Papelera</h3>
+      <p class="muted small">Lo que se elimina (contratos, plantillas, lotes y partes del catálogo) se guarda ${PAPELERA_DIAS} días y se comparte con el equipo por Dropbox. Después se borra para siempre.</p>
+      ${lista.length ? `<div class="doc-list">${lista.map((e) => `
+        <div class="doc-item" data-id="${esc(e.id)}">
+          <span class="badge revision">${esc(TIPO_PAPELERA[e.store] || e.store)}</span>
+          <div class="anexo-main"><strong>${esc(e.nombre)}</strong><span class="muted small">Eliminado por ${esc(e.by || '—')} el ${fmtDateTime(e.at)} · se borra en ${dias(e)} día${dias(e) === 1 ? '' : 's'}</span></div>
+          <button class="btn sm" data-papelera="restaurar">Restaurar</button>
+        </div>`).join('')}</div>` : '<p class="muted small">Vacía.</p>'}
+    </section>`;
+}
+
+function bindPapelera() {
+  $$('#papelera [data-papelera="restaurar"]').forEach((b) => b.addEventListener('click', conAviso(async () => {
+    const e = await db.get('papelera', b.closest('.doc-item').dataset.id);
+    if (e && (await restaurarDePapelera(e))) renderSettings();
+  })));
+}
+
 async function deleteTemplate(t) {
-  if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`, 'Eliminar'))) return;
+  if (esMarco(t)) return toast('Las plantillas marco del despacho y los formatos no se eliminan; edítalas si hace falta', 'error');
+  if (!(await confirmDialog('Eliminar plantilla', `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican. Se puede recuperar durante ${PAPELERA_DIAS} días en Ajustes → Papelera.`, 'Eliminar'))) return;
+  await aPapelera('templates', t, t.name);
   await db.remove('templates', t.id);
   await sync.markDeleted('templates', t.id);
   scheduleSync();
@@ -2088,9 +2151,10 @@ async function viewParty(p) {
 
 async function deleteParty(p) {
   const used = state.contracts.filter((c) => c.signers.some((s) => s.party?.id === p.id)).length;
-  if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa".`, 'Eliminar'))) return false;
+  if (!(await confirmDialog('Eliminar del catálogo', `¿Eliminar "${p.nombre || 'esta parte'}"? ${used ? `Está vinculada a ${used} contrato(s); sus datos ya escritos se conservan. ` : ''}Si solo dejó de usarse, mejor desmarca "Activa". Se puede recuperar durante ${PAPELERA_DIAS} días en Ajustes → Papelera.`, 'Eliminar'))) return false;
+  await aPapelera('parties', p, p.nombre || 'Sin nombre');
   await removeParty(p);
-  toast('Eliminada del catálogo');
+  toast('Enviada a la papelera');
   return true;
 }
 
@@ -2839,7 +2903,7 @@ async function runSync({ manual = false } = {}) {
 }
 
 async function applySyncReport({ changed, conflicts }) {
-  const any = changed.contracts.size || changed.templates.size || changed.parties.size || changed.lotes?.size;
+  const any = changed.contracts.size || changed.templates.size || changed.parties.size || changed.lotes?.size || changed.papelera?.size;
   if (!any) return;
   const openId = state.current?.id;
   await loadAll();
@@ -3855,7 +3919,7 @@ function renderTemplateEditor(id) {
       <div class="row">
         ${original
           ? '<button type="button" class="btn ghost danger" data-act="restore">Restaurar la plantilla original</button>'
-          : '<button type="button" class="btn ghost danger" data-act="delete">Eliminar plantilla</button>'}
+          : esMarco(t) ? '' : '<button type="button" class="btn ghost danger" data-act="delete">Eliminar plantilla</button>'}
         <button type="button" class="btn" data-act="use">${icon('plus')} Crear contrato con esta plantilla</button>
       </div>
     </form>`;
@@ -3935,11 +3999,13 @@ function renderTemplateEditor(id) {
         if (!(await confirmDialog(restoring ? 'Restaurar original' : 'Eliminar plantilla',
           restoring ? 'Se descartan los cambios hechos a esta plantilla y vuelve la versión original de la app. Los contratos ya creados no cambian.' : `¿Eliminar "${t.name}"? Los contratos creados con ella no se modifican.`,
           restoring ? 'Restaurar' : 'Eliminar'))) return;
+        if (!restoring && esMarco(t)) return toast('Las plantillas marco del despacho y los formatos no se eliminan', 'error');
+        await aPapelera('templates', t, t.name);
         await db.remove('templates', t.id);
         await sync.markDeleted('templates', t.id);
         scheduleSync();
         state.userTemplates = state.userTemplates.filter((x) => x.id !== t.id);
-        toast(restoring ? 'Plantilla original restaurada' : 'Plantilla eliminada', 'ok');
+        toast(restoring ? 'Plantilla original restaurada' : 'Plantilla enviada a la papelera', 'ok');
         return go('#/plantillas');
       }
       default: return;
@@ -3959,7 +4025,7 @@ async function renderSettings() {
   } catch { /* opcional */ }
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
 
-  app.innerHTML = `
+  const html = `
     <header class="page-head"><div><p class="eyebrow">Crear Contratos</p><h1>Ajustes</h1></div></header>
     <section class="card settings-block">
       <h3>Instalar la app</h3>
@@ -3988,14 +4054,19 @@ async function renderSettings() {
         <button class="btn ghost danger" id="wipe">Borrar todos los datos</button>
       </div>
     </section>
+    ${await papeleraHTML()}
     <section class="card settings-block">
       <h3>Aviso legal</h3>
       <p class="muted">Crear Contratos ofrece plantillas y herramientas de redacción con fines informativos. No es un despacho jurídico ni proporciona asesoría legal. Antes de firmar documentos importantes, consulta con un abogado.</p>
     </section>`;
+  // La página se arma con varias esperas: si mientras tanto el usuario se fue a otra, no se pisa
+  if (!location.hash.startsWith('#/ajustes')) return;
+  app.innerHTML = html;
 
   bindDropboxSettings();
   bindDocusignSettings();
   bindIaSettings();
+  bindPapelera();
   $('#pref-dias').addEventListener('change', async (e) => {
     const n = Math.round(Number(e.target.value));
     if (!(n >= 1 && n <= 365)) { e.target.value = state.prefs.anticipacion; return toast('Escribe un número de días entre 1 y 365', 'error'); }
@@ -4043,6 +4114,7 @@ async function renderSettings() {
     await db.clear('templates');
     await db.clear('parties');
     await db.clear('lotes');
+    await db.clear('papelera');
     Object.assign(state, { current: null, loteDraft: null, servDraft: null, returnTo: null });
     await loadAll();
     toast('Datos eliminados');
@@ -4565,12 +4637,13 @@ function renderLote(id) {
 
 async function deleteLote(l) {
   const aviso = l.status === 'aprobado' ? ' El lote ya está aprobado; si necesitas los contratos, descarga antes el .zip.' : '';
-  if (!(await confirmDialog('Eliminar lote', `Se eliminará "${l.title}" con los datos de sus ${l.trabajadores.length} trabajadores, en este equipo y en Dropbox.${aviso}`, 'Eliminar'))) return false;
+  if (!(await confirmDialog('Eliminar lote', `Se eliminará "${l.title}" con los datos de sus ${l.trabajadores.length} trabajadores, en este equipo y en Dropbox.${aviso} Se puede recuperar durante ${PAPELERA_DIAS} días en Ajustes → Papelera.`, 'Eliminar'))) return false;
+  await aPapelera('lotes', l, l.title);
   await db.remove('lotes', l.id);
   await sync.markDeleted('lotes', l.id);
   scheduleSync();
   state.lotes = state.lotes.filter((x) => x.id !== l.id);
-  toast('Lote eliminado');
+  toast('Lote enviado a la papelera');
   return true;
 }
 
@@ -4772,6 +4845,7 @@ async function guardarLoteDropbox(l) {
 (async function init() {
   await loadAll();
   await dbx.loadConfig();
+  purgarPapelera().catch((err) => console.warn('papelera', err));
   await ds.loadConfig();
   db.requestPersistence();
   if (!navigator.onLine) $('#offline')?.removeAttribute('hidden');
