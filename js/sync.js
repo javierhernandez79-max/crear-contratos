@@ -5,6 +5,7 @@
 //   <carpeta>/datos-app/contratos/*.json  un archivo por contrato
 //   <carpeta>/datos-app/plantillas/*.json plantillas propias
 //   <carpeta>/datos-app/lotes/*.json      lotes de contratos de trabajo (con los datos de los trabajadores)
+//   <carpeta>/datos-app/papelera/*.json   lo borrado en los últimos 30 días (se puede restaurar)
 //
 // Cada equipo recuerda la versión (rev) de Dropbox de cada elemento y qué cambió localmente.
 // Se sube con "rev" para no pisar cambios ajenos: si otro usuario modificó el mismo contrato,
@@ -15,7 +16,7 @@ import { uid } from './model.js';
 import { DROPBOX_EXPEDIENTES, DROPBOX_CLIENTES } from './config.js';
 
 export const CATALOG_FILE = 'catalogo-partes.xlsx';
-const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas', lotes: 'datos-app/lotes' };
+const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas', lotes: 'datos-app/lotes', papelera: 'datos-app/papelera' };
 
 // { id:'sync', items:{contracts:{}, templates:{}, lotes:{}}, catalog:{rev, known:[], dirty:[], deleted:[], seq}, lastSync }
 // items[store][id] = { rev, dirty, deleted, seq }; seq sube con cada cambio local para detectar
@@ -103,7 +104,7 @@ export function syncAll(opts) {
         await dbx.setOptions({ folder: alt });
         root = alt;
       }
-      const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set() }, conflicts: [] };
+      const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set(), papelera: new Set() }, conflicts: [] };
       await syncCatalog(root, opts, report);
       for (const store of Object.keys(COLLECTIONS)) await syncCollection(store, dbx.joinPath(root, COLLECTIONS[store]), report, opts);
       state.lastSync = Date.now();
