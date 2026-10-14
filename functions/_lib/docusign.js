@@ -1,14 +1,31 @@
 // Conexión global de DocuSign (JWT Grant): el servidor entra a DocuSign con una sola cuenta del despacho
 // y la app nunca ve la llave. Variables de Cloudflare:
 //   DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_USER_ID (API Username del remitente), DOCUSIGN_PRIVATE_KEY (Secret, RSA),
-//   DOCUSIGN_ENV ("demo" o "prod", por omisión demo) y, opcional, DOCUSIGN_ACCOUNT_ID.
+//   DOCUSIGN_ENV ("demo" o "prod", por omisión demo) y, opcionales, DOCUSIGN_ACCOUNT_ID y DOCUSIGN_REMITENTES.
+// DOCUSIGN_REMITENTES: remitente por usuario de la app, "correo=UserID" separados por coma o renglón
+// (p. ej. "ana@despacho.com=1111…, luis@despacho.com=2222…"). Quien no esté en la lista envía con DOCUSIGN_USER_ID.
 
 const AUTH = { demo: 'account-d.docusign.com', prod: 'account.docusign.com' };
 export const dsEnv = (env) => (String(env.DOCUSIGN_ENV || '').trim().toLowerCase() === 'prod' ? 'prod' : 'demo');
 // Los IDs de DocuSign son GUID: si se pegaron con texto alrededor ("correo: …", paréntesis, espacios), se toma solo el GUID
-const guid = (v) => (String(v || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [String(v || '').trim()])[0];
+export const guid = (v) => (String(v || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [String(v || '').trim()])[0];
 const ik = (env) => guid(env.DOCUSIGN_INTEGRATION_KEY);
 const usuario = (env) => guid(env.DOCUSIGN_USER_ID);
+
+/** correo de acceso (minúsculas) → User ID de DocuSign, según DOCUSIGN_REMITENTES. */
+function remitentes(env) {
+  const m = new Map();
+  for (const parte of String(env.DOCUSIGN_REMITENTES || '').split(/[\n,;]+/)) {
+    const x = parte.match(/([^\s=:]+@[^\s=:]+)\s*[=:]\s*(.+)/);
+    if (x) m.set(x[1].toLowerCase(), guid(x[2]));
+  }
+  return m;
+}
+/** Usuario de DocuSign con el que envía quien entró a la app (su remitente o el del despacho). */
+export const usuarioPara = (env, correo) => remitentes(env).get(String(correo || '').toLowerCase()) || usuario(env);
+/** Remitentes válidos: el del despacho y los de DOCUSIGN_REMITENTES. */
+export const usuariosDS = (env) => new Set([usuario(env), ...remitentes(env).values()]);
+export const usuarioDespacho = usuario;
 
 export class DSError extends Error {
   constructor(message, { status = 502, code = '' } = {}) {
@@ -48,13 +65,14 @@ export function pemAPkcs8(pem) {
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const b64urlTxt = (s) => b64url(new TextEncoder().encode(s));
 
-let cache = { clave: '', token: '', exp: 0, cuenta: null };
+// Un token (y su cuenta) por remitente
+const cache = new Map();
 
-async function firmarJWT(env) {
+async function firmarJWT(env, sub) {
   const e = dsEnv(env);
   const now = Math.floor(Date.now() / 1000);
   const datos = `${b64urlTxt(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64urlTxt(JSON.stringify({
-    iss: ik(env), sub: usuario(env), aud: AUTH[e], iat: now, exp: now + 3600, scope: 'signature impersonation',
+    iss: ik(env), sub, aud: AUTH[e], iat: now, exp: now + 3600, scope: 'signature impersonation',
   }))}`;
   let key;
   try {
@@ -67,28 +85,29 @@ async function firmarJWT(env) {
 }
 
 /** Token de acceso (dura 1 hora; se guarda en memoria y se pide otro al vencer). */
-export async function tokenDS(env, forzar = false) {
-  const clave = `${dsEnv(env)}|${ik(env)}|${usuario(env)}`;
-  if (!forzar && cache.clave === clave && cache.token && Date.now() < cache.exp) return cache.token;
+export async function tokenDS(env, forzar = false, sub = usuario(env)) {
+  const clave = `${dsEnv(env)}|${ik(env)}|${sub}`;
+  const c = cache.get(clave);
+  if (!forzar && c?.token && Date.now() < c.exp) return c.token;
   const r = await fetch(`https://${AUTH[dsEnv(env)]}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: await firmarJWT(env) }),
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: await firmarJWT(env, sub) }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (d.error === 'consent_required') throw new DSError('Falta autorizar la conexión en DocuSign (una sola vez).', { status: 409, code: 'consent_required' });
     throw new DSError(`DocuSign rechazó la conexión: ${d.error_description || d.error || r.status}`, { status: 502, code: d.error || '' });
   }
-  if (cache.clave !== clave) cache.cuenta = null;
-  cache = { ...cache, clave, token: d.access_token, exp: Date.now() + ((Number(d.expires_in) || 3600) - 120) * 1000 };
-  return cache.token;
+  cache.set(clave, { ...(c || {}), token: d.access_token, exp: Date.now() + ((Number(d.expires_in) || 3600) - 120) * 1000 });
+  return d.access_token;
 }
 
 /** Cuenta de DocuSign del remitente: { id, name, baseUri, usuario: { name, email } }. */
-export async function cuentaDS(env) {
-  const token = await tokenDS(env);
-  if (cache.cuenta) return cache.cuenta;
+export async function cuentaDS(env, sub = usuario(env)) {
+  const token = await tokenDS(env, false, sub);
+  const c = cache.get(`${dsEnv(env)}|${ik(env)}|${sub}`);
+  if (c?.cuenta) return c.cuenta;
   const r = await fetch(`https://${AUTH[dsEnv(env)]}/oauth/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
   const info = await r.json().catch(() => ({}));
   if (!r.ok) throw new DSError('No se pudo leer la cuenta de DocuSign.', { status: 502 });
@@ -96,6 +115,6 @@ export async function cuentaDS(env) {
   const cuentaId = env.DOCUSIGN_ACCOUNT_ID && guid(env.DOCUSIGN_ACCOUNT_ID);
   const acc = (cuentaId && accs.find((a) => a.account_id === cuentaId)) || accs.find((a) => a.is_default) || accs[0];
   if (!acc) throw new DSError('El usuario de DocuSign no tiene una cuenta para enviar documentos.', { status: 502 });
-  cache.cuenta = { id: acc.account_id, name: acc.account_name, baseUri: acc.base_uri, usuario: { name: info.name, email: info.email } };
-  return cache.cuenta;
+  c.cuenta = { id: acc.account_id, name: acc.account_name, baseUri: acc.base_uri, usuario: { name: info.name, email: info.email } };
+  return c.cuenta;
 }

@@ -3228,12 +3228,12 @@ function docusignGlobalHTML() {
     <section class="card settings-block" id="ds-block">
       <h3>DocuSign (firma remota)</h3>
       ${g.conectada ? `
-        <p><span class="badge final">Conectado</span> Conexión del despacho: los sobres se envían desde <strong>${esc(g.remitente?.name || '')}</strong> <span class="muted">${esc(g.remitente?.email || '')}</span></p>
+        <p><span class="badge final">Conectado</span> Conexión del despacho: ${g.propio ? 'tus sobres' : 'los sobres'} se envían desde <strong>${esc(g.remitente?.name || '')}</strong> <span class="muted">${esc(g.remitente?.email || '')}</span></p>
         <p class="muted small">Cuenta: ${esc(g.cuenta?.name || '')} · ${esc(ds.ENVS[g.env] || g.env)}. Nadie tiene que conectarse: todos los abogados envían y ven el estado de todos los contratos. La app registra quién envió cada uno.</p>`
       : `
         <div class="banner warn">${icon('alert')} <span>La conexión del despacho no está lista: ${esc(g.error || 'sin respuesta de DocuSign')}</span></div>
         ${g.consentimiento ? `
-          <p class="small">Falta autorizarla una sola vez. Abre este enlace <strong>con el usuario de DocuSign que envía los contratos</strong> y acepta:</p>
+          <p class="small">Falta autorizarla una sola vez. Abre este enlace <strong>${g.propio ? 'con tu propio usuario de DocuSign (eres remitente)' : 'con el usuario de DocuSign que envía los contratos'}</strong> y acepta:</p>
           <div class="row wrap">
             <a class="btn primary" href="${esc(g.consentimiento)}" target="_blank" rel="noopener">${icon('link')} Autorizar en DocuSign</a>
             <button class="btn" data-ds="recheck">Ya autoricé, revisar</button>
@@ -3420,7 +3420,7 @@ function envioHTML(c) {
   return `
     <section class="card form-block" id="ds-envio">
       <h3>${icon('mail')} Firma con DocuSign · <span class="badge ${e.status === 'completed' ? 'final' : ['declined', 'voided'].includes(e.status) ? 'invalid' : 'revision'}">${esc(ds.statusLabel(e.status))}</span></h3>
-      <p class="muted small">Enviado por ${esc(e.sentBy || '—')} el ${fmtDateTime(e.sentAt)} · ${esc(ds.ENVS[e.env] || '')}${e.checkedAt ? ` · revisado ${fmtRelative(e.checkedAt)}` : ''}</p>
+      <p class="muted small">Enviado por ${esc(e.sentBy || '—')}${e.remitente?.email ? ` (remitente en DocuSign: ${esc(e.remitente.email)})` : ''} el ${fmtDateTime(e.sentAt)} · ${esc(ds.ENVS[e.env] || '')}${e.checkedAt ? ` · revisado ${fmtRelative(e.checkedAt)}` : ''}</p>
       ${cambio ? `<div class="banner warn">${icon('alert')} <span>El contrato cambió después de enviarlo: en DocuSign se firma la versión enviada. Cancela el envío y vuelve a enviarlo.</span></div>` : ''}
       ${e.status === 'declined' ? `<div class="banner warn">${icon('alert')} <span>Un firmante rechazó firmar${e.recipients.find((r) => r.declinedReason) ? `: “${esc(e.recipients.find((r) => r.declinedReason).declinedReason)}”` : ''}.</span></div>` : ''}
       ${e.status === 'voided' && e.voidedReason ? `<p class="muted small">Motivo de cancelación: ${esc(e.voidedReason)}</p>` : ''}
@@ -3504,6 +3504,8 @@ async function enviarDocuSign(c) {
   if (r.data.guardar) await guardarCorreos(c, pendientes, recipients);
   c.docusign = {
     envelopeId: res.envelopeId, status: res.status || 'sent', env: ds.config().env,
+    // Remitente en DocuSign (con remitentes por usuario): se usa para consultar y cancelar el sobre después
+    ...(ds.isGlobal() && ds.estadoGlobal()?.remitenteId ? { remitenteId: ds.estadoGlobal().remitenteId, remitente: ds.estadoGlobal().remitente || null } : {}),
     // Con la conexión del despacho, el remitente en DocuSign es siempre el mismo: se registra quién lo envió desde la app
     sentAt: Date.now(), sentBy: (ds.isGlobal() ? cuenta() || ds.config().user?.name : ds.config().user?.name || cuenta()), hash: contentHash(c),
     recipients: recipients.map(({ signerId, name, email }) => ({ signerId, name, email, status: 'sent' })),
@@ -3536,7 +3538,7 @@ async function revisarEnvio(c, { aviso = false } = {}) {
   if (e.env !== ds.config().env) { if (aviso) toast('El envío se hizo en otro ambiente de DocuSign', 'error'); return; }
   let st;
   try {
-    st = await ds.envelopeStatus(e.envelopeId);
+    st = await ds.envelopeStatus(e.envelopeId, e.remitenteId);
   } catch (err) {
     if (aviso) toast(err.status === 404 || err.status === 403 ? 'Tu usuario de DocuSign no puede ver este envío; consúltalo quien lo envió' : err.message, 'error');
     return;
@@ -3551,7 +3553,7 @@ async function revisarEnvio(c, { aviso = false } = {}) {
   }
   const cambio = antes !== JSON.stringify([e.status, e.recipients.map((r) => r.status)]);
   if (st.status === 'completed' && !e.files) {
-    const { signed, certificate } = await ds.signedFiles(e.envelopeId);
+    const { signed, certificate } = await ds.signedFiles(e.envelopeId, e.remitenteId);
     const base = safeName(nombreDe(c));
     const descargar = !dbx.isConnected(); // sin Dropbox, la única copia es la descarga
     const f1 = await deliverFile(c, signed, `${base} - FIRMADO DocuSign.pdf`, 'pdf', { descargar });
@@ -3582,7 +3584,7 @@ async function cancelarEnvio(c) {
   });
   if (r.value !== 'ok') return;
   if (!ds.isConnected()) return toast('Conecta DocuSign en Ajustes para cancelar el envío', 'error');
-  await ds.voidEnvelope(c.docusign.envelopeId, r.data.motivo);
+  await ds.voidEnvelope(c.docusign.envelopeId, r.data.motivo, c.docusign.remitenteId);
   Object.assign(c.docusign, { status: 'voided', voidedReason: r.data.motivo, checkedAt: Date.now() });
   logChange(c, `Canceló el envío a DocuSign: ${r.data.motivo}`);
   await saveContract(c);
