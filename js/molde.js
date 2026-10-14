@@ -47,12 +47,50 @@ const textoXml = (s) => esc(s).split('\n').join('</w:t><w:br/><w:t xml:space="pr
 const MARCA = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 const PARRAFO = /<w:p[\s>][\s\S]*?<\/w:p>/g;
 
+const FIRMA_DS = /\{\{\s*_ds_([a-z]+)\s*\}\}/;
+const textoDe = (p) => [...p.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join('');
+const runFirma = (rol) => `<w:r><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="4"/></w:rPr><w:t>{{_ds_${rol}}}</w:t></w:r>`;
+const alInicio = (p, run) => (/<\/w:pPr>/.test(p) ? p.replace(/<\/w:pPr>/, (m) => m + run) : p.replace(/^<w:p(\s[^>]*)?>/, (m) => m + run));
+
+/**
+ * DocuSign pone el sello donde está la marca {{_ds_parte}}, extendido hacia la derecha. Si la marca está al
+ * final del nombre, el sello cae encima del texto o de la otra columna. Aquí la marca pasa al inicio de la
+ * línea de firma de esa parte (renglón "_____" o con borde, arriba del nombre y en la misma celda). Si no hay
+ * línea, la marca se queda donde está. Con la línea vacía (solo borde) se alinea a la izquierda.
+ */
+export function reubicarFirmas(xml) {
+  const partes = [];
+  let ult = 0;
+  for (const m of xml.matchAll(PARRAFO)) { partes.push(xml.slice(ult, m.index), m[0]); ult = m.index + m[0].length; }
+  partes.push(xml.slice(ult));
+  for (let i = 1; i < partes.length; i += 2) {
+    const m = partes[i].match(FIRMA_DS);
+    if (!m) continue;
+    const rol = m[1];
+    let destino = 0;
+    for (let k = i - 2, n = 0; k >= 1 && n < 6; k -= 2, n++) {
+      if (/<\/?w:tc[\s>]/.test(partes[k + 1])) break; // no salir de la celda
+      const t = textoDe(partes[k]);
+      if (/_{5,}/.test(t) || /<w:pBdr>[\s\S]*?<w:(bottom|top)\b/.test(partes[k])) { destino = k; break; }
+    }
+    if (!destino) continue; // sin línea de firma: la marca se queda donde la puso el formato
+    partes[i] = partes[i].replace(new RegExp(`\\{\\{\\s*_ds_${rol}\\s*\\}\\}`, 'g'), '');
+    let p = alInicio(partes[destino], runFirma(rol));
+    if (!textoDe(partes[destino]).trim()) {
+      p = /<w:jc\s[^>]*\/>/.test(p) ? p.replace(/<w:jc\s[^>]*\/>/, '<w:jc w:val="left"/>') : p.replace(/<w:pPr>/, '<w:pPr><w:jc w:val="left"/>');
+    }
+    partes[destino] = p;
+  }
+  return partes.join('');
+}
+
 /**
  * Llena los marcadores de una parte del Word (documento, encabezado o pie). Cada párrafo se llena con
  * `fill` sobre su texto, así un dato en un párrafo escrito en mayúsculas sale en mayúsculas, igual que en la app.
  * `anchors` = { prestador: '~dsf1~', … }: marcas invisibles para DocuSign; sin ellas, las marcas se borran.
  */
 export function llenarXml(xml, c, { anchors = {} } = {}) {
+  if (FIRMA_DS.test(xml)) xml = reubicarFirmas(xml);
   xml = xml.replace(/\{\{_ds_([a-z]+)\}\}/g, (_, rol) => esc(anchors[rol] || ''));
   return xml.replace(PARRAFO, (p) => {
     if (!p.includes('{{')) return p;

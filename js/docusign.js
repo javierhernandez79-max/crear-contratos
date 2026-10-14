@@ -221,7 +221,9 @@ const toBase64 = async (blob) => {
 export const anchorOf = (n) => `~dsf${n}~`;
 
 /**
- * Crea y envía un sobre con un PDF o un Word (`pdf`, tipo según `fileName`). `recipients` = [{ name, email, anchor }]: todos firman a la vez.
+ * Crea y envía un sobre con un PDF o un Word (`pdf`, tipo según `fileName`). `recipients` = [{ name, email, anchor, yOffset }]: todos firman a la vez.
+ * `yOffset` (puntos, negativo = arriba): en el PDF de la app la marca ya está sobre la línea (-20); en un Word
+ * la marca está al inicio de la línea de firma y el sello (~35 pt de alto) debe quedar encima (-36).
  * Devuelve { envelopeId, status }.
  */
 export async function sendEnvelope({ subject, message, pdf, fileName, recipients }) {
@@ -232,7 +234,7 @@ export async function sendEnvelope({ subject, message, pdf, fileName, recipients
     name: r.name,
     email: r.email,
     // La firma queda arriba de la línea de firma (la marca está 5 mm sobre la línea); DocuSign añade su propio sello de tiempo
-    tabs: { signHereTabs: [{ anchorString: r.anchor, anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: '-20', anchorIgnoreIfNotPresent: 'false' }] },
+    tabs: { signHereTabs: [{ anchorString: r.anchor, anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: r.yOffset || '-20', anchorIgnoreIfNotPresent: 'false' }] },
   }));
   return call('/envelopes', {
     method: 'POST',
