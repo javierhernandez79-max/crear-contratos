@@ -15,7 +15,7 @@ import { verifySignature, base64ToBlob } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
-import { plantillaDesdeWord, leerWord, marcarWord, contarCampos } from './plantilla-word.js';
+import { plantillaDesdeWord, leerWord, marcarWord, contarCampos, numerarBlancos, sinFichas } from './plantilla-word.js';
 import { planAlta } from './alta-pdf.js';
 import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
@@ -1147,8 +1147,10 @@ async function subirPlantillaWord() {
     const e = await estadoIA(true);
     if (!e.activa) return toast(e.disponible ? 'El Word no tiene marcas {{dato}} y la lectura con IA está apagada: pide al administrador que la encienda (Ajustes → Lectura con IA) o marca los datos en el Word.' : 'El Word no tiene marcas {{dato}} y la detección con IA no está disponible aquí: marca los datos en el Word.', 'error');
     toast('Buscando los datos del Word con IA… puede tardar un minuto');
-    const propuesta = await detectarCampos({ name: file.name, parrafos: w.parrafos });
-    ia = await revisarCamposIA(propuesta, w.parrafos);
+    // Cada espacio en blanco (XXXX, ____) va numerado para que la IA diga cuál dato es cuál
+    const numerados = numerarBlancos(w.parrafos);
+    const propuesta = await detectarCampos({ name: file.name, parrafos: numerados });
+    ia = await revisarCamposIA(propuesta, numerados);
     if (!ia) return;
     bytes = await marcarWord(bytes, ia);
   }
@@ -1174,7 +1176,7 @@ async function subirPlantillaWord() {
 /** Revisión de los datos que propuso la IA: cada uno con casilla y etiqueta editable. Devuelve lo elegido o null. */
 async function revisarCamposIA(prop, parrafosW) {
   const veces = contarCampos(parrafosW, prop.campos);
-  const corto = (t) => (/^[_\s]+$/.test(t) ? 'espacio en blanco ____' : t.length > 70 ? `${t.slice(0, 67)}…` : t);
+  const corto = (t) => { const v = sinFichas(t); return /^[_\s]+$/.test(v) ? 'espacio en blanco ____' : v.length > 70 ? `${v.slice(0, 67)}…` : v; };
   const rolDe = (k) => prop.partes.find((p) => k.startsWith(`${p.prefijo}_`))?.rol;
   const r = await modal({
     title: 'Datos que encontró la IA',
