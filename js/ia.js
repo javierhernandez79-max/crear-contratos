@@ -62,3 +62,22 @@ export async function leerConIA({ name, data }) {
   }
   return { ...d, datos };
 }
+
+/** Propone los datos variables de un Word (solo se manda el texto de sus párrafos). Devuelve { titulo, partes, campos, firmas }. */
+export async function detectarCampos({ name, parrafos }) {
+  let r;
+  try {
+    r = await fetch('api/plantilla-ia', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: name, parrafos }),
+    });
+  } catch {
+    throw new Error('Sin conexión: la detección con IA necesita internet.');
+  }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (d.apagada) cache = null;
+    throw new Error(d.error || 'La IA no pudo leer el Word.');
+  }
+  return d;
+}

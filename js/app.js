@@ -15,7 +15,7 @@ import { verifySignature, base64ToBlob } from './efirma.js';
 import { buildPdf, shareOrDownload, download } from './pdf.js';
 import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
-import { plantillaDesdeWord } from './plantilla-word.js';
+import { plantillaDesdeWord, leerWord, marcarWord, contarCampos } from './plantilla-word.js';
 import { planAlta } from './alta-pdf.js';
 import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
 import { propagarPartes } from './propagar.js';
@@ -24,7 +24,7 @@ import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
-import { estadoIA, cambiarIA, leerConIA } from './ia.js';
+import { estadoIA, cambiarIA, leerConIA, detectarCampos } from './ia.js';
 
 // ---------- Estado ----------
 const state = {
@@ -1112,14 +1112,14 @@ async function subirPlantillaWord() {
     title: 'Subir Word como plantilla',
     wide: true,
     body: `
-      <p class="muted small">Escribe en el Word los datos que cambian como marcas entre llaves dobles, p. ej. <code>{{cliente_nombre}}</code> o <code>{{fecha_firma}}</code>. La letra, márgenes y encabezados se conservan.</p>
+      <p class="muted small">Sube el contrato tal cual (lleno con un caso o con espacios en blanco): la IA detecta los datos que cambian y tú confirmas cuáles se vuelven campos. La letra, márgenes y encabezados se conservan. Si el Word ya trae marcas <code>{{dato}}</code>, se usan esas.</p>
       <label class="field"><span>Archivo Word (.docx)</span><input type="file" name="docx" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required></label>
       <div class="form-grid">
         <label class="field"><span>Nombre de la plantilla</span><input name="nombre" required maxlength="120" placeholder="Ej. Contrato de arrendamiento"></label>
         <label class="field"><span>Categoría</span><select name="categoria">${CATEGORIES.map((c) => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join('')}</select></label>
       </div>
       <details class="small">
-        <summary>Marcas que reconoce la app</summary>
+        <summary>Marcar los datos a mano (sin IA)</summary>
         <p><b>Partes</b> (se llenan desde el catálogo): un prefijo por parte, el que quieras (<code>cliente</code>, <code>prestador</code>, <code>arrendador</code>…) seguido del dato. Con <code>{{prefijo_nombre}}</code> la app reconoce la parte y la agrega como firmante. Ejemplos con <code>cliente</code>:</p>
         <ul class="marcas">${marcas(DATOS_PARTE)}</ul>
         <p><b>Firma por DocuSign</b>: <code>{{_ds_cliente}}</code> donde va la firma de esa parte (queda invisible).</p>
@@ -1139,7 +1139,23 @@ async function subirPlantillaWord() {
   if (file.size > 10 * 1024 * 1024) return toast('El Word pasa de 10 MB', 'error');
   const nombre = String(r.data.nombre).trim();
   if (allTemplates().some((t) => t.name.toLowerCase() === nombre.toLowerCase())) return toast(`Ya existe una plantilla “${nombre}”`, 'error');
-  const { plantilla, avisos } = await plantillaDesdeWord(new Uint8Array(await file.arrayBuffer()), { nombre, categoria: r.data.categoria, archivo: file.name, id: `u-${uid()}` });
+  let bytes = new Uint8Array(await file.arrayBuffer());
+  const w = await leerWord(bytes);
+  let ia = null;
+  if (!w.marcas) {
+    // Sin marcas: la IA propone los datos y el usuario confirma
+    const e = await estadoIA(true);
+    if (!e.activa) return toast(e.disponible ? 'El Word no tiene marcas {{dato}} y la lectura con IA está apagada: pide al administrador que la encienda (Ajustes → Lectura con IA) o marca los datos en el Word.' : 'El Word no tiene marcas {{dato}} y la detección con IA no está disponible aquí: marca los datos en el Word.', 'error');
+    toast('Buscando los datos del Word con IA… puede tardar un minuto');
+    const propuesta = await detectarCampos({ name: file.name, parrafos: w.parrafos });
+    ia = await revisarCamposIA(propuesta, w.parrafos);
+    if (!ia) return;
+    bytes = await marcarWord(bytes, ia);
+  }
+  const { plantilla, avisos } = await plantillaDesdeWord(bytes, {
+    nombre, categoria: r.data.categoria, archivo: file.name, id: `u-${uid()}`,
+    ...(ia ? { etiquetas: Object.fromEntries(ia.campos.map((c) => [c.clave, [c.etiqueta, c.tipo]])), partes: Object.fromEntries(ia.partes.map((p) => [p.prefijo, p])) } : {}),
+  });
   const ok = await modal({
     title: 'Revisa la plantilla',
     body: `
@@ -1153,6 +1169,35 @@ async function subirPlantillaWord() {
   toast(`Plantilla “${nombre}” creada`, 'ok');
   state.tplCategory = 'mis';
   renderTemplates();
+}
+
+/** Revisión de los datos que propuso la IA: cada uno con casilla y etiqueta editable. Devuelve lo elegido o null. */
+async function revisarCamposIA(prop, parrafosW) {
+  const veces = contarCampos(parrafosW, prop.campos);
+  const corto = (t) => (/^[_\s]+$/.test(t) ? 'espacio en blanco ____' : t.length > 70 ? `${t.slice(0, 67)}…` : t);
+  const rolDe = (k) => prop.partes.find((p) => k.startsWith(`${p.prefijo}_`))?.rol;
+  const r = await modal({
+    title: 'Datos que encontró la IA',
+    wide: true,
+    body: `
+      <p class="muted small">Cada dato marcado se vuelve un campo de la plantilla (el texto del Word se sustituye en todos los lugares indicados). Desmarca lo que sea texto fijo y corrige el nombre del campo si hace falta.</p>
+      ${prop.partes.length ? `<p class="small"><strong>Partes:</strong> ${prop.partes.map((p) => `${esc(p.rol)}${prop.firmas.some((f) => f.prefijo === p.prefijo) ? '' : ' <span class="warn-text">(sin lugar de firma)</span>'}`).join(' · ')}</p>` : ''}
+      <div class="ia-campos">
+        ${prop.campos.map((c, i) => `
+        <label class="ia-campo ${veces[i] ? '' : 'off'}">
+          <input type="checkbox" name="c${i}" ${veces[i] ? 'checked' : 'disabled'}>
+          <span class="grow">
+            <input name="e${i}" value="${esc(c.etiqueta || c.clave)}" aria-label="Nombre del campo" ${veces[i] ? '' : 'disabled'} ${rolDe(c.clave) ? 'readonly title="Dato de la parte: se llena desde el catálogo"' : ''}>
+            <span class="muted small">“${esc(corto(c.texto.trim()))}” · ${esc(VAR_TYPES[c.tipo] || 'Texto')}${rolDe(c.clave) ? ` · ${esc(rolDe(c.clave))}` : ''} · ${veces[i] ? `${veces[i]} ${veces[i] === 1 ? 'vez' : 'veces'}` : '<span class="warn-text">no se encontró en el Word</span>'}</span>
+          </span>
+        </label>`).join('')}
+      </div>`,
+    actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Usar estos campos', value: 'ok', kind: 'primary' }],
+  });
+  if (r.value !== 'ok') return null;
+  const campos = prop.campos.map((c, i) => (r.data[`c${i}`] ? { ...c, etiqueta: String(r.data[`e${i}`] || c.etiqueta).trim() } : null)).filter(Boolean);
+  if (!campos.length) { toast('No se eligió ningún campo', 'error'); return null; }
+  return { ...prop, campos };
 }
 
 async function deleteTemplate(t) {
