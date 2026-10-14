@@ -2,8 +2,8 @@
 // El PDF va a la API de Claude y vuelven los datos de la ficha; la app los muestra para revisión
 // antes de guardarlos. La llave (ANTHROPIC_API_KEY) es un secreto de Cloudflare: nunca llega al navegador.
 import { correoDe, estado, respuesta } from '../_lib/acceso.js';
+import { pedirJSON } from '../_lib/claude.js';
 
-const MODELO = 'claude-sonnet-5-5';
 const MAX_PDF = 20 * 1024 * 1024; // bytes del PDF (la API acepta 32 MB por solicitud, ya en base64)
 
 const CAMPOS = ['nombre', 'rfc', 'curp', 'domicilio', 'correo', 'escrituraNumero', 'escrituraFecha', 'notario', 'notariaNumero', 'notariaCiudad',
@@ -54,39 +54,18 @@ export async function onRequestPost({ request, env }) {
   const pdf = String(body.pdf || '');
   if (!pdf || pdf.length * 0.75 > MAX_PDF) return respuesta({ error: 'El PDF está vacío o pasa de 20 MB.' }, 413);
 
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: MODELO,
-      max_tokens: 8000,
-      system: INSTRUCCIONES,
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: ESQUEMA } },
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf } },
-          { type: 'text', text: `Archivo: ${String(body.nombre || 'documento.pdf').slice(0, 200)}. Extrae los datos.` },
-        ],
-      }],
-    }),
+  const r = await pedirJSON(env, {
+    system: INSTRUCCIONES,
+    schema: ESQUEMA,
+    queLee: 'el PDF',
+    content: [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf } },
+      { type: 'text', text: `Archivo: ${String(body.nombre || 'documento.pdf').slice(0, 200)}. Extrae los datos.` },
+    ],
   });
-  const res = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    console.error('Claude API', r.status, JSON.stringify(res.error || res));
-    const msg = r.status === 429 || r.status === 529 ? 'La IA está saturada; intenta en un minuto.'
-      : r.status === 413 || /too large|too many pages/i.test(res.error?.message || '') ? 'El PDF es demasiado grande para leerlo con IA.'
-        : r.status === 401 || r.status === 403 ? 'La llave de la IA no es válida: revísala en Cloudflare.'
-          : r.status === 402 || /credit|billing/i.test(res.error?.message || '') ? 'La cuenta de la IA no tiene saldo.'
-            : 'La IA no pudo leer el documento.';
-    return respuesta({ error: msg }, 502);
-  }
-  if (res.stop_reason === 'refusal') return respuesta({ error: 'La IA no quiso procesar este documento.' }, 422);
-  if (res.stop_reason === 'max_tokens') return respuesta({ error: 'La respuesta de la IA quedó incompleta; intenta de nuevo.' }, 502);
-  const texto = (res.content || []).find((b) => b.type === 'text')?.text || '';
-  let out;
-  try { out = JSON.parse(texto); } catch { return respuesta({ error: 'La IA devolvió una respuesta ilegible.' }, 502); }
+  if (r.error) return respuesta({ error: r.error }, r.status);
+  const { out, uso } = r;
   const datos = Object.fromEntries(Object.entries(out.datos || {}).map(([k, v]) => [k, String(v ?? '').trim()]).filter(([k, v]) => CAMPOS.includes(k) && v));
-  console.log('leer-pdf', correo, out.tipo, res.usage?.input_tokens, res.usage?.output_tokens);
-  return respuesta({ tipo: out.tipo, kind: out.kind || '', empresa: String(out.empresa || '').trim(), datos, uso: res.usage });
+  console.log('leer-pdf', correo, out.tipo, uso?.input_tokens, uso?.output_tokens);
+  return respuesta({ tipo: out.tipo, kind: out.kind || '', empresa: String(out.empresa || '').trim(), datos, uso });
 }

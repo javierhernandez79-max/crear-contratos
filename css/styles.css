@@ -618,3 +618,9 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 }
 .marcas { columns: 2; margin: 6px 0 10px; padding-left: 18px; }
 @media (max-width: 640px) { .marcas { columns: 1; } }
+.ia-campos { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow: auto; }
+.ia-campo { display: flex; gap: 10px; align-items: flex-start; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; }
+.ia-campo .grow { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ia-campo .grow input { width: 100%; }
+.ia-campo .muted { overflow-wrap: anywhere; }
+.ia-campo.off { opacity: .6; }
