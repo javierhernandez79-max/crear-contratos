@@ -945,8 +945,15 @@ async function contractAction(act, c) {
   }
   if (act === 'open') return go(`#/c/${c.id}`);
   if (act === 'view') {
-    const r = await modal({ title: nombreDe(c), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
-      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' }, { label: 'Abrir y editar', value: 'open', kind: 'primary' }] });
+    // La vista se arma con los datos del contrato: las firmas reales (DocuSign o papel) solo están en el PDF firmado
+    const firmado = c.status === 'final' && pdfFirmado(c);
+    const aviso = c.status !== 'final' ? ''
+      : `<div class="banner info">${icon('doc')} <span>${firmado ? 'Contrato firmado: esta vista es el texto sin firmas. Las firmas están en el PDF firmado.' : 'Contrato firmado, pero no hay un PDF firmado registrado en la app; búscalo en la carpeta del contrato en Dropbox.'}</span></div>`;
+    const r = await modal({ title: nombreDe(c), wide: true, body: `${aviso}<div class="paper">${documentHTML(c)}</div>`,
+      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' },
+        ...(firmado ? [{ label: 'Ver PDF firmado', value: 'firmado', kind: 'primary' }] : []),
+        { label: 'Abrir y editar', value: 'open', kind: firmado ? 'ghost' : 'primary' }] });
+    if (r.value === 'firmado') return openDropboxFile(firmado.path);
     if (r.value) return contractAction(r.value, c);
     return;
   }
@@ -3412,6 +3419,12 @@ function loadDocx() {
 
 const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
+/** PDF firmado registrado del contrato (el de DocuSign antes que el escaneado), o null. */
+const pdfFirmado = (c) => {
+  const docs = (c.documentos || []).filter((d) => d.path && /FIRMADO/i.test(d.name));
+  return docs.find((d) => /DocuSign/i.test(d.name)) || docs[0] || null;
+};
+
 const categoriaDe = (c) => allTemplates().find((t) => t.id === c.templateId)?.category;
 
 /**
@@ -3424,7 +3437,8 @@ const tipoArchivo = (nombre) => pascal(String(nombre || '').replace(/\{\{[^}]*\}
 
 function baseArchivo(c) {
   const tpl = allTemplates().find((t) => t.id === c.templateId);
-  const tipo = tipoArchivo(tpl?.name || c.title) || 'Documento';
+  // El título del documento ("Contrato de Prestación de Servicios"), no el nombre de la plantilla ("… · Formato 5")
+  const tipo = tipoArchivo(tpl?.titulo || c.title || tpl?.name) || 'Documento';
   const partes = c.signers.map((sg) => {
     const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
     return { nombre: p?.nombre || fill(c, sg.name), propia: !!p?.propia };
@@ -3434,11 +3448,12 @@ function baseArchivo(c) {
   return [tipo, ...[cliente, empresa].filter(Boolean).map((x) => nombreCorto(x.nombre))].filter(Boolean).join('-').slice(0, 150);
 }
 // Sufijo de estado de cada archivo del contrato: el viejo (" - APROBADO") se reconoce para renombrar
+// (y el nuevo con otro tipo o nombre, p. ej. los guardados con "PrestacionDeServiciosFormato5-…")
 const SUFIJOS_ARCHIVO = [
-  [/ - APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
-  [/ - FIRMADO DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
-  [/ - certificado DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
-  [/ - FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
+  [/(?: - |-)APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
+  [/(?: - |-)FIRMADO[ -]DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
+  [/(?: - |-)certificado[ -]DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
+  [/(?: - |-)FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
 ];
 
 /**
@@ -4926,7 +4941,7 @@ async function p1DelLote(d) {
  * Dos trabajadores con el mismo nombre no se pisan: al segundo se le agrega "-2".
  */
 function nombresLote(l) {
-  const tipo = tipoArchivo(l.plantilla?.name) || 'Contrato';
+  const tipo = tipoArchivo(l.plantilla?.titulo || l.plantilla?.name) || 'Contrato';
   const base = [tipo, nombreCorto(l.cliente), nombreCorto(l.empresa?.nombre)].filter(Boolean).join('-');
   const vistos = new Map();
   return l.trabajadores.map((w) => {
