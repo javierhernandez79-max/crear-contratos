@@ -668,6 +668,12 @@ function plazoChip(c) {
 }
 
 /** Nombre del cliente (contraparte) de un contrato de servicios. */
+/** Empresa(s) del grupo que firman el contrato. */
+function empresaDe(c) {
+  const nombres = c.signers.map((sg) => state.parties.find((p) => p.id === sg.party?.id)).filter((p) => p?.propia).map((p) => p.nombre);
+  return [...new Set(nombres)].join(' / ');
+}
+
 function clienteDe(c) {
   const sg = c.signers.find((s) => s.bind?.prefix === 'cliente') || c.signers.find((s) => s.party && !state.parties.find((p) => p.id === s.party.id)?.propia);
   if (!sg) return '';
@@ -851,7 +857,7 @@ function renderHome() {
   const q = state.homeQuery.toLowerCase();
   const list = state.contracts.filter((c) =>
     (state.homeFilter === 'todos' || c.status === state.homeFilter) &&
-    (!q || nombreDe(c).toLowerCase().includes(q)));
+    (!q || [nombreDe(c), clienteDe(c), empresaDe(c)].some((t) => t.toLowerCase().includes(q))));
   const counts = { todos: state.contracts.length };
   for (const k of Object.keys(STATUS)) counts[k] = state.contracts.filter((c) => c.status === k).length;
 
@@ -870,7 +876,7 @@ function renderHome() {
     ${firmaBanner()}
     ${state.contracts.length ? `
       <div class="toolbar">
-        <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar contrato" value="${esc(state.homeQuery)}"></label>
+        <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar por cliente, empresa o contrato" value="${esc(state.homeQuery)}"></label>
         <div class="chips" role="tablist">
           ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
@@ -878,7 +884,7 @@ function renderHome() {
       </div>
       ${list.length ? `
       <div class="card lotes-list contract-list">
-        <div class="ll-row ll-head"><span>Contrato</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
+        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo de documento</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
         ${list.map(contractRow).join('')}
       </div>` : '<p class="empty-inline">No hay contratos que coincidan.</p>'}` : `
       <section class="empty">
@@ -913,7 +919,9 @@ function contractRow(c) {
   const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
-          <span><strong>${esc(nombreDe(c))}</strong><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
+          <span><strong>${esc(clienteDe(c)) || '<span class="muted">Sin cliente</span>'}</strong><span class="muted small show-sm">${esc(nombreDe(c))}</span></span>
+          <span class="small">${esc(empresaDe(c)) || '<span class="muted">—</span>'}</span>
+          <span><span>${esc(nombreDe(c))}</span><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
           <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
