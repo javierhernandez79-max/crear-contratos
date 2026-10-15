@@ -945,8 +945,15 @@ async function contractAction(act, c) {
   }
   if (act === 'open') return go(`#/c/${c.id}`);
   if (act === 'view') {
-    const r = await modal({ title: nombreDe(c), wide: true, body: `<div class="paper">${documentHTML(c)}</div>`,
-      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' }, { label: 'Abrir y editar', value: 'open', kind: 'primary' }] });
+    // La vista se arma con los datos del contrato: las firmas reales (DocuSign o papel) solo están en el PDF firmado
+    const firmado = c.status === 'final' && pdfFirmado(c);
+    const aviso = c.status !== 'final' ? ''
+      : `<div class="banner info">${icon('doc')} <span>${firmado ? 'Contrato firmado: esta vista es el texto sin firmas. Las firmas están en el PDF firmado.' : 'Contrato firmado, pero no hay un PDF firmado registrado en la app; búscalo en la carpeta del contrato en Dropbox.'}</span></div>`;
+    const r = await modal({ title: nombreDe(c), wide: true, body: `${aviso}<div class="paper">${documentHTML(c)}</div>`,
+      actions: [{ label: 'Cerrar', value: '', kind: 'ghost' }, { label: 'Exportar PDF', value: 'pdf', kind: 'ghost' },
+        ...(firmado ? [{ label: 'Ver PDF firmado', value: 'firmado', kind: 'primary' }] : []),
+        { label: 'Abrir y editar', value: 'open', kind: firmado ? 'ghost' : 'primary' }] });
+    if (r.value === 'firmado') return openDropboxFile(firmado.path);
     if (r.value) return contractAction(r.value, c);
     return;
   }
@@ -3373,11 +3380,17 @@ function bindDropboxSettings() {
     } else if (act === 'open-catalog') {
       openDropboxFile(dbx.joinPath(dbx.config().folder, sync.CATALOG_FILE));
     } else if (act === 'renombrar') {
+      // Primero se sincroniza: si otro usuario ya renombró, aquí se recibe su cambio y no hay nada que mover
+      toast('Sincronizando antes de renombrar…');
+      await runSync();
+      if (syncError) return toast(`No se pudo sincronizar; vuelve a intentar: ${syncError}`, 'error');
       const n = porRenombrar().length;
+      if (!n) { toast('Ya no hay archivos por renombrar (otro usuario ya lo hizo)', 'ok'); return renderSettings(); }
       if (!(await confirmDialog('Renombrar archivos', `Se renombrarán en Dropbox ${n} archivo(s) de contratos al formato Tipo-Cliente-Empresa (p. ej. “ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis-APROBADO.pdf”). No cambian de carpeta.`, 'Renombrar', 'primary'))) return;
       toast('Renombrando…');
       try {
         const { ok, fallos } = await renombrarArchivos();
+        await runSync(); // se suben los registros de inmediato para que otro equipo no los renombre otra vez
         if (fallos.length) await modal({ title: 'Renombrar archivos', body: `<p>Se renombraron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
         else toast(`Se renombraron ${ok} archivo(s)`, 'ok');
       } catch (err) { toast(err.message, 'error'); }
@@ -3406,6 +3419,12 @@ function loadDocx() {
 
 const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
+/** PDF firmado registrado del contrato (el de DocuSign antes que el escaneado), o null. */
+const pdfFirmado = (c) => {
+  const docs = (c.documentos || []).filter((d) => d.path && /FIRMADO/i.test(d.name));
+  return docs.find((d) => /DocuSign/i.test(d.name)) || docs[0] || null;
+};
+
 const categoriaDe = (c) => allTemplates().find((t) => t.id === c.templateId)?.category;
 
 /**
@@ -3418,7 +3437,8 @@ const tipoArchivo = (nombre) => pascal(String(nombre || '').replace(/\{\{[^}]*\}
 
 function baseArchivo(c) {
   const tpl = allTemplates().find((t) => t.id === c.templateId);
-  const tipo = tipoArchivo(tpl?.name || c.title) || 'Documento';
+  // El título del documento ("Contrato de Prestación de Servicios"), no el nombre de la plantilla ("… · Formato 5")
+  const tipo = tipoArchivo(tpl?.titulo || c.title || tpl?.name) || 'Documento';
   const partes = c.signers.map((sg) => {
     const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
     return { nombre: p?.nombre || fill(c, sg.name), propia: !!p?.propia };
@@ -3428,11 +3448,12 @@ function baseArchivo(c) {
   return [tipo, ...[cliente, empresa].filter(Boolean).map((x) => nombreCorto(x.nombre))].filter(Boolean).join('-').slice(0, 150);
 }
 // Sufijo de estado de cada archivo del contrato: el viejo (" - APROBADO") se reconoce para renombrar
+// (y el nuevo con otro tipo o nombre, p. ej. los guardados con "PrestacionDeServiciosFormato5-…")
 const SUFIJOS_ARCHIVO = [
-  [/ - APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
-  [/ - FIRMADO DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
-  [/ - certificado DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
-  [/ - FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
+  [/(?: - |-)APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
+  [/(?: - |-)FIRMADO[ -]DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
+  [/(?: - |-)certificado[ -]DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
+  [/(?: - |-)FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
 ];
 
 /**
@@ -3483,8 +3504,9 @@ async function renombrarArchivos() {
   }
   // +1 ms: el cambio gana al sincronizar sin mover el contrato o lote en la lista
   const nota = 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa';
-  // Un lote queda con nombres nuevos aunque algún Word faltara en Dropbox: no se vuelve a intentar sin fin
-  for (const l of state.lotes) if (l.status === 'aprobado' && l.dropbox?.carpeta && !l.dropbox.nombresNuevos) { l.dropbox.nombresNuevos = true; tocados.set(l, 'lotes'); }
+  // Solo el lote donde se movió algo queda marcado con nombres nuevos: si otro usuario ya lo había renombrado
+  // (aquí todo sale "ya no está"), marcarlo crearía una copia en conflicto al sincronizar
+  for (const [l, store] of tocados) if (store === 'lotes') l.dropbox.nombresNuevos = true;
   for (const [x, store] of tocados) {
     x.updatedAt = (x.updatedAt || 0) + 1;
     if (store === 'contracts') logChange(x, nota);
@@ -3492,7 +3514,6 @@ async function renombrarArchivos() {
     await db.put(store, structuredClone(x));
     await sync.markDirty(store, x.id);
   }
-  if (tocados.size) scheduleSync();
   return { ok, fallos };
 }
 
@@ -4920,7 +4941,7 @@ async function p1DelLote(d) {
  * Dos trabajadores con el mismo nombre no se pisan: al segundo se le agrega "-2".
  */
 function nombresLote(l) {
-  const tipo = tipoArchivo(l.plantilla?.name) || 'Contrato';
+  const tipo = tipoArchivo(l.plantilla?.titulo || l.plantilla?.name) || 'Contrato';
   const base = [tipo, nombreCorto(l.cliente), nombreCorto(l.empresa?.nombre)].filter(Boolean).join('-');
   const vistos = new Map();
   return l.trabajadores.map((w) => {
