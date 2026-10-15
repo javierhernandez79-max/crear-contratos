@@ -25,7 +25,10 @@ let global = null; // estado de la conexión del despacho: { configurada, conect
 /** Pide al servidor el estado de la conexión global (sin servidor queda como no configurada). */
 export async function cargarGlobal() {
   try {
-    const r = await fetch('api/docusign/estado', { cache: 'no-store', credentials: 'same-origin' });
+    // Con red lenta o sin respuesta no se detiene el arranque de la app: a los 8 s se sigue sin DocuSign
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch('api/docusign/estado', { cache: 'no-store', credentials: 'same-origin', signal: ctl.signal }).finally(() => clearTimeout(t));
     global = r.ok && /json/.test(r.headers.get('content-type') || '') ? await r.json() : null;
   } catch {
     global = null;
