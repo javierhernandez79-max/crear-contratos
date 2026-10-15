@@ -35,6 +35,33 @@ export function parecido(a, b) {
   return (2 * comun) / (x.length - 1 + y.length - 1 || 1);
 }
 
+/**
+ * Carpeta existente que corresponde a un nombre aunque esté incompleta o escrita distinto ("SEGURIDOC S.A. DE C.V"
+ * ↔ "SEGURIDOC S.A. DE C.V.", "MSPV SEGURIDAD" ↔ "MSPV SEGURIDAD PRIVADA, S.A. DE C.V."): mismo núcleo; o uno es el
+ * inicio del otro en palabras completas y cubre al menos 60 % (así "BETA" no se toma por "BETA LOGÍSTICA"); o casi
+ * idénticos (errores de dedo). Si hay más de una candidata no se elige ninguna (se crea una nueva). `carpetas` = [{ name, … }].
+ */
+export function carpetaDe(nombre, carpetas) {
+  const k = nucleo(nombre);
+  if (!k) return null;
+  const igual = carpetas.find((c) => nucleo(c.name) === k);
+  if (igual) return igual;
+  const p = palabras(nombre);
+  const puntaje = (c) => {
+    const q = palabras(c.name);
+    if (!q.length) return 0;
+    const [corto, largo] = p.join('').length <= q.join('').length ? [p, q] : [q, p];
+    if (corto.every((w, i) => largo[i] === w)) {
+      const cubre = corto.join('').length / largo.join('').length;
+      return cubre >= 0.6 ? 0.5 + cubre / 2 : 0;
+    }
+    const d = parecido(nombre, c.name);
+    return d >= 0.9 ? d : 0;
+  };
+  const candidatas = carpetas.filter((c) => puntaje(c) > 0);
+  return candidatas.length === 1 ? candidatas[0] : null;
+}
+
 /** Partes ordenadas de la más parecida a la menos (solo las que superan el umbral). */
 export function candidatos(nombre, partes, umbral = 0.5) {
   return partes.map((p) => ({ p, score: parecido(nombre, p.nombre) }))
