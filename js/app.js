@@ -4899,12 +4899,16 @@ async function guardarLoteDropbox(l) {
     window.__appLista = true;
   } catch (err) {
     console.error(err);
-    window.__arranqueError?.(`Error al iniciar: ${err?.stack || err?.message || err}`);
+    // Safari no incluye el mensaje en el stack: van los dos
+    window.__arranqueError?.(`Error al iniciar: ${err?.name || ''} ${err?.message || err}\n${err?.stack || ''}`);
   }
 })();
 
 async function arrancar() {
   await loadAll();
+  if (db.soloMemoria()) {
+    document.getElementById('app')?.insertAdjacentHTML('beforebegin', `<div class="banner warn aviso-memoria" role="status">${icon('alert')} <span>Este navegador no deja guardar datos en el equipo (¿modo incógnito?). La app funciona, pero al cerrarla se pierde lo que no esté en Dropbox y hay que volver a conectar Dropbox. Ábrela en una pestaña normal.</span></div>`);
+  }
   await dbx.loadConfig();
   purgarPapelera().catch((err) => console.warn('papelera', err));
   await ds.loadConfig();
