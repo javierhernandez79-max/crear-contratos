@@ -548,14 +548,20 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 .ficha td { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .ficha th { border-bottom: 1px solid var(--border); }
 .ficha-list { padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
-.contract-list .ll-row { grid-template-columns: minmax(0, 2.6fr) minmax(0, .9fr) minmax(0, 1fr) 64px minmax(0, 1fr) 190px; }
+.contract-list .ll-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 1.6fr) minmax(0, .9fr) minmax(0, .9fr) 52px minmax(0, 1fr) 190px; }
+.contract-list .ll-row > span:first-child .show-sm { display: none; }
 .tpl-list .ll-row { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr) 80px 80px minmax(0, .8fr) 120px; }
 .clamp { display: -webkit-box !important; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ll-acts .icon-btn:disabled { opacity: .3; cursor: not-allowed; }
 @media (max-width: 760px) {
-  .contract-list .ll-row { grid-template-columns: minmax(0, 1fr) auto auto; }
-  .contract-list .ll-row > span:nth-child(2) { display: flex; }
-  .contract-list .ll-row > span:nth-child(4) { display: none; }
+  /* Celular: cliente y acciones arriba; estado debajo a todo lo ancho */
+  .contract-list .ll-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .contract-list .ll-head { display: none; }
+  .contract-list .ll-row > span:first-child { grid-column: 1; grid-row: 1; }
+  .contract-list .ll-row > .ll-acts { grid-column: 2; grid-row: 1; }
+  .contract-list .ll-row > span:nth-child(4) { display: flex; grid-column: 1 / -1; grid-row: 2; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .contract-list .ll-row > span:nth-child(2), .contract-list .ll-row > span:nth-child(3), .contract-list .ll-row > span:nth-child(5), .contract-list .ll-row > span:nth-child(6), .contract-list .ll-row > span:nth-child(7) { display: none; }
+  .contract-list .ll-row > span:first-child .show-sm { display: block; }
   .tpl-list .ll-row { grid-template-columns: minmax(0, 1fr) auto; }
   .tpl-list .ll-row > span:nth-child(4) { display: none; }
 }
