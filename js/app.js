@@ -4894,6 +4894,16 @@ async function guardarLoteDropbox(l) {
 }
 
 (async function init() {
+  try {
+    await arrancar();
+    window.__appLista = true;
+  } catch (err) {
+    console.error(err);
+    window.__arranqueError?.(`Error al iniciar: ${err?.stack || err?.message || err}`);
+  }
+})();
+
+async function arrancar() {
   await loadAll();
   await dbx.loadConfig();
   purgarPapelera().catch((err) => console.warn('papelera', err));
@@ -4926,5 +4936,5 @@ async function guardarLoteDropbox(l) {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('SW', err));
   }
-})();
+}
 
