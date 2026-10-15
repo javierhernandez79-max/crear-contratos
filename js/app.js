@@ -22,7 +22,7 @@ import { DROPBOX_FOLDER } from './config.js';
 import { propagarPartes } from './propagar.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, carpetaDe, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
 import { estadoIA, cambiarIA, leerConIA, detectarCampos } from './ia.js';
@@ -3038,11 +3038,10 @@ async function loadExpedienteFolders() {
 
 /**
  * Carpeta de los documentos generados de una parte (cliente o empresa del grupo):
- * DOCUMENTOS GENERADOS - LEGAL APP/<nombre>, reusando la existente con el mismo nombre con o sin tipo de sociedad.
+ * DOCUMENTOS GENERADOS - LEGAL APP/<nombre>, reusando la existente aunque el nombre esté incompleto (ver carpetaDe).
  */
 function generadosOf(p) {
-  const k = nucleo(p.nombre);
-  const igual = k && generadoFolders.find((f) => nucleo(f.name) === k);
+  const igual = carpetaDe(p.nombre, generadoFolders);
   if (igual) return igual.path_display;
   return dbx.joinPath(sync.generadosRoot(), (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim());
 }
@@ -3058,10 +3057,8 @@ function expedienteOf(p) {
   if (p.expediente) return dbx.normalizePath(p.expediente);
   const raiz = p.propia ? sync.expedientesRoot() : sync.clientesRoot();
   if (!p.propia) {
-    // Clientes: misma carpeta con o sin tipo de sociedad ("SEGURIDOC" = "Seguridoc, S.A. de C.V."), pero sin
-    // confundir nombres que solo empiezan igual ("BETA" ≠ "BETA LOGÍSTICA")
-    const k = nucleo(p.nombre);
-    const igual = k && clienteFolders.find((f) => nucleo(f.name) === k);
+    // Clientes: la carpeta existente aunque el nombre esté incompleto o con otra puntuación (ver carpetaDe)
+    const igual = carpetaDe(p.nombre, clienteFolders);
     if (igual) return igual.path_display;
     return dbx.joinPath(raiz, (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim());
   }
