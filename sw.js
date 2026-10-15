@@ -1,5 +1,5 @@
 // Service worker: guarda la app en caché para que funcione sin conexión.
-const CACHE = 'crear-contratos-v71';
+const CACHE = 'crear-contratos-v72';
 const ASSETS = [
   './',
   './index.html',

@@ -17,6 +17,12 @@ function palabras(nombre) {
 /** "IA TECH-SYSTEMS S.A DE C.V." → "IATECHSYSTEMS". */
 export const nucleo = (nombre) => palabras(nombre).join('');
 
+const capital = (w) => w.charAt(0) + w.slice(1).toLowerCase();
+/** Para nombres de archivo: "Contrato de prestación de servicios" → "ContratoDePrestacionDeServicios". */
+export const pascal = (texto) => base(texto).replace(/[^A-Z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map(capital).join('');
+/** Igual, sin el tipo de sociedad: "SEGURIDOC, S.A. DE C.V." → "Seguridoc". */
+export const nombreCorto = (nombre) => palabras(nombre).map(capital).join('');
+
 const bigramas = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const b = s.slice(i, i + 2); m.set(b, (m.get(b) || 0) + 1); } return m; };
 
 /** Parecido entre dos nombres, de 0 a 1 (coeficiente de Dice sobre bigramas del núcleo). */

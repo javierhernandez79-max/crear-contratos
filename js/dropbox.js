@@ -238,6 +238,11 @@ export async function remove(path) {
   }
 }
 
+/** Mueve o renombra. No sobrescribe: si el destino ya existe, Dropbox responde conflicto. */
+export async function move(from, to) {
+  return (await call(`${API}/files/move_v2`, { args: { from_path: normalizePath(from), to_path: normalizePath(to), autorename: false } })).metadata;
+}
+
 export async function temporaryLink(path) {
   return (await call(`${API}/files/get_temporary_link`, { args: { path: normalizePath(path) } })).link;
 }
