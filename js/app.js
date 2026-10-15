@@ -22,7 +22,7 @@ import { DROPBOX_FOLDER } from './config.js';
 import { propagarPartes } from './propagar.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
-import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, carpetaDe, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
+import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, carpetaDe, pascal, nombreCorto, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
 import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
 import { estadoIA, cambiarIA, leerConIA, detectarCampos } from './ia.js';
@@ -995,7 +995,7 @@ async function contractAction(act, c) {
 
 async function downloadWord(c) {
   try {
-    download(await wordDe(c, c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR'), `${safeName(nombreDe(c))}.docx`);
+    download(await wordDe(c, c.status === 'aprobado' || c.status === 'final' ? '' : 'BORRADOR'), `${baseArchivo(c)}.docx`);
     toast('Word descargado', 'ok');
   } catch (err) {
     console.error(err);
@@ -1015,8 +1015,8 @@ async function exportPdf(c) {
     if (!ok) return;
   }
   try {
-    const { blob, filename } = buildPdf(c);
-    const res = await shareOrDownload(blob, filename, nombreDe(c));
+    const { blob } = buildPdf(c);
+    const res = await shareOrDownload(blob, `${baseArchivo(c)}.pdf`, nombreDe(c));
     if (res !== 'cancelled') {
       if (state.current?.id === c.id) touched({ log: 'Exportó el PDF', content: false });
       toast(res === 'shared' ? 'PDF compartido' : 'PDF descargado', 'ok');
@@ -3322,6 +3322,7 @@ async function dropboxSettingsHTML() {
       <div class="row wrap">
         <button class="btn primary" data-dbx="sync">Sincronizar ahora</button>
         <button class="btn" data-dbx="open-catalog">Abrir catálogo en Excel</button>
+        ${porRenombrar().length ? `<button class="btn" data-dbx="renombrar">Renombrar ${porRenombrar().length} archivo(s) al formato nuevo</button>` : ''}
         <button class="btn ghost danger" data-dbx="disconnect">Desconectar</button>
       </div>
     </section>`;
@@ -3371,6 +3372,16 @@ function bindDropboxSettings() {
       renderSettings();
     } else if (act === 'open-catalog') {
       openDropboxFile(dbx.joinPath(dbx.config().folder, sync.CATALOG_FILE));
+    } else if (act === 'renombrar') {
+      const n = porRenombrar().length;
+      if (!(await confirmDialog('Renombrar archivos', `Se renombrarán en Dropbox ${n} archivo(s) de contratos al formato Tipo-Cliente-Empresa (p. ej. “ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis-APROBADO.pdf”). No cambian de carpeta.`, 'Renombrar', 'primary'))) return;
+      toast('Renombrando…');
+      try {
+        const { ok, fallos } = await renombrarArchivos();
+        if (fallos.length) await modal({ title: 'Renombrar archivos', body: `<p>Se renombraron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
+        else toast(`Se renombraron ${ok} archivo(s)`, 'ok');
+      } catch (err) { toast(err.message, 'error'); }
+      renderSettings();
     } else if (act === 'disconnect') {
       if (!(await confirmDialog('Desconectar Dropbox', 'Los datos se quedan en este equipo y en Dropbox; solo se deja de sincronizar. Los cambios aún no subidos se subirán al volver a conectar.', 'Desconectar'))) return;
       await dbx.disconnect();
@@ -3396,6 +3407,73 @@ function loadDocx() {
 const safeName = (s) => String(s || 'Documento').replace(/[\\/:*?"<>|]/g, '').replace(/\s*·\s*/g, ' - ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Documento';
 
 const categoriaDe = (c) => allTemplates().find((t) => t.id === c.templateId)?.category;
+
+/**
+ * Nombre de los archivos del contrato: TipoDeDocumento-Cliente-EmpresaDelGrupo, sin espacios ni acentos y sin
+ * tipo de sociedad ("ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis"). Cliente = primera
+ * parte que no es del grupo; empresa = primera del grupo. El estado va al final ("-APROBADO.pdf").
+ */
+function baseArchivo(c) {
+  const tpl = allTemplates().find((t) => t.id === c.templateId);
+  // Sin el código de formato al inicio ("F1 - …")
+  const tipo = pascal(String(tpl?.name || c.title || '').replace(/\{\{[^}]*\}\}/g, ' ').replace(/^\s*F\d+\b\s*[-–.:]?\s*/i, '')) || 'Documento';
+  const partes = c.signers.map((sg) => {
+    const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
+    return { nombre: p?.nombre || fill(c, sg.name), propia: !!p?.propia };
+  }).filter((x) => x.nombre && !/^\[falta/.test(x.nombre));
+  const cliente = partes.find((x) => !x.propia) || partes.find((x) => x.propia);
+  const empresa = partes.find((x) => x.propia && x !== cliente);
+  return [tipo, ...[cliente, empresa].filter(Boolean).map((x) => nombreCorto(x.nombre))].filter(Boolean).join('-').slice(0, 150);
+}
+// Sufijo de estado de cada archivo del contrato: el viejo (" - APROBADO") se reconoce para renombrar
+const SUFIJOS_ARCHIVO = [
+  [/ - APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
+  [/ - FIRMADO DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
+  [/ - certificado DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
+  [/ - FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
+];
+
+/** Archivos de contratos guardados en Dropbox con el nombre anterior: [{ c, d, nuevo }]. */
+function porRenombrar() {
+  const lista = [];
+  for (const c of state.contracts) {
+    for (const d of c.documentos || []) {
+      const suf = d.path && SUFIJOS_ARCHIVO.find(([re]) => re.test(d.name));
+      if (!suf) continue;
+      const nuevo = baseArchivo(c) + suf[1](d.name.split('.').pop().toLowerCase());
+      if (nuevo !== d.name) lista.push({ c, d, nuevo });
+    }
+  }
+  return lista;
+}
+
+/** Renombra en Dropbox los archivos con el nombre anterior y actualiza su registro en cada contrato. */
+async function renombrarArchivos() {
+  const lista = porRenombrar();
+  let ok = 0;
+  const fallos = [];
+  const tocados = new Set();
+  for (const { c, d, nuevo } of lista) {
+    const destino = dbx.joinPath(d.path.slice(0, d.path.lastIndexOf('/')), nuevo);
+    try {
+      const meta = await dbx.move(d.path, destino);
+      Object.assign(d, { name: nuevo, path: meta?.path_display || destino });
+      tocados.add(c);
+      ok++;
+    } catch (err) {
+      fallos.push(`${d.name}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe un archivo con el nombre nuevo' : err.message}`);
+    }
+  }
+  // +1 ms: el cambio gana al sincronizar sin mover el contrato en la lista
+  for (const c of tocados) {
+    c.updatedAt = (c.updatedAt || 0) + 1;
+    logChange(c, 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa');
+    await db.put('contracts', structuredClone(c));
+    await sync.markDirty('contracts', c.id);
+  }
+  if (tocados.size) scheduleSync();
+  return { ok, fallos };
+}
 
 /** Parte a cuyo expediente va el contrato: el cliente o contraparte; en trabajo y comisión, la empresa (ver carpetas.js). */
 function clientParty(c) {
@@ -3524,7 +3602,7 @@ async function enviarDocuSign(c) {
     return { signerId: sg.id, name: String(r.data[`n_${sg.id}`]).trim(), email: String(r.data[`e_${sg.id}`]).trim(), anchor: anchors[sg.id], ...(c.conMolde ? { yOffset: '-6' } : {}) };
   });
   toast('Enviando a DocuSign…');
-  const base = safeName(nombreDe(c));
+  const base = baseArchivo(c);
   // Formato propio: va el Word del formato (DocuSign lo convierte a PDF respetando su estilo), con las marcas
   // invisibles de firma que trae el molde en el bloque de firmas de cada parte
   const porRol = Object.fromEntries(pendientes.filter((sg) => sg.bind?.prefix).map((sg) => [sg.bind.prefix, anchors[sg.id]]));
@@ -3588,10 +3666,10 @@ async function revisarEnvio(c, { aviso = false } = {}) {
   const cambio = antes !== JSON.stringify([e.status, e.recipients.map((r) => r.status)]);
   if (st.status === 'completed' && !e.files) {
     const { signed, certificate } = await ds.signedFiles(e.envelopeId, e.remitenteId);
-    const base = safeName(nombreDe(c));
+    const base = baseArchivo(c);
     const descargar = !dbx.isConnected(); // sin Dropbox, la única copia es la descarga
-    const f1 = await deliverFile(c, signed, `${base} - FIRMADO DocuSign.pdf`, 'pdf', { descargar });
-    const f2 = await deliverFile(c, certificate, `${base} - certificado DocuSign.pdf`, 'pdf', { descargar });
+    const f1 = await deliverFile(c, signed, `${base}-FIRMADO-DocuSign.pdf`, 'pdf', { descargar });
+    const f2 = await deliverFile(c, certificate, `${base}-CERTIFICADO-DocuSign.pdf`, 'pdf', { descargar });
     e.files = [f1.id, f2.id];
     e.completedAt = st.completedAt || Date.now();
     c.status = 'final';
@@ -3795,19 +3873,19 @@ async function approve(c, btn) {
   toast(`Contrato aprobado${dbx.isConnected() ? `; ${c.conMolde ? 'Word guardado' : 'Word y PDF guardados'} en Dropbox` : ''}`, 'ok');
 }
 
-/** Firmado en papel: guarda el PDF escaneado como "… - FIRMADO.pdf" en la carpeta del contrato y lo marca firmado. */
+/** Firmado en papel: guarda el PDF escaneado como "…-FIRMADO.pdf" en la carpeta del contrato y lo marca firmado. */
 async function firmadoEnPapel(c) {
   const r = await modal({
     title: 'Firmado en papel',
     body: `
-      <p class="muted small">Sube el PDF escaneado con todas las firmas. ${dbx.isConnected() ? 'Se guarda en la carpeta del contrato en Dropbox' : 'Sin Dropbox conectado solo se descarga en este equipo'} como “${esc(safeName(nombreDe(c)))} - FIRMADO.pdf” y el contrato queda firmado.</p>
+      <p class="muted small">Sube el PDF escaneado con todas las firmas. ${dbx.isConnected() ? 'Se guarda en la carpeta del contrato en Dropbox' : 'Sin Dropbox conectado solo se descarga en este equipo'} como “${esc(baseArchivo(c))}-FIRMADO.pdf” y el contrato queda firmado.</p>
       <label class="field"><span>PDF firmado</span><input type="file" name="pdf" accept="application/pdf,.pdf" required></label>`,
     actions: [{ label: 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Guardar y marcar firmado', value: 'ok', kind: 'primary' }],
   });
   const file = r.data?.pdf;
   if (r.value !== 'ok' || !file?.size) return;
   if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return toast('El archivo debe ser PDF', 'error');
-  await deliverFile(c, file, `${safeName(nombreDe(c))} - FIRMADO.pdf`, 'pdf', { descargar: !dbx.isConnected(), reemplazar: true });
+  await deliverFile(c, file, `${baseArchivo(c)}-FIRMADO.pdf`, 'pdf', { descargar: !dbx.isConnected(), reemplazar: true });
   c.status = 'final';
   c.firmadoPapel = { by: cuenta(), date: Date.now() };
   addVersion(c, 'Firmado en papel');
@@ -3821,11 +3899,11 @@ async function firmadoEnPapel(c) {
 /** Genera Word y PDF finales, los guarda en Dropbox (si hay conexión) y marca el contrato como aprobado. */
 /** Word y PDF finales (sin leyendas) de un contrato aprobado. */
 async function finalFiles(c, D) {
-  const base = safeName(nombreDe(c));
+  const base = baseArchivo(c);
   return [
-    { name: `${base} - APROBADO.docx`, blob: c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
+    { name: `${base}-APROBADO.docx`, blob: c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
     // Con formato propio el PDF lo saca el abogado desde Word: el generador de la app no reproduce su estilo
-    ...(c.conMolde ? [] : [{ name: `${base} - APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' }]),
+    ...(c.conMolde ? [] : [{ name: `${base}-APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' }]),
   ];
 }
 
