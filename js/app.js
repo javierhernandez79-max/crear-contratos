@@ -3373,11 +3373,17 @@ function bindDropboxSettings() {
     } else if (act === 'open-catalog') {
       openDropboxFile(dbx.joinPath(dbx.config().folder, sync.CATALOG_FILE));
     } else if (act === 'renombrar') {
+      // Primero se sincroniza: si otro usuario ya renombró, aquí se recibe su cambio y no hay nada que mover
+      toast('Sincronizando antes de renombrar…');
+      await runSync();
+      if (syncError) return toast(`No se pudo sincronizar; vuelve a intentar: ${syncError}`, 'error');
       const n = porRenombrar().length;
+      if (!n) { toast('Ya no hay archivos por renombrar (otro usuario ya lo hizo)', 'ok'); return renderSettings(); }
       if (!(await confirmDialog('Renombrar archivos', `Se renombrarán en Dropbox ${n} archivo(s) de contratos al formato Tipo-Cliente-Empresa (p. ej. “ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis-APROBADO.pdf”). No cambian de carpeta.`, 'Renombrar', 'primary'))) return;
       toast('Renombrando…');
       try {
         const { ok, fallos } = await renombrarArchivos();
+        await runSync(); // se suben los registros de inmediato para que otro equipo no los renombre otra vez
         if (fallos.length) await modal({ title: 'Renombrar archivos', body: `<p>Se renombraron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
         else toast(`Se renombraron ${ok} archivo(s)`, 'ok');
       } catch (err) { toast(err.message, 'error'); }
@@ -3483,8 +3489,9 @@ async function renombrarArchivos() {
   }
   // +1 ms: el cambio gana al sincronizar sin mover el contrato o lote en la lista
   const nota = 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa';
-  // Un lote queda con nombres nuevos aunque algún Word faltara en Dropbox: no se vuelve a intentar sin fin
-  for (const l of state.lotes) if (l.status === 'aprobado' && l.dropbox?.carpeta && !l.dropbox.nombresNuevos) { l.dropbox.nombresNuevos = true; tocados.set(l, 'lotes'); }
+  // Solo el lote donde se movió algo queda marcado con nombres nuevos: si otro usuario ya lo había renombrado
+  // (aquí todo sale "ya no está"), marcarlo crearía una copia en conflicto al sincronizar
+  for (const [l, store] of tocados) if (store === 'lotes') l.dropbox.nombresNuevos = true;
   for (const [x, store] of tocados) {
     x.updatedAt = (x.updatedAt || 0) + 1;
     if (store === 'contracts') logChange(x, nota);
@@ -3492,7 +3499,6 @@ async function renombrarArchivos() {
     await db.put(store, structuredClone(x));
     await sync.markDirty(store, x.id);
   }
-  if (tocados.size) scheduleSync();
   return { ok, fallos };
 }
 
