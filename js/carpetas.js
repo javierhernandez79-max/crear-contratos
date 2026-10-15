@@ -1,7 +1,8 @@
-// Organización en Dropbox de los documentos de cada contrato: dentro del expediente del cliente (o de la
-// empresa, en los contratos de trabajo y comisión), una subcarpeta por tipo de contrato y, dentro, una
+// Organización en Dropbox de los documentos de cada contrato: en DOCUMENTOS GENERADOS/<cliente> (o <empresa>,
+// en los contratos de trabajo y comisión), una subcarpeta por tipo de contrato y, dentro, una
 // carpeta por contrato. Ej.: SEGURIDOC/CONTRATOS DE SERVICIOS/<contrato>/ o ACME/CONTRATOS DE TRABAJO/DETERMINADOS/<contrato>/
 import { esContratoServicios } from './servicios.js';
+import { DROPBOX_CLIENTES, DROPBOX_EXPEDIENTES, DROPBOX_GENERADOS, DROPBOX_CORP_CLIENTES } from './config.js';
 
 export const SUBCARPETAS = {
   servicios: 'CONTRATOS DE SERVICIOS',
@@ -49,4 +50,48 @@ export function duenoCarpeta(c, partes, categoria) {
       || partes.find(({ p }) => p.kind === 'pm') || partes[0]).p;
   }
   return (partes.find(({ p }) => !p.propia) || partes[0]).p;
+}
+
+// ---- Rutas de la organización anterior (antes de oct-2026) ----
+// Antes: EXPEDIENTES CLIENTES/<cliente>/ guardaba el expediente y los contratos generados, y los contratos de las
+// empresas del grupo iban en EXPEDIENTES CORPORATIVOS RM/<empresa>/CONTRATOS…. Ahora los contratos van en
+// DOCUMENTOS GENERADOS - LEGAL APP/<dueño>/ y el expediente del cliente en EXPEDIENTES CORPORATIVOS CLIENTES/<cliente>/.
+const esGenerado = (seg) => /^(CONTRATOS|OTROS CONTRATOS)\b/i.test(seg || '');
+
+/** Ruta en la organización nueva (o la misma si no cambia). `raiz` = carpeta compartida de la app. */
+export function migrarRuta(ruta, raiz) {
+  if (typeof ruta !== 'string' || !ruta.startsWith('/')) return ruta;
+  const base = String(raiz || '').replace(/\/+$/, '');
+  const bajo = (dir) => {
+    const pre = `${base}/${dir}/`;
+    return ruta.toLowerCase().startsWith(pre.toLowerCase()) ? ruta.slice(pre.length).split('/') : null;
+  };
+  const nueva = (dir, partes) => [`${base}/${dir}`, ...partes].filter(Boolean).join('/');
+  const cli = bajo(DROPBOX_CLIENTES);
+  if (cli) {
+    const [carpeta, ...resto] = cli;
+    if ([DROPBOX_GENERADOS, DROPBOX_CORP_CLIENTES].some((d) => d.split('/').pop().toUpperCase() === carpeta.toUpperCase())) return ruta;
+    const generado = esGenerado(resto[0]) || carpeta.toUpperCase() === 'SIN CLIENTE';
+    return nueva(generado ? DROPBOX_GENERADOS : DROPBOX_CORP_CLIENTES, [carpeta, ...resto]);
+  }
+  const rm = bajo(DROPBOX_EXPEDIENTES);
+  if (rm && esGenerado(rm[1])) return nueva(DROPBOX_GENERADOS, rm);
+  return ruta;
+}
+
+/** Cambia en un objeto (contrato, lote, ficha) todas las rutas de la organización anterior. Devuelve si cambió algo. */
+export function migrarRutas(obj, raiz) {
+  let cambio = false;
+  const visitar = (o) => {
+    if (!o || typeof o !== 'object') return;
+    for (const k of Object.keys(o)) {
+      const v = o[k];
+      if (typeof v === 'string') {
+        const n = migrarRuta(v, raiz);
+        if (n !== v) { o[k] = n; cambio = true; }
+      } else visitar(v);
+    }
+  };
+  visitar(obj);
+  return cambio;
 }

@@ -13,7 +13,7 @@
 import * as db from './db.js';
 import * as dbx from './dropbox.js';
 import { uid } from './model.js';
-import { DROPBOX_EXPEDIENTES, DROPBOX_CLIENTES } from './config.js';
+import { DROPBOX_EXPEDIENTES, DROPBOX_CORP_CLIENTES, DROPBOX_GENERADOS } from './config.js';
 
 export const CATALOG_FILE = 'catalogo-partes.xlsx';
 const COLLECTIONS = { contracts: 'datos-app/contratos', templates: 'datos-app/plantillas', lotes: 'datos-app/lotes', papelera: 'datos-app/papelera' };
@@ -307,5 +307,7 @@ async function syncCatalog(root, opts, report) {
 
 // ---------- Expedientes ----------
 export const expedientesRoot = () => dbx.joinPath(dbx.config().folder, DROPBOX_EXPEDIENTES);
-/** Raíz de los expedientes de clientes y contrapartes (las empresas del grupo siguen en expedientesRoot). */
-export const clientesRoot = () => dbx.joinPath(dbx.config().folder, DROPBOX_CLIENTES);
+/** Raíz de los expedientes corporativos de clientes y contrapartes (las empresas del grupo siguen en expedientesRoot). */
+export const clientesRoot = () => dbx.joinPath(dbx.config().folder, DROPBOX_CORP_CLIENTES);
+/** Raíz de los documentos que genera la app: una carpeta por cliente o empresa dueña del contrato. */
+export const generadosRoot = () => dbx.joinPath(dbx.config().folder, DROPBOX_GENERADOS);
