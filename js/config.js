@@ -8,8 +8,11 @@ export const DROPBOX_RETIRED_KEYS = ['16o22x7le8ff56i', 'k48s9k4a17alpe3'];
 export const DROPBOX_FOLDER = '/Legal - Documentos App';
 // Subcarpeta (dentro de la anterior) con una carpeta por empresa o persona.
 export const DROPBOX_EXPEDIENTES = 'EXPEDIENTES CORPORATIVOS RM';
-// Subcarpeta con una carpeta por cliente o contraparte (ahí se guardan los contratos que se le hacen)
+// Carpeta de clientes y contrapartes; dentro, dos raíces con una carpeta por cliente:
+// los documentos que genera la app (de clientes y empresas del grupo) y los expedientes corporativos (acta, CSF…)
 export const DROPBOX_CLIENTES = 'EXPEDIENTES CLIENTES';
+export const DROPBOX_GENERADOS = 'EXPEDIENTES CLIENTES/DOCUMENTOS GENERADOS - LEGAL APP';
+export const DROPBOX_CORP_CLIENTES = 'EXPEDIENTES CLIENTES/EXPEDIENTES CORPORATIVOS CLIENTES';
 // DocuSign (firma remota): Integration Key de la app "Documentos Legales" (no es secreto) y ambiente:
 // 'demo' = cuenta de pruebas gratuita; 'prod' = cuenta de pago ya aprobada por DocuSign ("go-live").
 export const DOCUSIGN_INTEGRATION_KEY = '4964b75c-8dfc-4ab9-8038-a748d41d4cf1';

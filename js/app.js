@@ -17,7 +17,8 @@ import { buildDocxBlob, buildErroresDocxBlob } from './docx-export.js';
 import { moldeDocx } from './molde.js';
 import { plantillaDesdeWord, leerWord, marcarWord, contarCampos, numerarBlancos, sinFichas } from './plantilla-word.js';
 import { planAlta } from './alta-pdf.js';
-import { subcarpetaDe, subcarpetaLote, duenoCarpeta } from './carpetas.js';
+import { subcarpetaDe, subcarpetaLote, duenoCarpeta, migrarRutas } from './carpetas.js';
+import { DROPBOX_FOLDER } from './config.js';
 import { propagarPartes } from './propagar.js';
 import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate, p1Final, toBase64, fromBase64, validateWorkers, isLoteTemplate, tipoDePlantilla, esComision, usaColumna, TIPO_LOTE, workerContract, fileNameFor } from './lote.js';
 import { buildZip } from './zip.js';
@@ -216,6 +217,24 @@ async function loadAll() {
     }
   }
   state.prefs = { anticipacion: DIAS_DEFAULT, ...((await db.get('meta', 'prefs')) || {}) };
+  await migrarRutasViejas();
+}
+
+/**
+ * Rutas de Dropbox guardadas con la organización anterior (contratos dentro del expediente del cliente o de la
+ * empresa del grupo) → DOCUMENTOS GENERADOS / EXPEDIENTES CORPORATIVOS CLIENTES. Se marca +1 ms para que la
+ * versión corregida gane al sincronizar sin cambiar el orden de la lista.
+ */
+async function migrarRutasViejas() {
+  const raiz = dbx.config()?.folder || DROPBOX_FOLDER;
+  for (const [store, list] of [['contracts', state.contracts], ['lotes', state.lotes], ['parties', state.parties]]) {
+    for (const x of list) {
+      if (!migrarRutas(x, raiz)) continue;
+      x.updatedAt = (x.updatedAt || 0) + 1;
+      await db.put(store, structuredClone(x));
+      await sync.markDirty(store, x.id);
+    }
+  }
 }
 
 async function saveContract(c) {
@@ -2993,9 +3012,10 @@ async function browseDropbox({ start, mode = 'files', title, shortcuts = [] }) {
 
 const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`);
 
-// Carpetas que ya existen en la raíz de expedientes del grupo y en la de clientes (se leen al abrir Anexos)
+// Carpetas que ya existen en la raíz de expedientes del grupo, en la de clientes y en la de documentos generados
 let expedienteFolders = [];
 let clienteFolders = [];
+let generadoFolders = [];
 const folderKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 async function loadExpedienteFolders() {
@@ -3007,15 +3027,32 @@ async function loadExpedienteFolders() {
   try {
     clienteFolders = (await dbx.listFolder(sync.clientesRoot())).filter((e) => e['.tag'] === 'folder');
   } catch {
-    clienteFolders = []; // todavía no existe: se crea con el primer contrato
+    clienteFolders = []; // todavía no existe: se crea con el primer expediente
   }
+  try {
+    generadoFolders = (await dbx.listFolder(sync.generadosRoot())).filter((e) => e['.tag'] === 'folder');
+  } catch {
+    generadoFolders = []; // todavía no existe: se crea con el primer contrato
+  }
+}
+
+/**
+ * Carpeta de los documentos generados de una parte (cliente o empresa del grupo):
+ * DOCUMENTOS GENERADOS - LEGAL APP/<nombre>, reusando la existente con el mismo nombre con o sin tipo de sociedad.
+ */
+function generadosOf(p) {
+  const k = nucleo(p.nombre);
+  const igual = k && generadoFolders.find((f) => nucleo(f.name) === k);
+  if (igual) return igual.path_display;
+  return dbx.joinPath(sync.generadosRoot(), (p.nombre || 'Sin nombre').replace(/[\\/:*?"<>|]/g, '').trim());
 }
 
 /**
  * Carpeta del expediente de una parte: la guardada en el catálogo; si no hay, la carpeta existente
  * cuyo nombre coincide (p. ej. "MERCASA DEL BAJIO" ↔ "Mercasa del Bajío, S.A. de C.V."); si tampoco,
  * una nueva con el nombre de la parte. Las empresas del grupo viven en EXPEDIENTES CORPORATIVOS y los
- * clientes y contrapartes en EXPEDIENTES CLIENTES.
+ * clientes y contrapartes en EXPEDIENTES CLIENTES/EXPEDIENTES CORPORATIVOS CLIENTES. Los contratos generados van aparte
+ * (generadosOf).
  */
 function expedienteOf(p) {
   if (p.expediente) return dbx.normalizePath(p.expediente);
@@ -3369,11 +3406,11 @@ function clientParty(c) {
   return duenoCarpeta(c, partes, categoriaDe(c));
 }
 
-/** Carpeta de Dropbox donde se guardan Word y PDF: <expediente>/<tipo de contrato>/<título>. */
+/** Carpeta de Dropbox donde se guardan Word y PDF: DOCUMENTOS GENERADOS/<dueño>/<tipo de contrato>/<título>. */
 function contractFolder(c) {
   if (c.carpeta) return c.carpeta;
   const p = clientParty(c);
-  const base = p ? expedienteOf(p) : dbx.joinPath(sync.clientesRoot(), 'SIN CLIENTE');
+  const base = generadosOf(p || { nombre: 'SIN CLIENTE' });
   return dbx.joinPath(base, subcarpetaDe(c, categoriaDe(c)), safeName(nombreDe(c)));
 }
 
@@ -3386,9 +3423,6 @@ async function deliverFile(c, blob, filename, kind, { descargar = true, reemplaz
     const folder = contractFolder(c);
     const meta = await dbx.upload(dbx.joinPath(folder, filename), blob, reemplazar ? { reemplazar } : { autorename: true });
     path = meta.path_display;
-    // Si la carpeta de la empresa se creó ahora, queda guardada en su ficha del catálogo
-    const p = clientParty(c);
-    if (p && !p.expediente && !c.carpeta) { p.expediente = expedienteOf(p); await saveParty(p); }
   }
   if (descargar) download(blob, filename);
   const rec = { id: uid(), kind, name: path ? path.split('/').pop() : filename, path, date: Date.now(), by: cuenta(), status: c.status };
@@ -3680,7 +3714,7 @@ function renderDocumento() {
     <section class="card form-block">
       <h3>Dónde se guarda</h3>
       ${connected ? `
-        <p class="muted small">En Dropbox, dentro del expediente de ${clientParty(c) ? `<strong>${esc(clientParty(c).nombre)}</strong>` : 'el cliente (vincula una parte en Variables)'}. Si la carpeta no existe, se crea sola.</p>
+        <p class="muted small">En Dropbox, en DOCUMENTOS GENERADOS, carpeta de ${clientParty(c) ? `<strong>${esc(clientParty(c).nombre)}</strong>` : 'el cliente (vincula una parte en Variables)'}. Si la carpeta no existe, se crea sola.</p>
         <p><code id="doc-folder">${esc(contractFolder(c))}</code></p>
         <div class="row">
           <button class="btn sm" data-wf="folder">${icon('folder')} Cambiar carpeta</button>
@@ -3734,7 +3768,7 @@ function renderDocumento() {
       if (act === 'folder') {
         await loadExpedienteFolders();
         const p = clientParty(c);
-        const folder = await browseDropbox({ mode: 'folder', start: p ? expedienteOf(p) : sync.expedientesRoot(), title: 'Carpeta para los documentos del contrato' });
+        const folder = await browseDropbox({ mode: 'folder', start: p ? generadosOf(p) : sync.generadosRoot(), title: 'Carpeta para los documentos del contrato' });
         if (!folder) return;
         c.carpeta = folder;
         touched({ log: `Cambió la carpeta de documentos a ${folder}`, content: false });
@@ -4569,7 +4603,7 @@ function renderLote(id) {
         ? `<p class="small"><strong>En Dropbox:</strong> <code>${esc(l.dropbox.carpeta)}</code></p>`
         : dbx.isConnected()
           ? `<p class="small"><span class="warn-text">Aún no está en Dropbox.</span> Se guardará en <code id="lote-dbx-dest">${esc(loteFolder(l))}</code> <button class="btn sm" id="lote-dbx">${icon('folder')} Guardar en Dropbox</button></p>`
-          : '<p class="muted small">Conecta Dropbox en Ajustes para guardar los contratos en el expediente del cliente.</p>') : ''}
+          : '<p class="muted small">Conecta Dropbox en Ajustes para guardar los contratos en la carpeta del cliente.</p>') : ''}
     </section>
     ${l.status === 'aprobado' ? `<p class="small"><strong>Firmados:</strong> ${firmadosLote(l)} de ${l.trabajadores.length}${firmadosLote(l) < l.trabajadores.length ? ' · imprime, firma en persona y sube el PDF escaneado de cada uno con “Subir firmado”.' : ''}</p>` : ''}
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
@@ -4834,8 +4868,8 @@ const downloadLoteZip = conAviso(async (l) => {
 });
 
 /**
- * Carpeta de Dropbox del lote: expediente del cliente del lote (el de la ficha si está en el catálogo; si no,
- * una carpeta con su nombre en EXPEDIENTES CLIENTES) / CONTRATOS DE TRABAJO/<DETERMINADOS|INDETERMINADOS>
+ * Carpeta de Dropbox del lote: DOCUMENTOS GENERADOS/<cliente del lote> (con el nombre de su ficha si está en el
+ * catálogo) / CONTRATOS DE TRABAJO/<DETERMINADOS|INDETERMINADOS>
  * (o CONTRATOS DE COMISIÓN MERCANTIL) / <lote>.
  */
 function loteFolder(l) {
@@ -4845,7 +4879,7 @@ function loteFolder(l) {
   // Con o sin tipo de sociedad: primero el mismo núcleo del nombre; si no, uno muy parecido
   const clientes = state.parties.filter((p) => !p.propia);
   const ficha = nombre && (clientes.find((p) => k && nucleo(p.nombre) === k) || clientes.find((p) => parecido(nombre, p.nombre) >= 0.9));
-  const base = expedienteOf(ficha || { nombre: nombre || 'SIN CLIENTE', propia: false });
+  const base = generadosOf(ficha || { nombre: nombre || 'SIN CLIENTE' });
   return dbx.joinPath(base, subcarpetaLote(l.tipo), safeName(l.title));
 }
 
