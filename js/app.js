@@ -3413,10 +3413,12 @@ const categoriaDe = (c) => allTemplates().find((t) => t.id === c.templateId)?.ca
  * tipo de sociedad ("ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis"). Cliente = primera
  * parte que no es del grupo; empresa = primera del grupo. El estado va al final ("-APROBADO.pdf").
  */
+/** Tipo de documento para el nombre de archivo: sin código de formato ("F1 - …"), paréntesis ni {{marcas}}. */
+const tipoArchivo = (nombre) => pascal(String(nombre || '').replace(/\{\{[^}]*\}\}/g, ' ').replace(/\([^)]*\)/g, ' ').replace(/^\s*F\d+\b\s*[-–.:]?\s*/i, ''));
+
 function baseArchivo(c) {
   const tpl = allTemplates().find((t) => t.id === c.templateId);
-  // Sin el código de formato al inicio ("F1 - …")
-  const tipo = pascal(String(tpl?.name || c.title || '').replace(/\{\{[^}]*\}\}/g, ' ').replace(/^\s*F\d+\b\s*[-–.:]?\s*/i, '')) || 'Documento';
+  const tipo = tipoArchivo(tpl?.name || c.title) || 'Documento';
   const partes = c.signers.map((sg) => {
     const p = sg.party && state.parties.find((x) => x.id === sg.party.id);
     return { nombre: p?.nombre || fill(c, sg.name), propia: !!p?.propia };
@@ -3433,43 +3435,62 @@ const SUFIJOS_ARCHIVO = [
   [/ - FIRMADO\.pdf$/i, () => '-FIRMADO.pdf'],
 ];
 
-/** Archivos de contratos guardados en Dropbox con el nombre anterior: [{ c, d, nuevo }]. */
+/**
+ * Archivos guardados en Dropbox con el nombre anterior: [{ desde, hacia, viejo, aplicar(ruta), dueño }].
+ * Contratos: los registrados en sus documentos. Lotes guardados: el Word de cada trabajador y su firmado.
+ */
 function porRenombrar() {
   const lista = [];
+  const dir = (ruta) => ruta.slice(0, ruta.lastIndexOf('/'));
   for (const c of state.contracts) {
     for (const d of c.documentos || []) {
       const suf = d.path && SUFIJOS_ARCHIVO.find(([re]) => re.test(d.name));
       if (!suf) continue;
       const nuevo = baseArchivo(c) + suf[1](d.name.split('.').pop().toLowerCase());
-      if (nuevo !== d.name) lista.push({ c, d, nuevo });
+      if (nuevo !== d.name) lista.push({ desde: d.path, hacia: dbx.joinPath(dir(d.path), nuevo), viejo: d.name, dueño: ['contracts', c], aplicar: (ruta) => Object.assign(d, { name: nuevo, path: ruta }) });
     }
+  }
+  for (const l of state.lotes) {
+    if (l.status !== 'aprobado' || !l.dropbox?.carpeta) continue;
+    const nombres = nombresLote(l);
+    l.trabajadores.forEach((w, i) => {
+      // Los Word guardados antes de este formato se llamaban "01 - Trabajador.docx" (el lote no marca nombresNuevos)
+      const viejo = fileNameFor(i, w);
+      if (!l.dropbox.nombresNuevos && viejo !== nombres[i]) lista.push({ desde: dbx.joinPath(l.dropbox.carpeta, viejo), hacia: dbx.joinPath(l.dropbox.carpeta, nombres[i]), viejo, dueño: ['lotes', l], aplicar: () => {} });
+      const firmado = nombres[i].replace(/\.docx$/i, '-FIRMADO.pdf');
+      if (w.firmado?.path && w.firmado.path.split('/').pop() !== firmado) {
+        lista.push({ desde: w.firmado.path, hacia: dbx.joinPath(dir(w.firmado.path), firmado), viejo: w.firmado.path.split('/').pop(), dueño: ['lotes', l], aplicar: (ruta) => { w.firmado.path = ruta; } });
+      }
+    });
   }
   return lista;
 }
 
-/** Renombra en Dropbox los archivos con el nombre anterior y actualiza su registro en cada contrato. */
+/** Renombra en Dropbox los archivos con el nombre anterior y actualiza su registro en cada contrato o lote. */
 async function renombrarArchivos() {
-  const lista = porRenombrar();
   let ok = 0;
   const fallos = [];
-  const tocados = new Set();
-  for (const { c, d, nuevo } of lista) {
-    const destino = dbx.joinPath(d.path.slice(0, d.path.lastIndexOf('/')), nuevo);
+  const tocados = new Map();
+  for (const x of porRenombrar()) {
     try {
-      const meta = await dbx.move(d.path, destino);
-      Object.assign(d, { name: nuevo, path: meta?.path_display || destino });
-      tocados.add(c);
+      const meta = await dbx.move(x.desde, x.hacia);
+      x.aplicar(meta?.path_display || x.hacia);
+      tocados.set(x.dueño[1], x.dueño[0]);
       ok++;
     } catch (err) {
-      fallos.push(`${d.name}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe un archivo con el nombre nuevo' : err.message}`);
+      fallos.push(`${x.viejo}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe un archivo con el nombre nuevo' : err.message}`);
     }
   }
-  // +1 ms: el cambio gana al sincronizar sin mover el contrato en la lista
-  for (const c of tocados) {
-    c.updatedAt = (c.updatedAt || 0) + 1;
-    logChange(c, 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa');
-    await db.put('contracts', structuredClone(c));
-    await sync.markDirty('contracts', c.id);
+  // +1 ms: el cambio gana al sincronizar sin mover el contrato o lote en la lista
+  const nota = 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa';
+  // Un lote queda con nombres nuevos aunque algún Word faltara en Dropbox: no se vuelve a intentar sin fin
+  for (const l of state.lotes) if (l.status === 'aprobado' && l.dropbox?.carpeta && !l.dropbox.nombresNuevos) { l.dropbox.nombresNuevos = true; tocados.set(l, 'lotes'); }
+  for (const [x, store] of tocados) {
+    x.updatedAt = (x.updatedAt || 0) + 1;
+    if (store === 'contracts') logChange(x, nota);
+    else x.history = [{ date: Date.now(), by: whoAmI(), text: nota }, ...(x.history || [])];
+    await db.put(store, structuredClone(x));
+    await sync.markDirty(store, x.id);
   }
   if (tocados.size) scheduleSync();
   return { ok, fallos };
@@ -4723,7 +4744,7 @@ function renderLote(id) {
     const i = Number(b.dataset.word);
     const D = await loadDocx();
     const c = workerContract(l, l.trabajadores[i]);
-    download(await buildDocxBlob(D, c, { label: l.status === 'aprobado' ? '' : 'EN REVISIÓN' }), fileNameFor(i, l.trabajadores[i]));
+    download(await buildDocxBlob(D, c, { label: l.status === 'aprobado' ? '' : 'EN REVISIÓN' }), nombresLote(l)[i]);
   })));
   $('#lote-approve')?.addEventListener('click', async () => {
     if (gaps.length && !(await confirmDialog('Faltan datos', `Los contratos tienen datos vacíos (${gaps.join(', ')}). ¿Aprobar de todos modos?`, 'Aprobar', 'primary'))) return;
@@ -4894,6 +4915,21 @@ async function p1DelLote(d) {
     return { name: d.file.replace(/\.xlsx$/i, ' (original, sin correcciones).xlsx'), corregido: false, data: toBase64(new Uint8Array(d.fileBuf)) };
   }
 }
+/**
+ * Nombre del Word de cada trabajador del lote: Tipo-Cliente-EmpresaDelGrupo-Trabajador.docx (como baseArchivo).
+ * Dos trabajadores con el mismo nombre no se pisan: al segundo se le agrega "-2".
+ */
+function nombresLote(l) {
+  const tipo = tipoArchivo(l.plantilla?.name) || 'Contrato';
+  const base = [tipo, nombreCorto(l.cliente), nombreCorto(l.empresa?.nombre)].filter(Boolean).join('-');
+  const vistos = new Map();
+  return l.trabajadores.map((w) => {
+    const n = `${base}-${pascal(w.nombre) || 'Trabajador'}`.slice(0, 150);
+    const k = n.toLowerCase();
+    vistos.set(k, (vistos.get(k) || 0) + 1);
+    return `${n}${vistos.get(k) > 1 ? `-${vistos.get(k)}` : ''}.docx`;
+  });
+}
 const p1Blob = (l) => new Blob([fromBase64(l.p1.data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
 /** Archivos finales del lote: un Word por persona, la lista de errores (si hubo) y el P1. */
@@ -4903,7 +4939,7 @@ const firmadosLote = (l) => l.trabajadores.filter((w) => w.firmado).length;
 async function subirFirmadoLote(l, i) {
   if (!dbx.isConnected()) { toast('Conecta Dropbox en Ajustes para guardar el contrato firmado', 'error'); return false; }
   const w = l.trabajadores[i];
-  const nombre = fileNameFor(i, w).replace(/\.docx$/i, '') + ' - FIRMADO.pdf';
+  const nombre = nombresLote(l)[i].replace(/\.docx$/i, '-FIRMADO.pdf');
   const r = await modal({
     title: `Contrato firmado · ${w.nombre}`,
     body: `
@@ -4925,9 +4961,10 @@ async function subirFirmadoLote(l, i) {
 async function archivosLote(l) {
   const D = await loadDocx();
   const files = [];
+  const nombres = nombresLote(l);
   for (const [i, w] of l.trabajadores.entries()) {
     const blob = await buildDocxBlob(D, workerContract(l, w), { label: '' });
-    files.push({ name: fileNameFor(i, w), data: new Uint8Array(await blob.arrayBuffer()) });
+    files.push({ name: nombres[i], data: new Uint8Array(await blob.arrayBuffer()) });
   }
   if (l.excluidos?.length) {
     const blob = await buildErroresDocxBlob(D, l);
@@ -4966,7 +5003,7 @@ async function guardarLoteDropbox(l) {
   for (const f of await archivosLote(l)) {
     await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { reemplazar: true });
   }
-  l.dropbox = { carpeta, at: Date.now(), by: whoAmI() };
+  l.dropbox = { carpeta, at: Date.now(), by: whoAmI(), nombresNuevos: true };
   await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);
   return carpeta;
 }
