@@ -593,7 +593,9 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
 .section-title { font-size: 1.15rem; margin: 26px 0 6px; }
 .plazo-chip { display: inline-block; margin-left: 6px; white-space: nowrap; }
 .badge.formato-chip { margin-left: 6px; background: var(--surface-2, #eef1f5); color: var(--muted, #555); font-family: ui-monospace, monospace; }
-.contract-list .plazo-chip { display: block; margin: 4px 0 0; }
+.contract-list .plazo-chip { display: block; margin: 4px 0 0; white-space: normal; }
+/* Lo largo de una celda (avisos de plazo, firma en persona) baja de renglón en lugar de encimarse con la siguiente */
+.contract-list .ll-row > span { overflow-wrap: anywhere; }
 .p1-grid.full { width: 100%; }
 .serv-list .ll-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1.1fr) minmax(0, 1.5fr) minmax(0, 1.8fr); align-items: start; }
 .serv-list .ll-row > span:has(> [data-fmt]) { display: flex; flex-direction: column; gap: 4px; }
