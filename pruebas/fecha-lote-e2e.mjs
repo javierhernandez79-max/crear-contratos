@@ -1,0 +1,27 @@
+import { chromium } from 'playwright';
+const APP = 'http://localhost:5173/';
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
+const pg = await ctx.newPage(); pg.on('pageerror', (e) => errors.push(e.message));
+await pg.goto(APP); await pg.waitForSelector('#app');
+await pg.evaluate(async () => {
+  const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const put = (v) => new Promise((x) => { const tx = d.transaction('lotes', 'readwrite'); tx.objectStore('lotes').put(v); tx.oncomplete = x; });
+  const base = { cliente: 'ALFADOC', tipo: 'INDETERMINADO', status: 'aprobado', excluidos: [], history: [], updatedAt: 1, empresa: { nombre: '900 MANAGEMENT' } };
+  await put({ ...base, id: 'l1', title: 'A', createdAt: 2, trabajadores: [{ nombre: 'A', firma: '2026-10-10' }, { nombre: 'B', firma: '2026-10-10' }] });
+  await put({ ...base, id: 'l2', title: 'B', createdAt: 1, trabajadores: [{ nombre: 'A', firma: '2026-10-12' }, { nombre: 'B', firma: '2026-10-10' }] });
+  await put({ ...base, id: 'l3', title: 'C', createdAt: new Date(2026, 9, 5).getTime(), trabajadores: [{ nombre: 'A' }] });
+});
+await pg.goto(APP + '#/lotes'); await pg.reload(); await pg.waitForSelector('.lote-list .ll-row[data-id]');
+const head = await pg.textContent('.lote-list .ll-head'); ok(/Tipo\s*Fecha\s*Contratos/.test(head), 'columna Fecha: ' + head);
+const cel = async (id) => pg.evaluate((i) => document.querySelector(`.ll-row[data-id="${i}"] > span:nth-child(4)`).textContent.trim(), id);
+ok(await cel('l1') === '10 oct 2026', 'una fecha: ' + await cel('l1'));
+ok(await cel('l2') === '10 oct 2026 – 12 oct 2026', 'rango: ' + await cel('l2'));
+ok(await cel('l3') === '5 oct 2026', 'sin fecha de firma, la de creación: ' + await cel('l3'));
+ok(!/de octubre de/.test(await pg.textContent('.ll-row[data-id="l1"] > span:nth-child(2)')), 'la fecha ya no va debajo de la empresa');
+await pg.setViewportSize({ width: 390, height: 800 }); await pg.waitForTimeout(300);
+const vis = await pg.evaluate(() => [...document.querySelectorAll('.ll-row[data-id="l1"] > span')].map((s) => getComputedStyle(s).display !== 'none'));
+ok(vis.join() === 'true,false,false,false,false,true,false,true', 'móvil: cliente, estado y acciones ' + vis.join());
+ok(!errors.length, 'sin errores: ' + errors.join(' | '));
+await b.close(); process.exit(errors.length ? 1 : 0);

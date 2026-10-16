@@ -1,0 +1,15 @@
+import { chromium } from 'playwright'; import ExcelJS from 'exceljs'; import fs from 'fs';
+const S = process.argv[2]; const R = '../js/';
+const { catalogToXlsx } = await import(R + 'catalog-xlsx.js'); const { newParty, newApoderado } = await import(R + 'parties.js');
+const p = Object.assign(newParty('pm', true), { nombre: 'EMPRESA UNO, S.A. DE C.V.', rfc: 'EUN151020R9A' });
+p.apoderados.push(Object.assign(newApoderado(), { nombre: 'APODERADO UNO' }));
+fs.writeFileSync(S + '/cat-emp.xlsx', Buffer.from(await catalogToXlsx(ExcelJS, [p])));
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined }); const pg = await b.newPage();
+const errs = []; pg.on('pageerror', (e) => errs.push(e.message));
+await pg.goto('http://localhost:5173/#/catalogo'); await pg.waitForSelector('#cat-export');
+await pg.setInputFiles('#cat-import', S + '/cat-emp.xlsx'); await pg.click('dialog.modal button[value=ok]'); await pg.waitForSelector('.party-list .ll-row[data-id]');
+await pg.goto('http://localhost:5173/#/lotes/nuevo'); await pg.waitForSelector('#l-emp');
+console.log('opciones empresa:', await pg.locator('#l-emp option').allTextContents());
+console.log('plantillas:', await pg.locator('#l-tpl option').allTextContents());
+const parties = await pg.evaluate(async () => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); }); return new Promise((x) => { const q = d.transaction('parties').objectStore('parties').getAll(); q.onsuccess = () => x(q.result.map((p) => ({ kind: p.kind, propia: p.propia, activa: p.activa }))); }); });
+console.log(parties, errs); await b.close();

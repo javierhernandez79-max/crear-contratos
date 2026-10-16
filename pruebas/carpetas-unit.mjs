@@ -1,0 +1,13 @@
+const { tipoCarpeta, subcarpetaDe, duenoCarpeta } = await import('../js/carpetas.js');
+const ok = (c, m) => console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`);
+const c = (prefs, vars = []) => ({ signers: prefs.map((p) => ({ bind: p ? { prefix: p } : undefined })), varDefs: vars.map((k) => ({ key: k })) });
+ok(subcarpetaDe(c(['prestador', 'cliente'], ['servicios'])) === 'CONTRATOS DE SERVICIOS', 'servicios');
+ok(subcarpetaDe(c(['patron', 'trabajador'], ['fecha_fin'])) === 'CONTRATOS DE TRABAJO/DETERMINADOS', 'trabajo determinado');
+ok(subcarpetaDe(c(['patron', 'trabajador'])) === 'CONTRATOS DE TRABAJO/INDETERMINADOS', 'trabajo indeterminado');
+ok(subcarpetaDe(c(['comitente', 'comisionista'])) === 'CONTRATOS DE COMISIÓN MERCANTIL', 'comisión');
+ok(subcarpetaDe(c([null, null]), 'confidencialidad') === 'CONVENIOS DE CONFIDENCIALIDAD', 'NDA por categoría');
+ok(subcarpetaDe(c([null, null]), 'laboral') === 'CONTRATOS DE TRABAJO/INDETERMINADOS', 'laboral por categoría');
+ok(subcarpetaDe(c([null, null])) === 'OTROS CONTRATOS', 'sin categoría: otros');
+const g = { kind: 'pm', propia: true }, k = { kind: 'pm', propia: false }, w = { kind: 'pf', propia: false };
+ok(duenoCarpeta(c(['comitente', 'comisionista']), [{ sg: { bind: { prefix: 'comisionista' } }, p: w }, { sg: { bind: { prefix: 'comitente' } }, p: g }]) === g, 'comisión: dueña la comitente aunque sea del grupo');
+ok(duenoCarpeta(c(['a', 'b']), [{ sg: {}, p: g }, { sg: {}, p: k }]) === k, 'otros: el cliente');

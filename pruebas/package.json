@@ -1,0 +1,14 @@
+{
+  "name": "pruebas-documentos-legales",
+  "private": true,
+  "type": "module",
+  "description": "Pruebas automáticas de la app (Playwright con simuladores de Dropbox y DocuSign)",
+  "scripts": {
+    "test": "./correr.sh"
+  },
+  "dependencies": {
+    "docx": "^9.5.1",
+    "exceljs": "^4.4.0",
+    "playwright": "^1.64.0"
+  }
+}

@@ -1,0 +1,15 @@
+const { detectarTipo, extraer, lecturaPobre } = await import('../js/extraccion.js');
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const rpp = 'SECRETARÍA DE ECONOMÍA REGISTRO PÚBLICO DE COMERCIO BOLETA DE INSCRIPCIÓN Folio Mercantil Electrónico No. N-2019012345 Fecha de inscripción: 15 de marzo de 2019, Oficina registral: CIUDAD DE MÉXICO, Denominación o razón social: ACME SERVICIOS, S.A. DE C.V. Acto: constitución de sociedad';
+ok(detectarTipo(rpp) === 'rpp', 'detecta boleta RPP: ' + detectarTipo(rpp));
+const d = extraer('rpp', rpp); console.log(d);
+ok(d.folioMercantil === 'N-2019012345' && d.folioFecha === '2019-03-15' && /CIUDAD DE M/.test(d.folioLugar || ''), 'RPP: folio, fecha y lugar');
+const ine = 'INSTITUTO NACIONAL ELECTORAL MÉXICO CREDENCIAL PARA VOTAR NOMBRE LOPEZ PEREZ MARIA DOMICILIO ... CLAVE DE ELECTOR LPPRMR90010109M100 CURP LOPM900101MDFPRR09 AÑO DE REGISTRO 2008 01 SEXO M VIGENCIA 2021 - 2031';
+ok(detectarTipo(ine) === 'ine', 'detecta INE');
+const di = extraer('ine', ine); console.log(di);
+ok(di.identificacion.endsWith('LPPRMR90010109M100') && di.identificacionVigencia === '2031' && di.curp === 'LOPM900101MDFPRR09' && di.sexo === 'femenino', 'INE: clave, vigencia, CURP y sexo');
+ok(lecturaPobre('ine', di), 'INE sin nombre: va a la IA si está encendida');
+ok(!lecturaPobre('rpp', d) && lecturaPobre('rpp', {}), 'RPP pobre solo sin folio');
+const acta = 'ESCRITURA PÚBLICA. CONSTITUCIÓN DE SOCIEDAD ... inscrita en el REGISTRO PÚBLICO DE COMERCIO bajo el FOLIO MERCANTIL ' + 'x '.repeat(5000);
+ok(detectarTipo(acta) === 'acta', 'escritura larga que menciona el RPP sigue siendo constitutiva');
+console.log(errors.length ? 'ERRORES' : 'TODO OK');

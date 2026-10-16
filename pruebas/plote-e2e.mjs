@@ -1,0 +1,33 @@
+import { chromium } from 'playwright'; import fs from 'fs';
+const S = process.argv[2];
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const ctx = await b.newContext({ viewport: { width: 1400, height: 900 } });
+const pg = await ctx.newPage(); pg.on('pageerror', (e) => errors.push(e.message));
+await pg.goto('http://localhost:5173/'); await pg.waitForSelector('#app');
+const trab = JSON.parse(fs.readFileSync(S + '/marco/out/u-marco-trabajo-indeterminado.json'));
+await pg.evaluate(async (trab) => {
+  const m = await import('./js/model.js');
+  const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const put = (st, v) => new Promise((x) => { const tx = d.transaction(st, 'readwrite'); tx.objectStore(st).put(v); tx.oncomplete = x; });
+  await put('templates', trab);
+  const tpl = { id: 'u-f5', custom: true, category: 'servicios', formato: 'F5', name: 'Prestación de servicios · Formato 5', titulo: 'Contrato de Prestación de Servicios', vars: [['x', 'X', 'text']], sections: [{ title: 'O', body: 'T {{x}}.' }],
+    signers: [{ role: 'P', name: 'P', bind: { prefix: 'prestador' } }, { role: 'C', name: 'C', bind: { prefix: 'cliente' } }] };
+  await put('templates', tpl);
+  const c = m.newContractFromTemplate(tpl); await put('contracts', c);
+}, trab);
+await pg.reload(); await pg.waitForSelector('.contract-list');
+const sub = await pg.textContent('.contract-list .ll-row[data-id] span:nth-child(3)');
+ok(/Formato 5/.test(sub) && !/Prestación de servicios ·/.test(sub), 'subtítulo solo formato: ' + sub.replace(/\s+/g, ' '));
+await pg.goto('http://localhost:5173/#/plantillas'); await pg.waitForSelector('.tpl-list');
+const n0 = await pg.evaluate(async () => (await import('./js/db.js')).getAll ? 0 : 0);
+await pg.click(`.tpl-list .ll-row[data-id="${trab.id}"]`);
+await pg.waitForSelector('dialog[open] button[value=use]');
+ok(/Crear lote/.test(await pg.textContent('dialog[open] button[value=use]')), 'botón Crear lote');
+await pg.click('dialog[open] button[value=use]');
+await pg.waitForSelector('#l-tpl');
+ok(location => true, '');
+ok(await pg.$eval('#l-tpl', (e) => e.value) === trab.id, 'lote nuevo con la plantilla elegida');
+await pg.goto('http://localhost:5173/#/'); await pg.waitForSelector('.contract-list');
+ok(await pg.locator('.contract-list .ll-row[data-id]').count() === 1, 'no se creó contrato de trabajo');
+console.log(errors.length ? 'ERR ' + errors.join('|') : 'sin errores'); await b.close();

@@ -1,0 +1,14 @@
+const { carpetaDe } = await import('../js/servicios.js');
+let fails = 0; const F = (...n) => n.map((name) => ({ name }));
+const t = (n, fs, exp) => { const r = carpetaDe(n, F(...fs)); const ok = (r?.name ?? null) === exp; if (!ok) fails++; console.log(ok ? 'OK  ' : 'FAIL', n, '→', r?.name ?? null); };
+t('ALFADOC S.A. DE C.V.', ['ALFADOC S.A. DE C.V', 'OMEGA'], 'ALFADOC S.A. DE C.V');
+t('OMEGA SEGURIDAD PRIVADA, S.A. DE C.V.', ['OMEGA SEGURIDAD', 'ALFADOC'], 'OMEGA SEGURIDAD');
+t('BETA LOGISTICA S.A. DE C.V.', ['BETA'], null);
+t('BETA', ['BETA LOGISTICA, S.A. DE C.V.'], null);
+t('SISTEMAS Y TECNOLOGIAS DEMO S.A. DE C.V.', ['SYSTEM AND TECHNOLOGIES REVOLUTION'], 'SYSTEM AND TECHNOLOGIES REVOLUTION');
+t('SEGURIDAD PRIVADA MONTERO S.A. DE C.V.', ['SEGURIDAD PRIVADA SEPRISA'], null);
+t('COMERCIALIZADORA, VENTAS Y SERVICIOS XYZ ASOCIADOS S.A. DE C.V.', ['COMERCIALIZADORA, VENTAS Y SERVICIOS HGM'], 'COMERCIALIZADORA, VENTAS Y SERVICIOS HGM');
+t('GRUPO ALFA', ['GRUPO ALFA NORTE', 'GRUPO ALFA SUR'], null);
+t('GRUPO ALFA NORTE S.A.', ['GRUPO ALFA NORTE', 'GRUPO ALFA SUR'], 'GRUPO ALFA NORTE');
+t('NUEVO', [], null);
+if (fails) process.exit(1);
