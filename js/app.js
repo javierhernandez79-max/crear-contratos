@@ -921,7 +921,7 @@ function contractRow(c) {
           <span><strong>${esc(clienteDe(c)) || '<span class="muted">Sin cliente</span>'}</strong><span class="muted small show-sm">${esc(nombreDe(c))}</span></span>
           <span class="small">${esc(empresaDe(c)) || '<span class="muted">—</span>'}</span>
           <span><span>${esc(nombreDe(c))}</span>${c.formato ? `<span class="muted small">Formato ${esc(c.formato.replace(/^F/i, ''))}</span>` : ''}</span>
-          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
+          <span>${statusBadge(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
