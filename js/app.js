@@ -884,7 +884,7 @@ function renderHome() {
       </div>
       ${list.length ? `
       <div class="card lotes-list contract-list">
-        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo de documento</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
+        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo de documento</span><span>Fecha</span><span>Estado</span><span>Datos</span><span>Firmas</span><span>Actualizado</span><span></span></div>
         ${list.map(contractRow).join('')}
       </div>` : '<p class="empty-inline">No hay contratos que coincidan.</p>'}` : `
       <section class="empty">
@@ -914,6 +914,12 @@ function renderHome() {
   });
 }
 
+/** "2026-10-14" → "14 oct 2026" */
+const fechaCorta = (iso) => {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  return y && m && d ? new Date(y, m - 1, d).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '') : '';
+};
+
 function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
   return `
@@ -921,6 +927,7 @@ function contractRow(c) {
           <span><strong>${esc(clienteDe(c)) || '<span class="muted">Sin cliente</span>'}</strong><span class="muted small show-sm">${esc(nombreDe(c))}</span></span>
           <span class="small">${esc(empresaDe(c)) || '<span class="muted">—</span>'}</span>
           <span><span>${esc(nombreDe(c))}</span>${c.formato ? `<span class="muted small">Formato ${esc(c.formato.replace(/^F/i, ''))}</span>` : ''}</span>
+          <span class="small">${esc(fechaCorta(fechaArchivo(c)))}</span>
           <span>${statusBadge(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
@@ -3887,6 +3894,8 @@ function renderDocumento() {
         <h3>3. Envía a firma</h3>
         <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : retro ? 'Imprímelo, recaba las firmas autógrafas y sube el PDF escaneado.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa al paso 2.</p>
         <div class="row wrap">
+          ${connected && !envioActivo(c) && !(c.documentos || []).some((d) => d.path && /(?: - |-)APROBADO\.docx$/i.test(d.name)) ? `
+          <button class="btn" data-wf="approve">${icon('upload')} Volver a guardar el aprobado en Dropbox</button>` : ''}
           ${envioActivo(c) ? '' : retro ? `
           <button class="btn primary" data-wf="papel">${icon('upload')} Firmado en papel</button>` : `
           <button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>
