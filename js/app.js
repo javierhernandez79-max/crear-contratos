@@ -49,8 +49,8 @@ const state = {
   installPrompt: null,
 };
 
-// 'revision' ya no se usa (el flujo es Documento → Aprobación → Firma); los contratos viejos en revisión se leen como borrador
-const STATUS = { borrador: 'Borrador', revision: 'Borrador', aprobado: 'Aprobado', final: 'Firmado' };
+// Flujo: Documento (borrador) → Revisión (Word marcado en Dropbox) → Aprobación (Word y PDF finales) → Firma
+const STATUS = { borrador: 'Borrador', revision: 'En revisión', aprobado: 'Aprobado', final: 'Firmado' };
 // Nombre para listas y archivos; el título (c.title) es el encabezado impreso del documento
 const nombreDe = (c) => c.etiqueta || fill(c, c.title);
 const statusBadge = (c) => `<span class="badge ${esc(c.status)}">${esc(STATUS[c.status] || c.status)}</span>`;
@@ -209,7 +209,6 @@ async function loadAll() {
   state.lotes = await db.getAll('lotes');
   // Contratos del Sugerido creados antes de separar etiqueta y título: el título largo salía como encabezado
   for (const c of state.contracts) {
-    if (c.status === 'revision') c.status = 'borrador';
     if (!c.etiqueta && /^Contrato de Prestación de Servicios · .+ · .+/.test(c.title)) {
       c.etiqueta = c.title.replace(/^Contrato de Prestación de Servicios/, 'Prestación de servicios');
       c.title = 'Contrato de Prestación de Servicios';
@@ -878,7 +877,7 @@ function renderHome() {
       <div class="toolbar">
         <label class="search">${icon('search')}<input id="home-q" type="search" placeholder="Buscar por cliente, empresa o contrato" value="${esc(state.homeQuery)}"></label>
         <div class="chips" role="tablist">
-          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
+          ${[['todos', 'Todos'], ['borrador', 'Borradores'], ['revision', 'En revisión'], ['aprobado', 'Aprobados'], ['final', 'Firmados']].map(([k, l]) =>
             `<button class="chip ${state.homeFilter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${counts[k]}</span></button>`).join('')}
         </div>
       </div>
@@ -3522,6 +3521,7 @@ function empresaCarpeta(c, dueno) {
 // Sufijo de estado de cada archivo del contrato: el viejo (" - APROBADO") se reconoce para renombrar
 // (y el nuevo con otro tipo o nombre, p. ej. los guardados con "PrestacionDeServiciosFormato5-…")
 const SUFIJOS_ARCHIVO = [
+  [/-REVISION\.docx$/i, () => '-REVISION.docx'],
   [/(?: - |-)APROBADO\.(docx|pdf)$/i, (x) => `-APROBADO.${x}`],
   [/(?: - |-)FIRMADO[ -]DocuSign\.pdf$/i, () => '-FIRMADO-DocuSign.pdf'],
   [/(?: - |-)certificado[ -]DocuSign\.pdf$/i, () => '-CERTIFICADO-DocuSign.pdf'],
@@ -3912,7 +3912,7 @@ async function revisarEnvios() {
   }
 }
 
-const PASOS = ['Documento', 'Aprobación', 'Firma'];
+const PASOS = ['Documento', 'Revisión', 'Aprobación', 'Firma'];
 
 /**
  * Fecha de firma ya pasada (retroactiva): DocuSign sellaría la fecha real y no coincidiría con la del contrato,
@@ -3925,8 +3925,9 @@ const firmaRetroactiva = (c) => {
 
 /** Paso del flujo: 0 completar datos, 1 aprobar, 2 enviar a firma, 3 firmado. */
 function pasoDe(c) {
-  if (c.status === 'final') return 3;
-  if (c.status === 'aprobado') return 2;
+  if (c.status === 'final') return 4;
+  if (c.status === 'aprobado') return 3;
+  if (c.status === 'revision') return 2;
   return missingVariables(c).length ? 0 : 1;
 }
 
@@ -3947,7 +3948,7 @@ function renderDocumento() {
       ${PASOS.map((l, i) => `<li class="${i < paso ? 'done' : i === paso ? 'on' : ''}"><span>${i + 1}</span>${l}</li>`).join('')}
     </ol>
     ${conflicto ? `<div class="banner danger">${icon('alert')} <span>${esc(conflicto)} No se puede aprobar así.</span></div>` : ''}
-    ${retro && paso < 3 && !envioActivo(c) ? `<div class="banner warn">${icon('pen')} <span>La fecha de firma (${esc(fmtLongDate(retro))}) es anterior a hoy: este contrato se firma <strong>en persona, con firma autógrafa</strong>, no por DocuSign. Imprímelo, recaba las firmas y súbelo con “Firmado en papel”.</span></div>` : ''}
+    ${retro && paso < 4 && !envioActivo(c) ? `<div class="banner warn">${icon('pen')} <span>La fecha de firma (${esc(fmtLongDate(retro))}) es anterior a hoy: este contrato se firma <strong>en persona, con firma autógrafa</strong>, no por DocuSign. Imprímelo, recaba las firmas y súbelo con “Firmado en papel”.</span></div>` : ''}
     ${avisoMolde(c)}
     <section class="card form-block">
       ${paso === 0 ? `
@@ -3959,18 +3960,28 @@ function renderDocumento() {
           <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
         </div>`
       : paso === 1 ? `
-        <h3>2. Revisa y aprueba</h3>
-        <p class="muted">Revisa el contrato en la Vista previa; si hay que cambiar algo, corrígelo en Secciones o Variables. Al aprobar se ${c.conMolde ? 'genera el Word final del formato' : 'generan el Word y el PDF finales'}${connected ? ' y se guardan en Dropbox' : ''}.</p>
+        <h3>2. Genera el Word de revisión</h3>
+        <p class="muted">Los datos están completos. Genera el Word de revisión${c.conMolde ? '' : ' (sale marcado “EN REVISIÓN”)'}${connected ? '; se guarda en Dropbox en la carpeta del contrato' : ''} para revisarlo antes de aprobar.</p>
         <div class="row wrap">
+          <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
+          <button class="btn primary" data-wf="revision" ${conflicto ? 'disabled' : ''}>${icon('doc')} Generar Word de revisión</button>
+        </div>`
+      : paso === 2 ? `
+        <h3>3. Revisa y aprueba</h3>
+        <p class="muted">${c.revision ? `Word de revisión generado por ${esc(c.revision.by || '—')} el ${fmtDateTime(c.revision.date).replace(/\.$/, '')}. ` : ''}Revísalo; si hay que cambiar algo, corrígelo en Secciones o Variables (el contrato regresa a borrador). Al aprobar se generan el Word y el PDF finales${c.conMolde ? ' (el PDF lo convierte DocuSign desde el Word del formato)' : ''}${connected ? ' y se guardan en Dropbox; el Word de revisión se quita' : ''}.</p>
+        <div class="row wrap">
+          <button class="btn" data-wf="revision">${icon('doc')} Descargar Word de revisión</button>
           <a class="btn" href="#/c/${c.id}/vista">${icon('eye')} Vista previa</a>
           <button class="btn primary" data-wf="approve" ${conflicto ? 'disabled' : ''}>${icon('check')} Aprobar</button>
         </div>`
-      : paso === 2 ? `
-        <h3>3. Envía a firma</h3>
-        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : retro ? 'Imprímelo, recaba las firmas autógrafas y sube el PDF escaneado.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa al paso 2.</p>
+      : paso === 3 ? `
+        <h3>4. Envía a firma</h3>
+        <p class="muted">${c.aprobado ? `Aprobado por ${esc(c.aprobado.by || '—')} el ${fmtDateTime(c.aprobado.date).replace(/\.$/, '')}. ` : ''}${envioActivo(c) ? 'Está en DocuSign: abajo ves quién ya firmó; cuando firmen todos queda firmado solo.' : retro ? 'Imprímelo, recaba las firmas autógrafas y sube el PDF escaneado.' : 'Envíalo por DocuSign o, si se firmó en papel, sube el PDF escaneado.'} Si hay que corregir algo, edítalo: el contrato regresa a borrador y se vuelve a revisar.</p>
         <div class="row wrap">
           ${connected && !envioActivo(c) && !(c.documentos || []).some((d) => d.path && /(?: - |-)APROBADO\.docx$/i.test(d.name)) ? `
           <button class="btn" data-wf="approve">${icon('upload')} Volver a guardar el aprobado en Dropbox</button>` : ''}
+          ${connected && c.conMolde && ds.isGlobal() && (c.documentos || []).some((d) => d.path && /(?: - |-)APROBADO\.docx$/i.test(d.name)) && !(c.documentos || []).some((d) => d.path && /(?: - |-)APROBADO\.pdf$/i.test(d.name)) ? `
+          <button class="btn" data-wf="pdf-ds">${icon('pdf')} Generar PDF aprobado (DocuSign)</button>` : ''}
           ${envioActivo(c) ? '' : retro ? `
           <button class="btn primary" data-wf="papel">${icon('upload')} Firmado en papel</button>` : `
           <button class="btn primary" data-wf="ds-send">${icon('mail')} Enviar a firma (DocuSign)</button>
@@ -4025,6 +4036,8 @@ function renderDocumento() {
     const act = btn.dataset.wf;
     try {
       if (act === 'approve') return await approve(c, btn);
+      if (act === 'revision') { btn.disabled = true; await generarRevision(c); renderEditorHeader(); return renderDocumento(); }
+      if (act === 'pdf-ds') { btn.disabled = true; await pdfAprobadoDS(c); return renderDocumento(); }
       if (act === 'papel') return await firmadoEnPapel(c);
       if (act === 'pdf') return exportPdf(c);
       if (act === 'word') return downloadWord(c);
@@ -4098,11 +4111,48 @@ async function firmadoEnPapel(c) {
 /** Word y PDF finales (sin leyendas) de un contrato aprobado. */
 async function finalFiles(c, D) {
   const base = baseArchivo(c);
-  return [
-    { name: `${base}-APROBADO.docx`, blob: c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' }), kind: 'docx' },
-    // Con formato propio el PDF lo saca el abogado desde Word: el generador de la app no reproduce su estilo
-    ...(c.conMolde ? [] : [{ name: `${base}-APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' }]),
-  ];
+  const word = c.conMolde ? await wordDe(c) : await buildDocxBlob(D, c, { label: '' });
+  const files = [{ name: `${base}-APROBADO.docx`, blob: word, kind: 'docx' }];
+  if (!c.conMolde) files.push({ name: `${base}-APROBADO.pdf`, blob: buildPdf(c).blob, kind: 'pdf' });
+  else {
+    // Con formato propio el generador de la app no reproduce su estilo: DocuSign convierte el Word del formato.
+    // Si no se puede (sin conexión de DocuSign), se aprueba solo con el Word y queda el botón para generarlo después
+    try {
+      if (!ds.isGlobal()) throw new Error('la conexión de DocuSign del despacho no está configurada');
+      files.push({ name: `${base}-APROBADO.pdf`, blob: await ds.wordAPdf(word, `${base}-APROBADO.docx`), kind: 'pdf' });
+    } catch (err) {
+      console.warn(err);
+      toast(`Se aprobó con el Word; el PDF no se pudo generar con DocuSign (${err.message}). Usa “Generar PDF aprobado” más tarde.`, 'error');
+    }
+  }
+  return files;
+}
+
+/** Word de revisión del contrato: se guarda en Dropbox como "…-REVISION.docx" y el contrato pasa a revisión. */
+async function generarRevision(c) {
+  const blob = await wordDe(c, 'EN REVISIÓN');
+  const doc = await deliverFile(c, blob, `${baseArchivo(c)}-REVISION.docx`, 'docx', { reemplazar: true });
+  // Un solo Word de revisión vigente (si cambió el nombre, el anterior se quita)
+  const viejos = dbx.isConnected() ? c.documentos.filter((d) => d.path && /-REVISION\.docx$/i.test(d.name) && d.id !== doc.id) : [];
+  for (const d of viejos) { try { await dbx.remove(d.path); } catch (err) { console.warn(err); } }
+  if (viejos.length) c.documentos = c.documentos.filter((d) => !viejos.includes(d));
+  if (c.status !== 'revision') {
+    c.status = 'revision';
+    c.revision = { by: cuenta(), date: Date.now() };
+    logChange(c, `Generó el Word de revisión${c.revision.by ? ` (${c.revision.by})` : ''}`);
+  }
+  await saveContract(c);
+  toast(`Word de revisión ${dbx.isConnected() ? 'guardado en Dropbox y descargado' : 'descargado'}`, 'ok');
+}
+
+/** PDF aprobado de un contrato con formato, convertido por DocuSign desde el Word aprobado (si no se generó al aprobar). */
+async function pdfAprobadoDS(c) {
+  const base = baseArchivo(c);
+  const pdf = await ds.wordAPdf(await wordDe(c), `${base}-APROBADO.docx`);
+  await deliverFile(c, pdf, `${base}-APROBADO.pdf`, 'pdf', { reemplazar: true });
+  logChange(c, 'Generó el PDF aprobado con DocuSign');
+  await saveContract(c);
+  toast('PDF aprobado guardado en Dropbox', 'ok');
 }
 
 async function approveContract(c, { descargar = true } = {}) {
@@ -4123,7 +4173,8 @@ async function approveContract(c, { descargar = true } = {}) {
     for (const f of files) nuevos.add((await deliverFile(c, f.blob, f.name, f.kind, { descargar, reemplazar: true })).id);
     // Si cambió el nombre o la carpeta (otra fecha de firma, otro cliente…) el APROBADO anterior se borra
     // (queda en los eliminados de Dropbox): solo hay un aprobado vigente
-    const viejos = dbx.isConnected() ? (c.documentos || []).filter((d) => d.path && /(?: - |-)APROBADO\.(docx|pdf)$/i.test(d.name) && !nuevos.has(d.id)) : [];
+    // Los Word de revisión también se quitan: ya hay versión aprobada
+    const viejos = dbx.isConnected() ? (c.documentos || []).filter((d) => d.path && (/(?: - |-)APROBADO\.(docx|pdf)$/i.test(d.name) || /-REVISION\.docx$/i.test(d.name)) && !nuevos.has(d.id)) : [];
     for (const d of viejos) { try { await dbx.remove(d.path); } catch (err) { console.warn(err); } }
     if (viejos.length) c.documentos = c.documentos.filter((d) => !viejos.includes(d));
   } catch (err) {
