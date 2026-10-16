@@ -3668,7 +3668,8 @@ function envioHTML(c) {
         ${abierto ? `
           ${ds.isConnected() ? '<button class="btn" data-wf="ds-refresh">Actualizar estado</button>' : '<button class="btn" data-wf="ds-settings">Conectar DocuSign para ver el estado</button>'}
           <button class="btn ghost danger" data-wf="ds-void">Cancelar envío</button>`
-        : e.status !== 'completed' && c.status === 'aprobado' ? '<button class="btn primary" data-wf="ds-reset">Preparar un nuevo envío</button>' : ''}
+        // Con fecha de firma ya pasada se firma en persona: no se ofrece otro envío a DocuSign
+        : e.status !== 'completed' && c.status === 'aprobado' && !firmaRetroactiva(c) ? '<button class="btn primary" data-wf="ds-reset">Preparar un nuevo envío</button>' : ''}
       </div>
     </section>`;
 }
