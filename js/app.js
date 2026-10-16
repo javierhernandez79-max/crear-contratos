@@ -3401,9 +3401,10 @@ function bindDropboxSettings() {
       if (!(await confirmDialog('Acomodar archivos', `Se moverán y renombrarán en Dropbox ${n} archivo(s) o carpeta(s) de lote: carpeta del cliente › empresa del grupo › tipo de contrato, y nombre Tipo-Cliente-Empresa-Fecha (p. ej. “…/SEGURIDOC S.A. DE C.V./360 MANAGEMENT & BUSINESS, S.A. DE C.V./CONTRATOS DE SERVICIOS/ContratoDePrestacionDeServicios-Seguridoc-360ManagementBusiness-2026-10-15-APROBADO.pdf”). Las carpetas de contrato que queden vacías se borran.`, 'Acomodar', 'primary'))) return;
       toast('Acomodando…');
       try {
-        const { ok, fallos } = await renombrarArchivos();
+        const { ok, fallos, quitados } = await renombrarArchivos();
         await runSync(); // se suben los registros de inmediato para que otro equipo no los renombre otra vez
-        if (fallos.length) await modal({ title: 'Acomodar archivos', body: `<p>Se acomodaron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
+        const lista = (titulo, xs) => (xs.length ? `<p>${titulo}</p><ul>${xs.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : '');
+        if (fallos.length || quitados.length) await modal({ title: 'Acomodar archivos', body: `<p>Se acomodaron ${ok}.</p>${lista(`Se quitaron de la app ${quitados.length} que ya no existen en Dropbox:`, quitados)}${lista(`No se pudieron ${fallos.length}:`, fallos)}`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
         else toast(`Se acomodaron ${ok} archivo(s)`, 'ok');
       } catch (err) { toast(err.message, 'error'); }
       renderSettings();
@@ -3498,7 +3499,7 @@ function porRenombrar() {
       const suf = SUFIJOS_ARCHIVO.find(([re]) => re.test(d.name));
       const nuevo = suf ? baseArchivo(c) + suf[1](d.name.split('.').pop().toLowerCase()) : d.name;
       const hacia = dbx.joinPath(carpeta, nuevo);
-      if (hacia.toLowerCase() !== dbx.normalizePath(d.path).toLowerCase()) lista.push({ desde: d.path, hacia, viejo: d.name, dueño: ['contracts', c], aplicar: (ruta) => Object.assign(d, { name: nuevo, path: ruta }) });
+      if (hacia.toLowerCase() !== dbx.normalizePath(d.path).toLowerCase()) lista.push({ desde: d.path, hacia, viejo: d.name, dueño: ['contracts', c], aplicar: (ruta) => Object.assign(d, { name: nuevo, path: ruta }), quitar: () => { c.documentos = c.documentos.filter((x) => x !== d); } });
     }
   }
   for (const l of state.lotes) {
@@ -3522,17 +3523,25 @@ function porRenombrar() {
       if (!l.dropbox.nombresNuevos && viejo !== nombres[i]) lista.push({ desde: dbx.joinPath(l.dropbox.carpeta, viejo), hacia: dbx.joinPath(l.dropbox.carpeta, nombres[i]), viejo, dueño: ['lotes', l], aplicar: () => {} });
       const firmado = nombres[i].replace(/\.docx$/i, '-FIRMADO.pdf');
       if (w.firmado?.path && w.firmado.path.split('/').pop() !== firmado) {
-        lista.push({ desde: w.firmado.path, hacia: dbx.joinPath(dir(w.firmado.path), firmado), viejo: w.firmado.path.split('/').pop(), dueño: ['lotes', l], aplicar: (ruta) => { w.firmado.path = ruta; } });
+        lista.push({ desde: w.firmado.path, hacia: dbx.joinPath(dir(w.firmado.path), firmado), viejo: w.firmado.path.split('/').pop(), dueño: ['lotes', l], aplicar: (ruta) => { w.firmado.path = ruta; }, quitar: () => { delete w.firmado; } });
       }
     });
   }
   return lista;
 }
 
-/** Renombra en Dropbox los archivos con el nombre anterior y actualiza su registro en cada contrato o lote. */
+/** ¿Algún otro contrato ya registra un archivo en esa ruta? */
+const rutaDeOtro = (c, ruta) => state.contracts.some((x) => x !== c && (x.documentos || []).some((d) => d.path && dbx.normalizePath(d.path).toLowerCase() === ruta.toLowerCase()));
+
+/**
+ * Renombra en Dropbox los archivos con el nombre anterior y actualiza su registro en cada contrato o lote.
+ * Si el archivo ya no está donde dice el registro: si ya está en su lugar nuevo (otro equipo lo movió y su
+ * registro no llegó) solo se corrige la ruta; si no está en ningún lado, se quita del registro.
+ */
 async function renombrarArchivos() {
   let ok = 0;
   const fallos = [];
+  const quitados = [];
   const tocados = new Map();
   const vaciadas = new Set();
   const mover = async (x) => {
@@ -3543,6 +3552,15 @@ async function renombrarArchivos() {
       vaciadas.add(x.desde.slice(0, x.desde.lastIndexOf('/')));
       ok++;
     } catch (err) {
+      if (err.notFound && x.quitar) {
+        // El de otro contrato con el mismo nombre (mismo tipo, cliente, empresa y fecha) no se adopta
+        const ya = await dbx.getMetadata(x.hacia).catch(() => null);
+        const ajeno = x.dueño[0] === 'contracts' && rutaDeOtro(x.dueño[1], x.hacia);
+        if (ya && !ajeno) x.aplicar(ya.path_display || x.hacia), ok++;
+        else x.quitar(), quitados.push(x.viejo);
+        tocados.set(x.dueño[1], x.dueño[0]);
+        return;
+      }
       fallos.push(`${x.viejo}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe uno con el nombre nuevo' : err.message}`);
     }
   };
@@ -3565,7 +3583,7 @@ async function renombrarArchivos() {
     await db.put(store, structuredClone(x));
     await sync.markDirty(store, x.id);
   }
-  return { ok, fallos };
+  return { ok, fallos, quitados };
 }
 
 /** Parte a cuyo expediente va el contrato: el cliente o contraparte; en trabajo y comisión, la empresa (ver carpetas.js). */
