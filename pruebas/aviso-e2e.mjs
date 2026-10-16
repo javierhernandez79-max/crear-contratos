@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined }); const pg = await b.newPage();
+const errs = []; pg.on('pageerror', (e) => errs.push(e.message));
+await pg.goto('http://localhost:5173/#/lotes/nuevo'); await pg.waitForSelector('#l-emp');
+const t1 = await pg.textContent('.lote-form'); console.log(t1.includes('no está conectado a Dropbox') ? 'OK   aviso sin conexión' : 'FAIL aviso sin conexión');
+await pg.evaluate(async () => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  await new Promise((x) => { const tx = d.transaction('parties', 'readwrite'); tx.objectStore('parties').put({ id: 'c1', kind: 'pm', propia: false, activa: true, nombre: 'CLIENTE', rfc: '', apoderados: [], accionistas: [] }); tx.oncomplete = x; }); });
+await pg.reload(); await pg.waitForSelector('#l-emp');
+const t2 = await pg.textContent('.lote-form'); console.log(t2.includes('Empresa del grupo') ? 'OK   aviso sin empresas del grupo' : 'FAIL aviso sin empresas del grupo');
+await pg.screenshot({ path: '../l6-aviso.png' }); console.log(errs); await b.close();

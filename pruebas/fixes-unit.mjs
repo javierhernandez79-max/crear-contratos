@@ -1,0 +1,30 @@
+import ExcelJS from 'exceljs';
+import { formatValue, contentHash, changedSinceSigned, layoutSections, fill, duplicateContract } from '../js/model.js';
+import { montoEnLetra } from '../js/letras.js';
+import { xlsxToCatalog } from '../js/catalog-xlsx.js';
+import { buildZip } from '../js/zip.js';
+const ok = (c, m) => console.log(c ? 'OK  ' : 'FAIL', m);
+ok(formatValue({ type: 'money' }, '1.005').includes('$1.01 (UN PESO 01/100'), 'cifra y letra coinciden en centavos');
+ok(formatValue({ type: 'money' }, 'N/A') === 'N/A', 'texto no numérico no se vuelve $0.00');
+ok(!/USD .*USD .*USD/.test(formatValue({ type: 'money' }, '1500', 'USD')), 'USD sin código duplicado');
+ok(montoEnLetra(-5).startsWith('MENOS'), 'negativo en letra');
+ok(formatValue({ type: 'text' }, '   ') === null, 'solo espacios = faltante');
+const c = { title: 'T', varDefs: [{ key: 'e', type: 'text' }], variables: { e: 'ACME S.A.' }, sections: [{ id: 's', title: 'Con {{e}}', body: 'x' }], signers: [{ role: 'A', name: 'Juan' }], numeracion: 'ordinal', tituloClausula: 'en_linea' };
+ok(!layoutSections(c)[0].heading.endsWith('..') && fill(c, layoutSections(c)[0].heading).endsWith('S.A.'), 'sin doble punto en vista previa');
+c.signedHash = contentHash(c); c.numeracion = 'decimal'; ok(changedSinceSigned(c), 'cambiar numeración tras firmar se detecta');
+c.signedHash = 'abc123'; ok(changedSinceSigned(c), 'huella antigua se sigue comparando con la fórmula anterior');
+const d = duplicateContract({ ...c, etiqueta: 'Servicios · X', aprobado: { by: 'a' }, documentos: [1] });
+ok(d.etiqueta === 'Servicios · X (copia)' && d.title === 'T' && !d.aprobado && !d.documentos.length, 'duplicar: etiqueta con (copia), título intacto, sin aprobación ni documentos');
+// Catálogo: ID inválido, filas repetidas, "Empresa del grupo" vacía
+const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Partes');
+ws.addRow(['ID (no modificar)', 'Tipo (Moral/Física)', 'Nombre o razón social', 'RFC', 'Empresa del grupo (Sí/No)', 'Activa (Sí/No)']);
+ws.addRow(['x" onfocus="alert(1)', 'Moral', 'MALA', 'MAL010101AA1', '', '']);
+ws.addRow(['', 'Moral', 'REPETIDA', 'REP010101AA1', 'Sí', '']);
+ws.addRow(['', 'Moral', 'REPETIDA', 'REP010101AA1', 'Sí', '']);
+const buf = await wb.xlsx.writeBuffer();
+const r = await xlsxToCatalog(ExcelJS, buf, []);
+const mala = r.parties.find((p) => p.nombre === 'MALA');
+ok(mala && /^[\w-]+$/.test(mala.id) && r.warnings.some((w) => w.includes('no es válido')), 'ID con comillas se reemplaza y se avisa');
+ok(mala.propia === false && mala.activa === true, '"Empresa del grupo" vacía = No; "Activa" vacía = Sí');
+ok(r.parties.filter((p) => p.nombre === 'REPETIDA').length === 1, 'filas repetidas sin ID no duplican la parte');
+try { buildZip(Array.from({ length: 70000 }, (_, i) => ({ name: `${i}`, data: new Uint8Array(0) }))); ok(false, 'zip >65535'); } catch { ok(true, 'zip con >65535 archivos se rechaza'); }

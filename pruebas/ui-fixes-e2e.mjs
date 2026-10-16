@@ -1,0 +1,34 @@
+import { chromium } from 'playwright'; import fs from 'fs'; import ExcelJS from 'exceljs';
+const APP = 'http://localhost:5173/';
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
+const pg = await b.newPage({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+pg.on('pageerror', (e) => errors.push(e.message));
+await pg.goto(APP + '#/'); await pg.waitForSelector('#bottom-nav');
+const idb = (fn, arg) => pg.evaluate(async ({ fn, arg }) => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const put = (st, v) => new Promise((x) => { const tx = d.transaction(st, 'readwrite'); tx.objectStore(st).put(v); tx.oncomplete = x; });
+  const all = (st) => new Promise((x) => { const q = d.transaction(st).objectStore(st).getAll(); q.onsuccess = () => x(q.result); });
+  return eval(fn)(put, all, arg); }, { fn: fn.toString(), arg });
+// 1) Respaldo con lotes
+await idb(async (put) => put('lotes', { id: 'L1', title: 'Lote X', status: 'revision', tipo: 'INDETERMINADO', trabajadores: [], excluidos: [], history: [], createdAt: 1 }));
+await pg.goto(APP + '#/ajustes'); await pg.reload(); await pg.waitForSelector('#export');
+const [dl] = await Promise.all([pg.waitForEvent('download'), pg.click('#export')]);
+const backup = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
+ok(backup.lotes?.length === 1, 'el respaldo incluye los lotes');
+await pg.click('#wipe'); await pg.click('dialog.modal button[value=ok]'); await pg.waitForTimeout(300);
+ok((await idb(async (put, all) => (await all('lotes')).length)) === 0, 'borrar todo vacía los lotes');
+const f = '' + (process.argv[2] || '..') + '/backup.json'; fs.writeFileSync(f, JSON.stringify(backup));
+await pg.setInputFiles('#import', f); await pg.click('dialog.modal button[value=ok]'); await pg.waitForTimeout(500);
+ok((await idb(async (put, all) => (await all('lotes')).length)) === 1, 'importar el respaldo recupera los lotes');
+// 2) Título de un contrato aprobado: se puede escribir sin perder el cursor
+await pg.goto(APP + '#/plantillas'); await pg.waitForSelector('.tpl-list .ll-row[data-id]');
+await pg.locator('.tpl-list .ll-row[data-id]').first().locator('[data-act=view]').click();
+await pg.click('dialog.modal button[value=use]'); await pg.waitForSelector('#doc-title');
+await pg.evaluate(() => { const i = document.querySelector('#doc-title'); }); 
+const id = await pg.evaluate(() => location.hash.split('/')[2]);
+await idb(async (put, all, id) => { const c = (await all('contracts')).find((x) => x.id === id); c.status = 'aprobado'; await put('contracts', c); }, id);
+await pg.reload(); await pg.waitForSelector('#doc-title');
+await pg.click('#doc-title'); await pg.keyboard.press('End'); await pg.keyboard.type(' NUEVO');
+ok((await pg.inputValue('#doc-title')).endsWith(' NUEVO'), 'escribir en el título de un contrato aprobado no pierde letras');
+ok((await pg.textContent('#editor-head .badge')).includes('Borrador'), 'el estado cambia a borrador');
+console.log(errors.length ? 'ERRORES: ' + errors.join(' | ') : 'TODO OK'); await b.close();

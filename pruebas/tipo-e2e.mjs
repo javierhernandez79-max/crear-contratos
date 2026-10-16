@@ -1,0 +1,28 @@
+import { chromium } from 'playwright'; import ExcelJS from 'exceljs'; import fs from 'fs';
+const S = process.argv[2]; const APP = 'http://localhost:5173/';
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const det = JSON.parse(fs.readFileSync('../marco/out/u-marco-trabajo-determinado.json'));
+const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('P1');
+ws.addRow(['Apellido Paterno', 'Apellido Materno', 'Nombre', 'RFC con Homoclave', 'CURP', 'Estado Civil', 'Calle', 'No. Ext.', 'Colonia', 'Alcaldía/municipio', 'CP', 'SD', 'Puesto', 'Fecha de Antigüedad', 'Tipo de Contrato', 'Días de Pago', 'Fecha de Ingreso', 'Lugar de Trabajo', 'Fecha de Firma', 'Fecha de Terminación']);
+const d = (m, day) => new Date(Date.UTC(2026, m, day));
+ws.addRow(['PEREZ', 'LOPEZ', 'ANA', 'PELA900101AB1', 'PELA900101MDFRPN01', 'SOLTERA', 'CALLE UNO', 10, 'CENTRO', 'CUAUHTEMOC', '06000', 500, 'AUXILIAR', d(9, 1), 'INDETERMINADO', '15 y último', d(9, 1), 'CDMX', d(9, 1), d(11, 31)]);
+await wb.xlsx.writeFile(S + '/p1-tipo.xlsx');
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
+const pg = await b.newPage({ viewport: { width: 1280, height: 900 } });
+pg.on('pageerror', (e) => errors.push(e.message));
+await pg.goto(APP + '#/lotes'); await pg.waitForSelector('#p1-blank');
+await pg.evaluate(async (t) => {
+  const r = indexedDB.open('crear-contratos'); const db = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const put = (store, v) => new Promise((x) => { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).put(v); tx.oncomplete = x; });
+  await put('templates', t);
+  await put('parties', { id: 'emp1', kind: 'pm', propia: true, activa: true, nombre: 'EMPRESA DEMO, S.A. DE C.V.', rfc: 'EDE010101AA1', domicilio: 'AV. DEMO 1', apoderados: [{ id: 'apo1', nombre: 'MARIA APODERADA', cargo: 'Apoderado legal', vigente: true }], accionistas: [], createdAt: 1, updatedAt: 1 });
+}, det);
+await pg.reload(); await pg.waitForSelector('#p1-blank');
+await pg.click('a[href="#/lotes/nuevo"]'); await pg.waitForSelector('#l-tpl');
+await pg.selectOption('#l-tpl', det.id); await pg.selectOption('#l-per', 'QUINCENAL'); await pg.selectOption('#l-emp', 'emp1'); await pg.fill('#l-cli', 'X');
+await pg.setInputFiles('#l-file', S + '/p1-tipo.xlsx'); await pg.waitForSelector('.lt-row:not(.lt-head)');
+ok(!(await pg.locator('.lt-row.bad').count()), 'P1 con INDETERMINADO y plantilla determinado: sin error de tipo');
+await pg.click('[data-edit="0"]');
+const labels = await pg.locator('dialog.modal .p1-grid label span').allTextContents();
+ok(!labels.includes('Tipo de Contrato'), 'Corregir ya no muestra Tipo de Contrato');
+console.log(errors.length ? 'ERRORES: ' + errors.join(' | ') : 'TODO OK'); await b.close();

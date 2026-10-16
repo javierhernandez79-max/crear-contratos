@@ -1,0 +1,5 @@
+node_modules
+salida/
+# Material del despacho (plantillas marco, formatos F1–F12, P1, Sugerido): nunca se sube, el repositorio es público
+privado/*
+!privado/LEEME.md

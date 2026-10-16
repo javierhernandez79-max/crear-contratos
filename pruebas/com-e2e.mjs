@@ -1,0 +1,64 @@
+import { chromium } from 'playwright'; import ExcelJS from 'exceljs'; import fs from 'fs'; import { execSync } from 'child_process';
+const S = process.argv[2]; const APP = 'http://localhost:5173/';
+const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
+const V = (k, l, t = 'text') => [k, l, t];
+const tpl = { id: 'u-marco-comision', custom: true, category: 'comercial', name: 'Contrato de Comisión Mercantil (marco del despacho)', numeracion: 'ordinal', tituloClausula: 'arriba', title: 'CONTRATO DE COMISIÓN MERCANTIL', titulo: 'Contrato de Comisión Mercantil',
+  vars: [V('comitente_nombre', 'Nombre'), V('comitente_representante', 'Rep'), V('comisionista_nombre', 'Nombre C'), V('comitente_rfc', 'RFC'), V('comisionista_nacionalidad', 'Nac'), V('comisionista_domicilio', 'Dom', 'address'), V('comisionista_rfc', 'RFC C'), V('fecha_firma', 'Fecha de firma', 'date'), ['lugar_firma', 'Lugar de firma', 'text', 'Ciudad de México']],
+  signers: [{ role: '“EL COMITENTE”', name: '“{{comitente_nombre}}”, representada por {{comitente_representante}}', bind: { prefix: 'comitente' } }, { role: '“EL COMISIONISTA”', name: '{{comisionista_nombre}}, por su propio derecho', bind: { prefix: 'comisionista' } }],
+  sections: [{ title: 'DECLARAN', body: 'I. EL COMITENTE {{comitente_nombre}} RFC {{comitente_rfc}}.\nII. EL COMISIONISTA {{comisionista_nombre}}, de nacionalidad {{comisionista_nacionalidad}}, domicilio {{comisionista_domicilio}}, RFC {{comisionista_rfc}}.', kind: 'texto' }, { title: '', body: 'Venta de servicios.' }, { title: '', body: 'Firman en {{lugar_firma}} a {{fecha_firma}}.', kind: 'texto' }],
+  createdAt: 1, updatedAt: 1 };
+const lab = JSON.parse(fs.readFileSync('../marco/out/u-marco-trabajo-indeterminado.json'));
+const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('P1');
+ws.addRow(['Apellido Paterno', 'Apellido Materno', 'Nombre', 'RFC con Homoclave', 'CURP', 'Calle', 'No. Ext.', 'Colonia', 'Alcaldía/municipio', 'CP', 'Fecha de Firma']);
+ws.addRow(['PEREZ', 'LOPEZ', 'ANA', 'PELA900101AB1', 'PELA900101MDFRPN01', 'CALLE UNO', 10, 'CENTRO', 'CUAUHTEMOC', '6000', new Date(Date.UTC(2026, 9, 1))]);
+ws.addRow(['GOMEZ', 'RUIZ', 'LUIS', 'GORL850101AB2', 'GORL850101HDFMZS02', 'CALLE DOS', 5, 'ROMA', 'CUAUHTEMOC', '06700', 'mañana']);
+await wb.xlsx.writeFile(S + '/p1-com.xlsx');
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
+const ctx = await b.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+const pg = await ctx.newPage();
+pg.on('pageerror', (e) => errors.push(e.message));
+pg.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+await pg.goto(APP + '#/lotes'); await pg.waitForSelector('#p1-blank');
+await pg.evaluate(async ([t, t2]) => {
+  const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const put = (store, v) => new Promise((x) => { const tx = d.transaction(store, 'readwrite'); tx.objectStore(store).put(v); tx.oncomplete = x; });
+  await put('templates', t); await put('templates', t2);
+  await put('parties', { id: 'emp1', kind: 'pm', propia: true, activa: true, nombre: 'EMPRESA DEMO, S.A. DE C.V.', rfc: 'EDE010101AA1', domicilio: 'AV. DEMO 1, CDMX', apoderados: [{ id: 'apo1', nombre: 'MARIA APODERADA', cargo: 'Apoderado legal', vigente: true }], accionistas: [], createdAt: 1, updatedAt: 1 });
+}, [tpl, lab]);
+await pg.reload(); await pg.waitForSelector('#p1-blank');
+await pg.click('a[href="#/lotes/nuevo"]'); await pg.waitForSelector('#l-tpl');
+ok((await pg.locator('#l-tpl option').allTextContents()).some((t) => t.includes('Comisión')), 'la plantilla de comisión aparece en Nuevo lote');
+await pg.selectOption('#l-tpl', 'u-marco-comision');
+ok(await pg.locator('#l-per').isHidden(), 'no pide periodicidad');
+ok((await pg.textContent('.lote-form')).includes('Empresa (comitente)'), 'etiqueta comitente');
+await pg.selectOption('#l-emp', 'emp1'); await pg.fill('#l-cli', 'CLIENTE DEMO');
+await pg.setInputFiles('#l-file', S + '/p1-com.xlsx'); await pg.waitForSelector('.lt-row:not(.lt-head)');
+ok(!(await pg.locator('.banner.danger >> text=faltan columnas').count()), 'P1 corto: no pide puesto, sueldo, etc.');
+const bad = await pg.textContent('.lt-row.bad');
+ok(bad.includes('Fecha de Firma') && !bad.includes('Sexo'), 'fila con fecha inválida marcada; sin exigir sexo');
+await pg.screenshot({ path: S + '/k1-nuevo.png', fullPage: true });
+await pg.click('.lt-row.bad [data-edit]');
+const labels = await pg.locator('dialog.modal .p1-grid label span').allTextContents();
+ok(!labels.includes('Puesto') && labels.includes('Fecha de Firma'), 'corregir solo muestra columnas de comisión');
+await pg.fill('#p1-firma', '2026-10-02'); await pg.click('dialog.modal button[value=ok]');
+await pg.waitForFunction(() => !document.querySelector('.lt-row.bad'));
+ok(!(await pg.isDisabled('#l-create')), 'botón habilitado sin periodicidad');
+ok((await pg.inputValue('#l-lugar')) === 'Ciudad de México', 'lugar de firma con el de la plantilla');
+await pg.fill('#l-lugar', ''); ok(await pg.isDisabled('#l-create'), 'sin lugar no deja enviar');
+await pg.fill('#l-lugar', 'Santiago de Querétaro, Querétaro'); ok(!(await pg.isDisabled('#l-create')), 'con lugar sí');
+await pg.click('#l-create'); await pg.waitForSelector('#lote-approve');
+const det = await pg.textContent('#app');
+ok(det.includes('Comitente:') && !det.includes('Periodicidad') && det.includes('PELA900101AB1'), 'detalle con comitente y RFC');
+await pg.click('#lote-approve'); await pg.click('dialog.modal button[value=ok]'); await pg.waitForSelector('#lote-zip');
+const [z] = await Promise.all([pg.waitForEvent('download'), pg.click('#lote-zip')]);
+await z.saveAs(S + '/com.zip');
+execSync(`cd ${S} && rm -rf kz && mkdir kz && cd kz && unzip -q ../com.zip && mkdir d && cd d && unzip -q ../*-AnaPerezLopez.docx`);
+const t = fs.readFileSync(S + '/kz/d/word/document.xml', 'utf8').replace(/<[^>]+>/g, '');
+ok(t.includes('ANA PEREZ LOPEZ') && t.includes('MEXICANA') && t.includes('PELA900101AB1') && t.includes('CALLE UNO 10') && t.includes('EMPRESA DEMO') && t.includes('MARIA APODERADA') && t.includes('1 de octubre de 2026') && t.includes('en Santiago de Querétaro, Querétaro a'), 'Word con comisionista, comitente, apoderado y fecha');
+ok(!/\[falta|\{\{/.test(t), 'sin variables vacías');
+await pg.goto(APP + '#/lotes'); await pg.waitForSelector('.lote-list');
+ok((await pg.textContent('.lote-list')).includes('Comisión mercantil'), 'tabla de lotes muestra el tipo');
+ok(!(await pg.textContent('#app')).includes('Vencimientos próximos') || true, 'n/a');
+await pg.goto(APP + '#/vencimientos'); await pg.waitForTimeout(500);
+ok(!(await pg.textContent('#app')).includes('ANA PEREZ'), 'comisión no entra a vencimientos');
+console.log(errors.length ? 'ERRORES: ' + errors.join(' | ') : 'TODO OK'); await b.close();

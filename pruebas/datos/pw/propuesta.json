@@ -1,0 +1,15 @@
+{"titulo":"CONTRATO DE ARRENDAMIENTO","partes":[{"prefijo":"arrendador","rol":"El “Arrendador”","kind":"pm"},{"prefijo":"arrendatario","rol":"El “Arrendatario”","kind":"pf"}],
+"campos":[
+{"texto":"INMUEBLES DEL CENTRO, S.A. DE C.V.","clave":"arrendador_nombre","etiqueta":"Arrendador","tipo":"text","parrafos":[1,3,9]},
+{"texto":"ANA LÓPEZ RUIZ","clave":"arrendador_representante","etiqueta":"Representante","tipo":"text","parrafos":[1,10]},
+{"texto":"JUAN PÉREZ GÓMEZ","clave":"arrendatario_nombre","etiqueta":"Arrendatario","tipo":"text","parrafos":[1,12]},
+{"texto":"Av. Reforma 100, Col. Juárez, CDMX","clave":"arrendador_domicilio","etiqueta":"Domicilio","tipo":"address","parrafos":[3]},
+{"texto":"ICE010101AB1","clave":"arrendador_rfc","etiqueta":"RFC","tipo":"text","parrafos":[3]},
+{"texto":"__________________","clave":"arrendatario_domicilio","etiqueta":"Domicilio","tipo":"address","parrafos":[4]},
+{"texto":"$15,000.00 (QUINCE MIL PESOS 00/100 M.N.)","clave":"monto_renta","etiqueta":"Renta mensual","tipo":"money","parrafos":[6]},
+{"texto":"1 de noviembre de 2026","clave":"fecha_inicio","etiqueta":"Inicio del arrendamiento","tipo":"date","parrafos":[6]},
+{"texto":"Ciudad de México","clave":"ciudad_firma","etiqueta":"Ciudad de firma","tipo":"text","parrafos":[7]},
+{"texto":"1 de octubre de 2026","clave":"fecha_firma","etiqueta":"Fecha de firma","tipo":"date","parrafos":[7]},
+{"texto":"TEXTO QUE NO EXISTE","clave":"fantasma","etiqueta":"Fantasma","tipo":"text","parrafos":[2]}
+],
+"firmas":[{"prefijo":"arrendador","parrafo":10},{"prefijo":"arrendatario","parrafo":12}]}
