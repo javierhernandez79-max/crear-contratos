@@ -920,6 +920,16 @@ const fechaCorta = (iso) => {
   return y && m && d ? new Date(y, m - 1, d).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '') : '';
 };
 
+/** Fecha de firma del lote (la del P1); si los trabajadores tienen fechas distintas, el rango. Sin fecha: la de creación. */
+function fechaLote(l) {
+  const f = [...new Set(l.trabajadores.map((w) => String(w.firma || '')).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)))].sort();
+  if (!f.length) {
+    const d = new Date(l.createdAt || Date.now());
+    return fechaCorta(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+  return f.length === 1 ? fechaCorta(f[0]) : `${fechaCorta(f[0])} – ${fechaCorta(f[f.length - 1])}`;
+}
+
 function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
   return `
@@ -4549,12 +4559,13 @@ function renderLotes() {
       </div>` : ''}
     ${list.length ? `
       <div class="card lotes-list lote-list">
-        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
+        <div class="ll-row ll-head"><span>Cliente</span><span>Empresa</span><span>Tipo</span><span>Fecha</span><span>Contratos</span><span>Estado</span><span>Creado</span><span></span></div>
         ${list.map((l) => `
         <div class="ll-row" data-id="${esc(l.id)}" tabindex="0" role="link">
           <span><strong>${l.cliente ? esc(l.cliente) : '<span class="muted">—</span>'}</strong></span>
-          <span><strong>${esc(l.empresa?.nombre || l.title)}</strong><span class="muted small">${esc(fmtLongDate(l.trabajadores[0]?.firma) || fmtDateTime(l.createdAt))}</span></span>
+          <span><strong>${esc(l.empresa?.nombre || l.title)}</strong></span>
           <span>${esc(TIPO_LOTE[l.tipo] || l.tipo)}</span>
+          <span class="small">${esc(fechaLote(l))}</span>
           <span>${l.trabajadores.length}${l.excluidos?.length ? `<span class="warn-text small">${l.excluidos.length} con errores</span>` : ''}</span>
           <span><span class="badge ${l.status}">${LOTE_STATUS[l.status]}</span>${l.status === 'aprobado' ? `<span class="muted small">${firmadosLote(l)}/${l.trabajadores.length} firmados</span>` : ''}</span>
           <span class="small">${esc(l.createdBy || '')}<span class="muted">${fmtRelative(l.createdAt)}</span></span>
