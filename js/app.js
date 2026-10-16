@@ -3350,6 +3350,9 @@ async function dropboxSettingsHTML() {
         ${pendientes ? `<button class="btn" data-dbx="renombrar">Acomodar ${pendientes} archivo(s) a la estructura nueva</button>` : ''}
         <button class="btn ghost danger" data-dbx="disconnect">Desconectar</button>
       </div>
+      ${await esLimpiador() ? `
+      <div class="banner danger">${icon('alert')} <span><strong>Borrar datos de prueba.</strong> Borra todos los contratos y lotes de la app (para todos los usuarios), vacía la papelera y vacía en Dropbox la carpeta <code>DOCUMENTOS GENERADOS - LEGAL APP</code>. No toca plantillas, catálogo de partes ni expedientes corporativos.</span></div>
+      <div class="row"><button class="btn danger" data-dbx="borrar-pruebas">${icon('trash')} Borrar datos de prueba</button></div>` : ''}
     </section>`;
   }
   return `
@@ -3414,6 +3417,16 @@ function bindDropboxSettings() {
         if (fallos.length || quitados.length) await modal({ title: 'Acomodar archivos', body: `<p>Se acomodaron ${ok}.</p>${lista(`Se quitaron de la app ${quitados.length} que ya no existen en Dropbox:`, quitados)}${lista(`No se pudieron ${fallos.length}:`, fallos)}`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
         else toast(`Se acomodaron ${ok} archivo(s)`, 'ok');
       } catch (err) { toast(err.message, 'error'); }
+      renderSettings();
+    } else if (act === 'borrar-pruebas') {
+      if (!(await esLimpiador())) return;
+      const v = await promptDialog('Borrar datos de prueba', `Se borrarán ${state.contracts.length} contrato(s), ${state.lotes.length} lote(s), la papelera y todo lo que hay en DOCUMENTOS GENERADOS - LEGAL APP, en la app de todos y en Dropbox. Escribe BORRAR para confirmar.`, '', 'Borrar');
+      if (v !== 'BORRAR') return v === null ? undefined : toast('No se borró nada: hay que escribir BORRAR', 'error');
+      toast('Borrando datos de prueba…');
+      try {
+        const r = await borrarDatosPrueba();
+        toast(`Se borraron ${r.contratos} contrato(s), ${r.lotes} lote(s), ${r.papelera} de la papelera y ${r.carpetas} elemento(s) de DOCUMENTOS GENERADOS`, 'ok');
+      } catch (err) { toast(`No se terminó de borrar: ${err.message}`, 'error'); }
       renderSettings();
     } else if (act === 'disconnect') {
       if (!(await confirmDialog('Desconectar Dropbox', 'Los datos se quedan en este equipo y en Dropbox; solo se deja de sincronizar. Los cambios aún no subidos se subirán al volver a conectar.', 'Desconectar'))) return;
@@ -3591,6 +3604,41 @@ async function renombrarArchivos() {
     await sync.markDirty(store, x.id);
   }
   return { ok, fallos, quitados };
+}
+
+// Cuenta de Dropbox que puede borrar los datos de prueba (SHA-256 del correo, para no publicarlo en el repo)
+const LIMPIEZA_CUENTA = '19802404efa8cb218a071ed3525da46d255a744b08d7aee5a5fe042a596b4c2b';
+async function esLimpiador() {
+  const correo = String(dbx.config()?.account?.email || '').trim().toLowerCase();
+  if (!correo || !crypto.subtle) return false;
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(correo));
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('') === LIMPIEZA_CUENTA;
+}
+
+/**
+ * Borra los datos de prueba: contratos, lotes y papelera (aquí y, al sincronizar, en Dropbox y en los demás
+ * equipos) y vacía DOCUMENTOS GENERADOS en Dropbox (queda en sus eliminados). Plantillas y catálogo no se tocan.
+ */
+async function borrarDatosPrueba() {
+  // Primero se sincroniza para borrar las versiones vigentes (si no, un cambio de otro usuario se conservaría)
+  await runSync();
+  if (syncError) throw new Error(`no se pudo sincronizar: ${syncError}`);
+  const r = { contratos: state.contracts.length, lotes: state.lotes.length, papelera: 0, carpetas: 0 };
+  for (const c of state.contracts) { await db.remove('contracts', c.id); await sync.markDeleted('contracts', c.id); }
+  for (const l of state.lotes) { await db.remove('lotes', l.id); await sync.markDeleted('lotes', l.id); }
+  for (const e of await db.getAll('papelera')) { await db.remove('papelera', e.id); await sync.markDeleted('papelera', e.id); r.papelera++; }
+  state.contracts = [];
+  state.lotes = [];
+  state.current = null;
+  const raiz = sync.generadosRoot();
+  // Hijos directos de la raíz (la raíz se queda): al borrar una carpeta se va todo su contenido
+  for (const e of await dbx.listFolder(raiz)) {
+    await dbx.remove(e.path_display);
+    r.carpetas++;
+  }
+  await runSync();
+  if (syncError) throw new Error(`se borró aquí pero falta subirlo: ${syncError}`);
+  return r;
 }
 
 /** Parte a cuyo expediente va el contrato: el cliente o contraparte; en trabajo y comisión, la empresa (ver carpetas.js). */
