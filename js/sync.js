@@ -106,6 +106,8 @@ export function syncAll(opts) {
       }
       const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set(), papelera: new Set() }, conflicts: [] };
       await aplicarLimpieza(root, report);
+      // Tras un borrado de datos de prueba no se sincroniza nada más: la app cierra la sesión de este equipo
+      if (report.limpieza) return report;
       await syncCatalog(root, opts, report);
       for (const store of Object.keys(COLLECTIONS)) await syncCollection(store, dbx.joinPath(root, COLLECTIONS[store]), report, opts);
       state.lastSync = Date.now();
@@ -121,7 +123,7 @@ export function syncAll(opts) {
 const enc = (obj) => new TextEncoder().encode(JSON.stringify(obj));
 
 // Borrado de datos de prueba: el aviso en Dropbox obliga a cada equipo a descartar sus contratos, lotes y
-// papelera locales (aunque tengan cambios sin subir) para que nadie vuelva a subir lo borrado
+// papelera locales (aunque tengan cambios sin subir) y a cerrar su sesión de Dropbox, para que nadie vuelva a subir lo borrado
 const LIMPIEZA = 'datos-app/limpieza.json';
 
 /** Lo llama quien borró, ya sincronizado: los demás equipos lo aplican en su siguiente sincronización. */

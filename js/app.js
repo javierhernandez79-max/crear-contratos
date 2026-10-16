@@ -2947,10 +2947,18 @@ async function runSync({ manual = false } = {}) {
 
 async function applySyncReport({ changed, conflicts, limpieza }) {
   if (limpieza) {
-    toast(`${limpieza.by} borró los datos de prueba: se quitaron de este equipo los contratos, lotes y papelera`, 'ok');
+    // Se cierra la sesión de Dropbox de este equipo (se revoca su acceso): hay que volver a conectar
+    await dbx.disconnect();
+    setSyncPill('ok');
     state.current = null;
     await loadAll();
-    return go('#/');
+    go('#/ajustes');
+    await modal({
+      title: 'Sesión cerrada',
+      body: `<p>${esc(limpieza.by)} borró los datos de prueba: se quitaron de este equipo los contratos, lotes y papelera, y se cerró la sesión de Dropbox.</p><p>Vuelve a conectar Dropbox en Ajustes para seguir trabajando.</p>`,
+      actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
+    });
+    return;
   }
   const any = changed.contracts.size || changed.templates.size || changed.parties.size || changed.lotes?.size || changed.papelera?.size;
   if (!any) return;
@@ -3357,7 +3365,7 @@ async function dropboxSettingsHTML() {
         <button class="btn ghost danger" data-dbx="disconnect">Desconectar</button>
       </div>
       ${await esLimpiador() ? `
-      <div class="banner danger">${icon('alert')} <span><strong>Borrar datos de prueba.</strong> Borra todos los contratos y lotes de la app (para todos los usuarios), vacía la papelera y vacía en Dropbox la carpeta <code>DOCUMENTOS GENERADOS - LEGAL APP</code>. No toca plantillas, catálogo de partes ni expedientes corporativos.</span></div>
+      <div class="banner danger">${icon('alert')} <span><strong>Borrar datos de prueba.</strong> Borra todos los contratos y lotes de la app (para todos los usuarios), vacía la papelera y vacía en Dropbox la carpeta <code>DOCUMENTOS GENERADOS - LEGAL APP</code> y cierra la sesión de Dropbox de los demás equipos (al sincronizar tendrán que volver a conectar). No toca plantillas, catálogo de partes ni expedientes corporativos.</span></div>
       <div class="row"><button class="btn danger" data-dbx="borrar-pruebas">${icon('trash')} Borrar datos de prueba</button></div>` : ''}
     </section>`;
   }
@@ -3426,7 +3434,7 @@ function bindDropboxSettings() {
       renderSettings();
     } else if (act === 'borrar-pruebas') {
       if (!(await esLimpiador())) return;
-      const v = await promptDialog('Borrar datos de prueba', `Se borrarán ${state.contracts.length} contrato(s), ${state.lotes.length} lote(s), la papelera y todo lo que hay en DOCUMENTOS GENERADOS - LEGAL APP, en la app de todos y en Dropbox. Escribe BORRAR para confirmar.`, '', 'Borrar');
+      const v = await promptDialog('Borrar datos de prueba', `Se borrarán ${state.contracts.length} contrato(s), ${state.lotes.length} lote(s), la papelera y todo lo que hay en DOCUMENTOS GENERADOS - LEGAL APP, en la app de todos y en Dropbox, y se cerrará la sesión de Dropbox de los demás equipos. Escribe BORRAR para confirmar.`, '', 'Borrar');
       if (v !== 'BORRAR') return v === null ? undefined : toast('No se borró nada: hay que escribir BORRAR', 'error');
       toast('Borrando datos de prueba…');
       try {
