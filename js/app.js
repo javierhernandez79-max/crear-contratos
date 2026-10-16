@@ -2945,7 +2945,13 @@ async function runSync({ manual = false } = {}) {
   }
 }
 
-async function applySyncReport({ changed, conflicts }) {
+async function applySyncReport({ changed, conflicts, limpieza }) {
+  if (limpieza) {
+    toast(`${limpieza.by} borró los datos de prueba: se quitaron de este equipo los contratos, lotes y papelera`, 'ok');
+    state.current = null;
+    await loadAll();
+    return go('#/');
+  }
   const any = changed.contracts.size || changed.templates.size || changed.parties.size || changed.lotes?.size || changed.papelera?.size;
   if (!any) return;
   const openId = state.current?.id;
@@ -3638,6 +3644,8 @@ async function borrarDatosPrueba() {
   }
   await runSync();
   if (syncError) throw new Error(`se borró aquí pero falta subirlo: ${syncError}`);
+  // Al final (Dropbox ya sin los registros): obliga a los demás equipos a descartar lo que tengan
+  await sync.avisarLimpieza(cuenta() || 'el administrador');
   return r;
 }
 

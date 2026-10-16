@@ -105,6 +105,7 @@ export function syncAll(opts) {
         root = alt;
       }
       const report = { changed: { contracts: new Set(), templates: new Set(), parties: new Set(), lotes: new Set(), papelera: new Set() }, conflicts: [] };
+      await aplicarLimpieza(root, report);
       await syncCatalog(root, opts, report);
       for (const store of Object.keys(COLLECTIONS)) await syncCollection(store, dbx.joinPath(root, COLLECTIONS[store]), report, opts);
       state.lastSync = Date.now();
@@ -118,6 +119,42 @@ export function syncAll(opts) {
 }
 
 const enc = (obj) => new TextEncoder().encode(JSON.stringify(obj));
+
+// Borrado de datos de prueba: el aviso en Dropbox obliga a cada equipo a descartar sus contratos, lotes y
+// papelera locales (aunque tengan cambios sin subir) para que nadie vuelva a subir lo borrado
+const LIMPIEZA = 'datos-app/limpieza.json';
+
+/** Lo llama quien borró, ya sincronizado: los demás equipos lo aplican en su siguiente sincronización. */
+export async function avisarLimpieza(by) {
+  await loadState();
+  const at = Date.now();
+  await dbx.upload(dbx.joinPath(dbx.config().folder, LIMPIEZA), enc({ at, by }), { reemplazar: true });
+  state.limpiezaVista = at;
+  await saveState();
+}
+
+async function aplicarLimpieza(root, report) {
+  let file;
+  try {
+    file = await dbx.download(dbx.joinPath(root, LIMPIEZA));
+  } catch (err) {
+    if (err.notFound) return;
+    throw err;
+  }
+  const { at, by } = dec(file.data);
+  if (!at || at <= (state.limpiezaVista || 0)) return;
+  state.limpiezaVista = at;
+  // Un equipo que nunca había sincronizado no trae datos de prueba: solo registra el aviso
+  if (state.lastSync) {
+    for (const store of ['contracts', 'lotes', 'papelera']) {
+      for (const x of await db.getAll(store)) report.changed[store].add(x.id);
+      await db.clear(store);
+      state.items[store] = {};
+    }
+    report.limpieza = { at, by };
+  }
+  await saveState();
+}
 const dec = (buf) => JSON.parse(new TextDecoder().decode(buf));
 
 async function syncCollection(store, folder, report, opts) {
