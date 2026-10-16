@@ -181,6 +181,26 @@ async function callGlobal(url, { method = 'GET', body, raw = false, remitente } 
   return raw ? res.blob() : res.json();
 }
 
+/** PDF de un Word convertido por DocuSign (respeta el formato del Word). Requiere la conexión del despacho. */
+export async function wordAPdf(word, nombre) {
+  if (!isGlobal()) throw new DocuSignError('la conexión de DocuSign del despacho no está configurada');
+  let res;
+  try {
+    res = await fetch('api/docusign/convertir', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'X-Nombre': encodeURIComponent(nombre) },
+      body: word,
+    });
+  } catch {
+    throw new DocuSignError('Sin conexión con el servidor: DocuSign necesita internet.');
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new DocuSignError(data.message || `Error de DocuSign (${res.status})`, { status: res.status, code: data.errorCode });
+  }
+  return new Blob([await res.arrayBuffer()], { type: 'application/pdf' });
+}
+
 async function call(url, opts = {}) {
   if (isGlobal() && !opts.absolute) return callGlobal(url, opts);
   return callUsuario(url, opts);
