@@ -325,14 +325,14 @@ const sameValue = (a, b) => {
  * Aplica al Excel original las correcciones hechas en la plataforma. Las celdas cambiadas quedan
  * resaltadas en amarillo. `editadas` = índices de filas; `raw`/`raw0` = valores corregidos/originales.
  */
-export async function p1Final(ExcelJS, buffer, { sheetIndex, header, raw, raw0, editadas }) {
-  if (!editadas?.size) return new Uint8Array(buffer);
+export async function p1Final(ExcelJS, buffer, { sheetIndex, header, raw, raw0, editadas, quitadas }) {
+  if (!editadas?.size && !quitadas?.size) return new Uint8Array(buffer);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer);
   const ws = wb.worksheets[sheetIndex];
-  for (const i of editadas) {
+  for (const i of editadas || []) {
     const now = raw[i];
-    const before = raw0[i];
+    const before = raw0[i] || {}; // fila agregada en la plataforma: todas sus celdas son nuevas
     const row = ws.getRow(now.fila);
     for (const [key, col] of Object.entries(header)) {
       if (!(key in now) || sameValue(now[key], before[key])) continue;
@@ -344,6 +344,8 @@ export async function p1Final(ExcelJS, buffer, { sheetIndex, header, raw, raw0, 
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
     }
   }
+  // Filas quitadas en la plataforma: se eliminan de abajo hacia arriba para no mover las demás
+  for (const fila of [...(quitadas || [])].sort((a, b) => b - a)) ws.spliceRows(fila, 1);
   // Tablas guardadas por algunos programas (p. ej. LibreOffice) no traen estilo y ExcelJS no las puede escribir
   for (const sheet of wb.worksheets) {
     for (const t of Object.values(sheet.tables || {})) {

@@ -4564,7 +4564,15 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveN
 // Una empresa y una plantilla (determinado o indeterminado) por lote. El lote queda "En revisión"
 // hasta que cualquiera de los usuarios lo aprueba; ya aprobado se descarga un .zip con un Word por trabajador.
 const LOTE_STATUS = { revision: 'En revisión', aprobado: 'Aprobado' };
-const loteTemplates = () => allTemplates().filter(isLoteTemplate);
+// Flujo del lote: el Excel es la solicitud; se revisan los Word, al aprobar salen Word y PDF, y se firma en persona
+const PASOS_LOTE = ['Solicitud', 'Revisión', 'Aprobación', 'Firma'];
+const pasoLote = (l) => (l.status !== 'aprobado' ? 1 : firmadosLote(l) < l.trabajadores.length ? 3 : 4);
+const loteTemplates = () => {
+  const ts = allTemplates().filter(isLoteTemplate);
+  // Al editar un lote se conserva su plantilla aunque ya no esté en la biblioteca
+  const p = state.loteDraft?.plantillaLote;
+  return p && !ts.some((t) => t.id === p.id) ? [...ts, p] : ts;
+};
 
 /**
  * Los documentos de trabajadores y comisionistas (plantillas de lote) solo se generan en Lotes, aunque sea para
@@ -4626,6 +4634,7 @@ function renderLotes() {
             ${l.status === 'aprobado'
               ? `<button class="icon-btn sm" data-act="zip" title="Descargar .zip con los contratos" aria-label="Descargar .zip">${icon('download')}</button>`
               : `<button class="icon-btn sm" disabled title="El .zip se descarga cuando el lote esté aprobado" aria-label="Descargar .zip (requiere aprobación)">${icon('download')}</button>`}
+            <button class="icon-btn sm" data-act="edit" title="Editar lote" aria-label="Editar">${icon('pen')}</button>
             <button class="icon-btn sm danger" data-act="del" title="Eliminar lote" aria-label="Eliminar">${icon('trash')}</button>
           </span>
         </div>`).join('')}
@@ -4649,6 +4658,7 @@ function renderLotes() {
       if (act === 'view') return viewLote(l);
       if (act === 'print') return printLote(l);
       if (act === 'zip') return downloadLoteZip(l);
+      if (act === 'edit') return editarLoteConAviso(l);
       if (act === 'del') return deleteLote(l).then((ok) => ok && renderLotes());
       go(`#/lotes/${l.id}`);
     });
@@ -4719,7 +4729,7 @@ function renderNuevoLote() {
     <header class="page-head">
       <div>
         <p class="eyebrow"><a href="#/lotes">Lotes</a></p>
-        <h1>Nuevo lote</h1>
+        <h1>${d.editId ? 'Editar lote' : 'Nuevo lote'}</h1>
       </div>
     </header>
     <section class="card settings-block lote-form">
@@ -4742,7 +4752,8 @@ function renderNuevoLote() {
           <select id="l-apo" ${emp ? '' : 'disabled'}><option value="">${emp ? (apos.length ? 'Elige…' : 'Sin apoderados en el catálogo') : 'Primero elige la empresa'}</option>
           ${apos.map((a) => `<option value="${esc(a.id)}" ${a.id === d.apoderadoId ? 'selected' : ''}>${esc(a.nombre)}${a.vigente ? '' : ' (poder no vigente)'}</option>`).join('')}</select></label>
       </div>
-      <label class="btn">${icon('upload')} ${d.file ? `Cambiar Excel (${esc(d.file)})` : 'Subir Excel P1'}<input type="file" id="l-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+      ${d.editId ? `<div class="banner info">${icon('pen')} <span>Al guardar, el lote regresa a revisión y hay que volver a aprobarlo; al aprobar se reemplazan sus Word y PDF en Dropbox. Los firmados ya subidos se conservan (se reconocen por la CURP).</span></div>` : ''}
+      <label class="btn">${icon('upload')} ${d.file ? `${d.editId ? 'Reemplazar P1' : 'Cambiar Excel'} (${esc(d.file)})` : 'Subir Excel P1'}<input type="file" id="l-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
       <p class="muted small">${comision
         ? 'Una fila por comisionista. De tu P1 se usan nombre, RFC, CURP (de ahí sale la nacionalidad), domicilio y <strong>Fecha de Firma</strong>; las demás columnas no se piden.'
         : 'Una fila por trabajador. Además de las columnas de siempre, el P1 debe traer <strong>Lugar de Trabajo</strong>, <strong>Fecha de Firma</strong> y, para tiempo determinado, <strong>Fecha de Terminación</strong>. El género de nacionalidad y estado civil se ajusta según el sexo.'}</p>
@@ -4761,12 +4772,14 @@ function renderNuevoLote() {
               ${comision ? `<span class="mono small">${esc(w.rfc)}</span><span>${esc(fmtLongDate(w.firma)) || '—'}</span>` : `<span>${esc(w.puesto)}</span>
               <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>`}
               <span class="lt-rev">${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : `<span class="ok-text">Listo${d.editadas?.has(i) ? ' · corregido aquí' : ''}</span>`}
-                <button class="btn sm ${d.errors[i].length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${d.errors[i].length ? 'Corregir' : 'Editar'}</button></span>
+                <button class="btn sm ${d.errors[i].length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${d.errors[i].length ? 'Corregir' : 'Editar'}</button>
+                <button class="btn sm ghost danger" data-quitar="${i}" title="Quitar del lote">${icon('trash')} Quitar</button></span>
             </div>`).join('')}
-        </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}` : ''}
+        </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}
+      <button class="btn" id="l-agregar">${icon('plus')} Agregar ${comision ? 'comisionista' : 'trabajador'}</button>` : ''}
     <div class="row wrap lote-actions">
-      <a class="btn ghost" href="#/lotes">Cancelar</a>
-      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() && (!lugarVar || d.lugarFirma?.trim()) ? '' : 'disabled'} data-ready="${listo ? 1 : ''}" data-lugar="${lugarVar ? 1 : ''}">${icon('check')} Enviar a revisión${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
+      <a class="btn ghost" href="${d.editId ? `#/lotes/${esc(d.editId)}` : '#/lotes'}" id="l-cancel">Cancelar</a>
+      <button class="btn primary" id="l-create" ${listo && d.cliente?.trim() && (!lugarVar || d.lugarFirma?.trim()) ? '' : 'disabled'} data-ready="${listo ? 1 : ''}" data-lugar="${lugarVar ? 1 : ''}">${icon('check')} ${d.editId ? 'Guardar cambios y regresar a revisión' : 'Enviar a revisión'}${d.workers && nErr ? ` (${nOk} contrato${nOk === 1 ? '' : 's'})` : ''}</button>
     </div>`;
 
   const revalidate = () => {
@@ -4806,6 +4819,7 @@ function renderNuevoLote() {
       d.file = f.name;
       d.raw = rows;
       d.editadas = new Set();
+      d.quitadas = new Set();
       d.workers = rows.map(normalizeRow);
       revalidate();
     } catch (err) {
@@ -4815,6 +4829,73 @@ function renderNuevoLote() {
   });
   $('#l-create').addEventListener('click', sinRepetir('lote', createLote));
   $$('[data-edit]').forEach((b) => b.addEventListener('click', () => editLoteRow(Number(b.dataset.edit))));
+  $$('[data-quitar]').forEach((b) => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.quitar);
+    if (!(await confirmDialog('Quitar del lote', `Se quitará a ${d.workers[i].nombre || `la fila ${d.raw[i].fila}`} del lote (y del P1 que se guarda con él).`, 'Quitar'))) return;
+    quitarFilaLote(d, i);
+    revalidate();
+  }));
+  $('#l-agregar')?.addEventListener('click', () => {
+    // Fila nueva al final del P1: se captura completa en el editor de la fila
+    // Después de la última fila del Excel (incluidas las quitadas, que se borran del P1 al guardarlo)
+    const fila = Math.max(1, ...d.raw.map((r) => r.fila || 0), ...(d.quitadas || [])) + 1;
+    d.raw.push({ fila });
+    d.raw0.push({});
+    d.workers.push(normalizeRow({ fila }));
+    d.errors.push([]);
+    editLoteRow(d.raw.length - 1);
+  });
+  $('#l-cancel').addEventListener('click', () => { if (d.editId) state.loteDraft = null; });
+}
+
+/** Quita una fila del borrador del lote; si venía del Excel, también se quitará del P1 guardado. */
+function quitarFilaLote(d, i) {
+  const fila = d.raw[i].fila;
+  // Solo las filas que venían del Excel se quitan del P1 (una agregada aquí no está en él)
+  if (d.raw0[i] && Object.keys(d.raw0[i]).length) (d.quitadas ||= new Set()).add(fila);
+  for (const arr of [d.raw, d.raw0, d.workers, d.errors]) arr.splice(i, 1);
+  // Los índices de las filas corregidas se recorren
+  d.editadas = new Set([...(d.editadas || [])].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j)));
+}
+
+const editarLoteConAviso = conAviso(async (l) => {
+  if (l.status === 'aprobado' && !(await confirmDialog('Editar lote aprobado', 'El lote regresará a revisión al guardar los cambios y habrá que volver a aprobarlo; entonces se reemplazan sus Word y PDF en Dropbox. Los firmados ya subidos se conservan.', 'Editar', 'primary'))) return;
+  await editarLote(l);
+});
+
+/** Abre el lote en el formulario de captura para editarlo (datos generales, trabajadores o P1 completo). */
+async function editarLote(l) {
+  if (!l.p1?.data) return toast('Este lote no guardó su Excel P1: crea un lote nuevo con el Excel corregido', 'error');
+  const ExcelJS = await loadExcel();
+  const wb = new ExcelJS.Workbook();
+  const buf = fromBase64(l.p1.data).buffer;
+  await wb.xlsx.load(buf.slice(0));
+  const { rows, missing, sheetIndex, header } = readP1(wb);
+  const tpl = loteTemplates().find((t) => t.id === l.plantilla.id);
+  state.loteDraft = {
+    editId: l.id,
+    plantillaLote: tpl ? null : structuredClone(l.plantilla),
+    cliente: l.cliente || '',
+    templateId: l.plantilla.id,
+    empresaId: l.empresa?.id || '',
+    apoderadoId: l.apoderado?.id || '',
+    periodicidad: l.periodicidad || '',
+    lugarFirma: l.lugarFirma || '',
+    lugarTpl: l.plantilla.id,
+    file: l.p1.name.replace(/ \((corregido|original, sin correcciones)\)(?=\.xlsx$)/i, ''),
+    fileBuf: buf,
+    sheetIndex,
+    header,
+    raw: rows,
+    raw0: structuredClone(rows),
+    rawMissing: missing,
+    editadas: new Set(),
+    quitadas: new Set(),
+    workers: rows.map(normalizeRow),
+  };
+  const t = loteTemplates().find((x) => x.id === l.plantilla.id);
+  state.loteDraft.errors = t ? validateWorkers(state.loteDraft.workers, t, { periodicidad: state.loteDraft.periodicidad || 'X' }) : rows.map(() => []);
+  go('#/lotes/nuevo');
 }
 
 // Campos del P1 que se pueden corregir en la plataforma (los demás no los usa el contrato)
@@ -4887,9 +4968,11 @@ async function createLote() {
   const excluidos = d.workers.map((w, i) => ({ fila: w.fila, nombre: w.nombre, curp: w.curp, errores: d.errors[i] })).filter((x) => x.errores.length);
   const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
   const cliente = d.cliente.trim().replace(/\s+/g, ' ');
+  const antes = d.editId ? state.lotes.find((x) => x.id === d.editId) : null;
+  if (d.editId && !antes) { toast('El lote ya no existe (¿se eliminó en otro equipo?)', 'error'); return go('#/lotes'); }
   // Se guardan copias de la plantilla y de la empresa: lo que se aprueba es exactamente lo que se revisó
   const l = {
-    id: uid(),
+    id: antes?.id || uid(),
     cliente,
     title: `${cliente} · ${emp.nombre} · ${validos.length} contrato${validos.length === 1 ? '' : 's'} · ${fecha}`,
     tipo,
@@ -4903,15 +4986,29 @@ async function createLote() {
     apoderado: apo ? structuredClone(apo) : null,
     trabajadores: validos,
     excluidos,
-    createdAt: Date.now(),
-    createdBy: whoAmI(),
-    history: [],
+    createdAt: antes?.createdAt || Date.now(),
+    createdBy: antes?.createdBy || whoAmI(),
+    history: antes?.history || [],
+    // La carpeta del lote no cambia al editarlo (aunque cambie el título)
+    ...(antes?.carpeta || antes?.dropbox?.carpeta ? { carpeta: antes.dropbox?.carpeta || antes.carpeta } : {}),
   };
+  if (antes) {
+    // Los firmados ya subidos se conservan: se reconocen por la CURP
+    const firmados = new Map(antes.trabajadores.filter((w) => w.firmado).map((w) => [w.curp, w.firmado]));
+    for (const w of l.trabajadores) if (firmados.has(w.curp)) w.firmado = firmados.get(w.curp);
+    await saveLote(l, `Editó el lote${antes.status === 'aprobado' ? ' (regresó a revisión)' : ''}: ${validos.length} ${tipo === 'COMISION' ? 'comisionistas' : 'trabajadores'}${excluidos.length ? `; ${excluidos.length} fuera por errores` : ''}`);
+    state.loteDraft = null;
+    toast('Cambios guardados: el lote está en revisión', 'ok');
+    go(`#/lotes/${l.id}`);
+    guardarRevisionLote(l).catch((err) => toast(`No se pudieron guardar los Word de revisión en Dropbox: ${err.message}`, 'error'));
+    return;
+  }
   await saveLote(l, `Creó el lote con ${validos.length} ${tipo === 'COMISION' ? 'comisionistas' : 'trabajadores'} (${d.file})${d.editadas?.size ? `; ${d.editadas.size} fila(s) corregida(s) en la plataforma` : ''}${excluidos.length ? `; ${excluidos.length} quedaron fuera por errores` : ''}`);
   state.loteDraft = null;
   toast('Lote enviado a revisión', 'ok');
   go(`#/lotes/${l.id}`);
   if (excluidos.length) alertExcluidos(l);
+  guardarRevisionLote(l).catch((err) => toast(`No se pudieron guardar los Word de revisión en Dropbox: ${err.message}`, 'error'));
 }
 
 // --- Detalle del lote ---
@@ -4930,11 +5027,15 @@ function renderLote(id) {
         ${l.status === 'revision'
           ? `<button class="btn primary" id="lote-approve">${icon('check')} Aprobar lote</button>`
           : `<button class="btn primary" id="lote-zip">${icon('download')} Descargar .zip</button>`}
+        <button class="icon-btn" id="lote-edit" title="Editar lote (regresa a revisión)" aria-label="Editar lote">${icon('pen')}</button>
         <button class="icon-btn" id="lote-view" title="Visualizar resumen y contratos" aria-label="Visualizar">${icon('eye')}</button>
         <button class="icon-btn" id="lote-print" title="Imprimir resumen y contratos" aria-label="Imprimir">${icon('print')}</button>
         <button class="icon-btn" id="lote-del" title="Eliminar lote" aria-label="Eliminar lote">${icon('trash')}</button>
       </div>
     </header>
+    <ol class="stepper">
+      ${PASOS_LOTE.map((t, i) => `<li class="${i < pasoLote(l) ? 'done' : i === pasoLote(l) ? 'on' : ''}"><span>${i + 1}</span>${t}</li>`).join('')}
+    </ol>
     <section class="card settings-block">
       ${l.cliente ? `<p><strong>Cliente:</strong> ${esc(l.cliente)}</p>` : ''}
       <p><strong>Plantilla:</strong> ${esc(l.plantilla.name)}</p>
@@ -4949,7 +5050,7 @@ function renderLote(id) {
     </section>
     ${l.status === 'aprobado' ? `<p class="small"><strong>Firmados:</strong> ${firmadosLote(l)} de ${l.trabajadores.length}${firmadosLote(l) < l.trabajadores.length ? ' · imprime, firma en persona y sube el PDF escaneado de cada uno con “Subir firmado”.' : ''}</p>` : ''}
     ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan datos en los contratos: ${gaps.map(esc).join(', ')}. Si son de la empresa, complétalos en el catálogo y vuelve a crear el lote.</span></div>` : ''}
-    ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (cada uno sale marcado “EN REVISIÓN”). Cuando estén bien, cualquiera del equipo puede aprobar el lote.</span></div>` : ''}
+    ${l.status === 'revision' ? `<div class="banner info">${icon('doc')} <span>Revisa los Word (salen marcados “EN REVISIÓN”${dbx.isConnected() ? `; también están en Dropbox en <code>${esc(loteFolder(l))}</code>` : ''}). Si algo está mal, usa <strong>Editar</strong>. Al aprobar se generan el Word y el PDF finales de cada contrato.</span></div>` : ''}
     <div class="card lote-table">
       <div class="lt-row lt-head"><span>#</span><span>${l.tipo === 'COMISION' ? 'Comisionista' : 'Trabajador'}</span><span>${l.tipo === 'COMISION' ? 'RFC' : 'Puesto'}</span><span>Firma</span><span></span></div>
       ${l.trabajadores.map((w, i) => `
@@ -4994,7 +5095,7 @@ function renderLote(id) {
   })));
   $('#lote-approve')?.addEventListener('click', async () => {
     if (gaps.length && !(await confirmDialog('Faltan datos', `Los contratos tienen datos vacíos (${gaps.join(', ')}). ¿Aprobar de todos modos?`, 'Aprobar', 'primary'))) return;
-    if (!gaps.length && !(await confirmDialog('Aprobar lote', `Se aprobarán ${l.trabajadores.length} contratos. Después podrás descargar el .zip con las versiones finales.`, 'Aprobar', 'primary'))) return;
+    if (!gaps.length && !(await confirmDialog('Aprobar lote', `Se aprobarán ${l.trabajadores.length} contratos: se generan el Word y el PDF finales de cada uno${dbx.isConnected() ? ' y se guardan en Dropbox (los Word de revisión se quitan)' : ''}.`, 'Aprobar', 'primary'))) return;
     l.status = 'aprobado';
     l.approvedBy = whoAmI();
     l.approvedAt = Date.now();
@@ -5027,6 +5128,7 @@ function renderLote(id) {
     download(await buildErroresDocxBlob(D, l), erroresFileName(l));
   });
   $('#lote-view').addEventListener('click', () => viewLote(l));
+  $('#lote-edit').addEventListener('click', () => editarLoteConAviso(l));
   $('#lote-print').addEventListener('click', () => printLote(l));
   $('#lote-del').addEventListener('click', async () => { if (await deleteLote(l)) go('#/lotes'); });
 }
@@ -5153,7 +5255,8 @@ async function p1DelLote(d) {
   try {
     const bytes = await p1Final(await loadExcel(), d.fileBuf, d);
     const base = d.file.replace(/\.xlsx$/i, '');
-    return { name: `${base}${d.editadas?.size ? ' (corregido)' : ''}.xlsx`, corregido: !!d.editadas?.size, data: toBase64(bytes) };
+    const corregido = !!(d.editadas?.size || d.quitadas?.size);
+    return { name: `${base}${corregido ? ' (corregido)' : ''}.xlsx`, corregido, data: toBase64(bytes) };
   } catch (err) {
     // Si no se pudieron aplicar las correcciones, se guarda el original y se avisa
     console.error(err);
@@ -5209,8 +5312,11 @@ async function archivosLote(l) {
   const files = [];
   const nombres = nombresLote(l);
   for (const [i, w] of l.trabajadores.entries()) {
-    const blob = await buildDocxBlob(D, workerContract(l, w), { label: '' });
+    const c = workerContract(l, w);
+    const blob = await buildDocxBlob(D, c, { label: '' });
     files.push({ name: nombres[i], data: new Uint8Array(await blob.arrayBuffer()) });
+    // PDF final de cada contrato (sin marca de agua: el lote ya está aprobado)
+    files.push({ name: nombres[i].replace(/\.docx$/i, '.pdf'), data: new Uint8Array(await buildPdf(c).blob.arrayBuffer()) });
   }
   if (l.excluidos?.length) {
     const blob = await buildErroresDocxBlob(D, l);
@@ -5231,7 +5337,7 @@ const downloadLoteZip = conAviso(async (l) => {
  * (o CONTRATOS DE COMISIÓN MERCANTIL) / <lote>.
  */
 function loteFolder(l) {
-  return l.dropbox?.carpeta || loteFolderNuevo(l);
+  return l.dropbox?.carpeta || l.carpeta || loteFolderNuevo(l);
 }
 
 /** Carpeta del lote en la estructura actual: DOCUMENTOS GENERADOS/<cliente>/<empresa del grupo>/<tipo>/<lote>. */
@@ -5246,13 +5352,43 @@ function loteFolderNuevo(l) {
   return dbx.joinPath(base, empresa, subcarpetaLote(l.tipo), safeName(l.title));
 }
 
+/**
+ * Word de revisión del lote (marcados "EN REVISIÓN") en su carpeta de Dropbox, como "…-REVISION.docx".
+ * Se borran los de revisión que ya no corresponden (trabajadores quitados o renombrados).
+ */
+async function guardarRevisionLote(l) {
+  if (!dbx.isConnected() || l.status !== 'revision') return null;
+  await loadExpedienteFolders();
+  const carpeta = loteFolder(l);
+  const D = await loadDocx();
+  const nombres = nombresLote(l).map((n) => n.replace(/\.docx$/i, '-REVISION.docx'));
+  for (const [i, w] of l.trabajadores.entries()) {
+    await dbx.upload(dbx.joinPath(carpeta, nombres[i]), await buildDocxBlob(D, workerContract(l, w), { label: 'EN REVISIÓN' }), { reemplazar: true });
+  }
+  const vigentes = new Set(nombres.map((n) => n.toLowerCase()));
+  for (const e of await dbx.listFolder(carpeta)) {
+    if (e['.tag'] === 'file' && /-REVISION\.docx$/i.test(e.name) && !vigentes.has(e.name.toLowerCase())) await dbx.remove(e.path_display);
+  }
+  // La carpeta queda fija desde aquí: editar el lote (y cambiar su título) no la mueve
+  if (l.carpeta !== carpeta) { l.carpeta = carpeta; await saveLote(l); }
+  return carpeta;
+}
+
 /** Sube a Dropbox los contratos finales del lote. Devuelve la carpeta, o null si Dropbox no está conectado. */
 async function guardarLoteDropbox(l) {
   if (!dbx.isConnected() || l.status !== 'aprobado') return null;
   await loadExpedienteFolders();
   const carpeta = loteFolder(l);
-  for (const f of await archivosLote(l)) {
+  const files = await archivosLote(l);
+  for (const f of files) {
     await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { reemplazar: true });
+  }
+  // Al aprobar se quitan los Word de revisión y los finales que ya no corresponden (trabajadores quitados o
+  // renombrados al editar); los firmados se conservan
+  const vigentes = new Set(files.map((f) => f.name.toLowerCase()));
+  for (const e of await dbx.listFolder(carpeta)) {
+    if (e['.tag'] !== 'file' || vigentes.has(e.name.toLowerCase()) || /-FIRMADO\.pdf$/i.test(e.name)) continue;
+    if (/\.(docx|pdf)$/i.test(e.name) || /^00 - P1 - .*\.xlsx$/i.test(e.name)) await dbx.remove(e.path_display);
   }
   l.dropbox = { carpeta, at: Date.now(), by: whoAmI(), nombresNuevos: true, estructura: 2 };
   await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);
