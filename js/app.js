@@ -548,6 +548,7 @@ async function crearServicios() {
   }
   const grupo = { id: uid(), cliente: clienteNombre, archivo: d.file };
   const creados = [];
+  const repetidos = [];
   for (const e of porEmpresa(d.empresas)) {
     const p = state.parties.find((x) => x.id === e.partyId);
     const apo = p.apoderados.find((a) => a.id === e.apoId) || null;
@@ -561,10 +562,14 @@ async function crearServicios() {
     c.etiqueta = `Prestación de servicios · ${p.nombre} · ${clienteNombre}`;
     c.grupoServicios = grupo;
     syncVarDefs(c);
+    const dup = duplicadoDe(c);
+    if (dup) { repetidos.push(`${p.nombre}: ${descDoc(dup)}`); continue; }
     logChange(c, `Creado desde el Sugerido de conceptos (${d.file}): ${e.conceptos.length} servicio${e.conceptos.length === 1 ? '' : 's'}${c.formato ? `; formato ${c.formato}` : ''}`);
     await saveContract(c);
     creados.push(c);
   }
+  if (repetidos.length) await alertaDuplicado(repetidos, creados.length ? 'Esos no se crearon; los demás sí.' : 'No se creó ningún contrato.');
+  if (!creados.length) return;
   state.servDraft = null;
   toast(`${creados.length} contrato${creados.length === 1 ? '' : 's'} creado${creados.length === 1 ? '' : 's'} para ${clienteNombre}`, 'ok');
   go(`#/servicios/${grupo.id}`);
@@ -4036,6 +4041,7 @@ function renderDocumento() {
     const act = btn.dataset.wf;
     try {
       if (act === 'approve') return await approve(c, btn);
+      if (act === 'revision' && c.status !== 'revision' && duplicadoDe(c)) { const dup = duplicadoDe(c); return alertaDuplicado([descDoc(dup)], 'No se genera otro documento idéntico.', dup); }
       if (act === 'revision') { btn.disabled = true; await generarRevision(c); renderEditorHeader(); return renderDocumento(); }
       if (act === 'pdf-ds') { btn.disabled = true; await pdfAprobadoDS(c); return renderDocumento(); }
       if (act === 'papel') return await firmadoEnPapel(c);
@@ -4076,6 +4082,8 @@ function renderDocumento() {
 async function approve(c, btn) {
   const missing = missingDetail(c);
   if (missing.length) return toast(`No se puede aprobar, faltan: ${missing.join('; ')}`, 'error');
+  const dup = duplicadoDe(c);
+  if (dup) return alertaDuplicado([descDoc(dup)], 'No se genera otro documento idéntico.', dup);
   if (!(await confirmDialog('Aprobar contrato', `${c.conMolde ? `Se generará el Word final ${c.formato ? `del formato ${c.formato}` : 'de la plantilla'} (el PDF se saca desde Word)` : 'Se generarán el Word y el PDF finales (sin leyendas)'} y el contrato quedará aprobado.`, 'Aprobar', 'primary'))) return;
   btn.disabled = true;
   await approveContract(c);
@@ -4159,6 +4167,8 @@ async function approveContract(c, { descargar = true } = {}) {
   // Regla de formatos por cliente: puede romperse si se cambió el prestador o el cliente a mano
   const conflicto = conflictoFormato(c, state.contracts);
   if (conflicto) throw new Error(conflicto);
+  const dup = duplicadoDe(c);
+  if (dup) throw new Error(`ya existe un documento idéntico: ${descDoc(dup)}`);
   // No se aprueba un contrato con datos pendientes: saldrían entre corchetes
   const faltan = missingVariables(c).length;
   if (faltan) throw new Error(`a “${nombreDe(c)}” le faltan ${faltan} dato(s)`);
@@ -4719,7 +4729,9 @@ function renderNuevoLote() {
   const lugarVar = tpl?.vars.find(([k]) => k === 'lugar_firma');
   if (lugarVar && d.lugarTpl !== tpl.id) { d.lugarFirma = lugarVar[3] || ''; d.lugarTpl = tpl.id; }
   d.missing = d.rawMissing.filter((c) => (c.key !== 'fin' || (tpl && tipoDePlantilla(tpl) === 'DETERMINADO')) && (!tpl || usaColumna(tpl, c.key)));
-  const nErr = d.errors ? d.errors.filter((e) => e.length).length : 0;
+  // Contratos idénticos a otros ya generados (en otros lotes o repetidos en este Excel) no se vuelven a generar
+  d.dupErr = d.workers && tpl && emp ? duplicadosLote(d, tpl, emp) : [];
+  const nErr = d.errors ? d.errors.filter((e, i) => errFila(d, i).length).length : 0;
   const nOk = d.workers ? d.workers.length - nErr : 0;
   // Se genera con los trabajadores correctos; los que tienen errores quedan fuera y se reportan
   const ok = nOk > 0 && !d.missing.length;
@@ -4766,13 +4778,13 @@ function renderNuevoLote() {
         <div class="card lote-table">
           <div class="lt-row lt-head"><span>Fila</span><span>${comision ? 'Comisionista' : 'Trabajador'}</span><span>${comision ? 'RFC' : 'Puesto'}</span><span>${comision ? 'Fecha de firma' : 'Salario diario'}</span><span>Revisión</span></div>
           ${d.workers.map((w, i) => `
-            <div class="lt-row ${d.errors[i].length ? 'bad' : ''}">
+            <div class="lt-row ${errFila(d, i).length ? 'bad' : ''}">
               <span class="muted">${w.fila}</span>
               <span><strong>${esc(w.nombre || '(sin nombre)')}</strong><span class="muted small mono">${esc(w.curp)}</span></span>
               ${comision ? `<span class="mono small">${esc(w.rfc)}</span><span>${esc(fmtLongDate(w.firma)) || '—'}</span>` : `<span>${esc(w.puesto)}</span>
               <span>${w.sd === null ? '—' : esc(formatValue({ type: 'money' }, w.sd).split(' (')[0])}</span>`}
-              <span class="lt-rev">${d.errors[i].length ? `<span class="error-text small">${d.errors[i].map(esc).join('<br>')}</span>` : `<span class="ok-text">Listo${d.editadas?.has(i) ? ' · corregido aquí' : ''}</span>`}
-                <button class="btn sm ${d.errors[i].length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${d.errors[i].length ? 'Corregir' : 'Editar'}</button>
+              <span class="lt-rev">${errFila(d, i).length ? `<span class="error-text small">${errFila(d, i).map(esc).join('<br>')}</span>` : `<span class="ok-text">Listo${d.editadas?.has(i) ? ' · corregido aquí' : ''}</span>`}
+                <button class="btn sm ${errFila(d, i).length ? 'primary' : 'ghost'}" data-edit="${i}">${icon('pen')} ${errFila(d, i).length ? 'Corregir' : 'Editar'}</button>
                 <button class="btn sm ghost danger" data-quitar="${i}" title="Quitar del lote">${icon('trash')} Quitar</button></span>
             </div>`).join('')}
         </div>` : '<div class="banner warn">No se encontraron trabajadores en el Excel.</div>'}
@@ -4848,6 +4860,55 @@ function renderNuevoLote() {
   $('#l-cancel').addEventListener('click', () => { if (d.editId) state.loteDraft = null; });
 }
 
+// ---------- Documentos idénticos: no se genera dos veces el mismo documento ----------
+/** Huella del documento: plantilla, partes, todos los datos y el texto. Misma huella = mismo documento. */
+function huellaDoc(c) {
+  const datos = Object.keys(c.variables || {}).sort().map((k) => [k, String(c.variables[k] ?? '').trim()]);
+  const partes = c.signers.map((sg) => [sg.party?.id || '', sg.party?.apoderadoId || '']);
+  return JSON.stringify([c.templateId, c.formato || '', partes, datos, contentHash(c)]);
+}
+/** Otro contrato (cualquier estado, incluso borrador) idéntico a este, o undefined. */
+const duplicadoDe = (c) => { const h = huellaDoc(c); return state.contracts.find((x) => x.id !== c.id && huellaDoc(x) === h); };
+const descDoc = (c) => `“${nombreDe(c)}” · ${clienteDe(c) || 'sin cliente'} · ${empresaDe(c) || 'sin empresa'} · ${fechaCorta(fechaArchivo(c))} · ${STATUS[c.status] || c.status}`;
+
+/** Aviso de documento repetido; con `abrir`, ofrece ir al que ya existe. */
+async function alertaDuplicado(lineas, pie, abrir) {
+  const r = await modal({
+    title: 'Ese documento ya existe',
+    body: `<p>No se genera un documento idéntico a uno que ya existe:</p><ul>${lineas.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>${pie ? `<p class="muted small">${esc(pie)}</p>` : ''}`,
+    actions: [...(abrir ? [{ label: 'Abrir el existente', value: 'abrir', kind: 'ghost' }] : []), { label: 'Entendido', value: '', kind: 'primary' }],
+  });
+  if (r.value === 'abrir' && abrir) go(`#/c/${abrir.id}/documento`);
+}
+
+/** Huella del contrato de una persona en un lote (mismos datos de la persona, la empresa y el lote). */
+const huellaTrabajador = (l, w) => huellaDoc(workerContract(l, w));
+/** Otro lote que ya tiene un contrato idéntico al de esta persona, o undefined. */
+function loteConIdentico(l, w) {
+  const h = huellaTrabajador(l, w);
+  return state.lotes.find((x) => x.id !== l.id && x.trabajadores.some((y) => huellaTrabajador(x, y) === h));
+}
+/** Errores por fila del borrador del lote: contratos idénticos a otros lotes o repetidos dentro del mismo Excel. */
+function duplicadosLote(d, tpl, emp) {
+  const l = {
+    id: d.editId || '', plantilla: tpl, empresa: emp, apoderado: emp.apoderados.find((a) => a.id === d.apoderadoId) || null,
+    periodicidad: esComision(tpl) ? '' : d.periodicidad, lugarFirma: d.lugarFirma, status: 'revision', trabajadores: [],
+  };
+  if (tpl.vars.every(([k]) => k !== 'lugar_firma')) delete l.lugarFirma;
+  const otros = new Map();
+  for (const x of state.lotes) if (x.id !== l.id) for (const y of x.trabajadores) otros.set(huellaTrabajador(x, y), x);
+  const vistas = new Map();
+  return d.workers.map((w, i) => {
+    if (d.errors?.[i]?.length) return [];
+    const h = huellaTrabajador(l, w);
+    if (otros.has(h)) return [`Ya existe un contrato idéntico en el lote “${otros.get(h).title}”`];
+    if (vistas.has(h)) return [`Contrato idéntico al de la fila ${d.workers[vistas.get(h)].fila}`];
+    vistas.set(h, i);
+    return [];
+  });
+}
+const errFila = (d, i) => [...(d.errors?.[i] || []), ...(d.dupErr?.[i] || [])];
+
 /** Quita una fila del borrador del lote; si venía del Excel, también se quitará del P1 guardado. */
 function quitarFilaLote(d, i) {
   const fila = d.raw[i].fila;
@@ -4906,7 +4967,7 @@ const P1_EDIT = ['nombre', 'apPaterno', 'apMaterno', 'nombreCompleto', 'curp', '
 async function editLoteRow(i) {
   const d = state.loteDraft;
   const raw = d.raw[i];
-  const errs = d.errors[i];
+  const errs = errFila(d, i);
   const tpl = loteTemplates().find((x) => x.id === d.templateId);
   const determinado = tpl && tipoDePlantilla(tpl) === 'DETERMINADO';
   const cols = P1_COLUMNS.filter((c) => P1_EDIT.includes(c.key)
@@ -4964,8 +5025,11 @@ async function createLote() {
   const apo = emp?.apoderados.find((a) => a.id === d.apoderadoId) || null;
   const tipo = tipoDePlantilla(tpl);
   if (!apo && !(await confirmDialog('Sin representante', `No elegiste quién firma por ${emp.nombre}. Los contratos saldrán sin representante ${tipo === 'COMISION' ? 'del comitente' : 'del patrón'}. ¿Continuar?`, 'Continuar', 'primary'))) return;
-  const validos = d.workers.filter((w, i) => !d.errors[i].length);
-  const excluidos = d.workers.map((w, i) => ({ fila: w.fila, nombre: w.nombre, curp: w.curp, errores: d.errors[i] })).filter((x) => x.errores.length);
+  // Se revisan otra vez los idénticos (pudo cambiar el lugar de firma o llegar otro lote al sincronizar)
+  d.dupErr = duplicadosLote(d, tpl, emp);
+  const validos = d.workers.filter((w, i) => !errFila(d, i).length);
+  const excluidos = d.workers.map((w, i) => ({ fila: w.fila, nombre: w.nombre, curp: w.curp, errores: errFila(d, i) })).filter((x) => x.errores.length);
+  if (!validos.length) { toast('No queda ningún contrato que generar: todos tienen errores o ya existen idénticos', 'error'); return renderNuevoLote(); }
   const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
   const cliente = d.cliente.trim().replace(/\s+/g, ' ');
   const antes = d.editId ? state.lotes.find((x) => x.id === d.editId) : null;
@@ -5094,6 +5158,8 @@ function renderLote(id) {
     download(await buildDocxBlob(D, c, { label: l.status === 'aprobado' ? '' : 'EN REVISIÓN' }), nombresLote(l)[i]);
   })));
   $('#lote-approve')?.addEventListener('click', async () => {
+    const dups = l.trabajadores.map((w) => [w, loteConIdentico(l, w)]).filter(([, x]) => x);
+    if (dups.length) return alertaDuplicado(dups.map(([w, x]) => `${w.nombre}: ya existe un contrato idéntico en el lote “${x.title}”`), 'Edita el lote para quitar a esas personas o cambiar sus datos.');
     if (gaps.length && !(await confirmDialog('Faltan datos', `Los contratos tienen datos vacíos (${gaps.join(', ')}). ¿Aprobar de todos modos?`, 'Aprobar', 'primary'))) return;
     if (!gaps.length && !(await confirmDialog('Aprobar lote', `Se aprobarán ${l.trabajadores.length} contratos: se generan el Word y el PDF finales de cada uno${dbx.isConnected() ? ' y se guardan en Dropbox (los Word de revisión se quitan)' : ''}.`, 'Aprobar', 'primary'))) return;
     l.status = 'aprobado';
