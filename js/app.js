@@ -916,13 +916,12 @@ function renderHome() {
 
 function contractRow(c) {
   const { missing, signed, total } = contractProgress(c);
-  const tpl = allTemplates().find((t) => t.id === c.templateId);
   return `
         <div class="ll-row" data-id="${esc(c.id)}" tabindex="0" role="link">
           <span><strong>${esc(clienteDe(c)) || '<span class="muted">Sin cliente</span>'}</strong><span class="muted small show-sm">${esc(nombreDe(c))}</span></span>
           <span class="small">${esc(empresaDe(c)) || '<span class="muted">—</span>'}</span>
-          <span><span>${esc(nombreDe(c))}</span><span class="muted small">${esc(tpl?.name || 'Documento personalizado')}</span></span>
-          <span>${statusBadge(c)}${formatoChip(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
+          <span><span>${esc(nombreDe(c))}</span>${c.formato ? `<span class="muted small">Formato ${esc(c.formato.replace(/^F/i, ''))}</span>` : ''}</span>
+          <span>${statusBadge(c)}${plazoChip(c)}${c.status !== 'final' && firmaRetroactiva(c) ? '<span class="small warn-text" title="La fecha de firma ya pasó: se firma en persona, no por DocuSign">Firma en persona</span>' : ''}</span>
           <span>${missing ? `<span class="warn-text">${missing} por completar</span>` : '<span class="ok-text">Completos</span>'}</span>
           <span>${total ? `${signed}/${total}` : '<span class="muted">—</span>'}</span>
           <span class="small">${fmtRelative(c.updatedAt)}${c.updatedBy ? `<span class="muted">${esc(c.updatedBy)}</span>` : ''}</span>
@@ -1126,11 +1125,12 @@ async function previewTemplate(t) {
     actions: [
       ...(t.custom && !t.replaces ? [{ label: 'Eliminar plantilla', value: 'del', kind: 'ghost danger' }] : []),
       { label: 'Editar plantilla', value: 'edit', kind: 'ghost' },
-      { label: 'Usar plantilla', value: 'use', kind: 'primary' },
+      { label: isLoteTemplate(t) ? 'Crear lote' : 'Usar plantilla', value: 'use', kind: 'primary' },
     ],
   });
   if (r.value === 'edit') return editTemplate(t);
   if (r.value === 'use') {
+    if (isLoteTemplate(t)) return nuevoLoteCon(t);
     const c = newContractFromTemplate(t);
     await saveContract(c);
     go(`#/c/${c.id}/variables`);
@@ -4168,6 +4168,7 @@ function renderTemplateEditor(id) {
       case 'del-signer': t.signers.splice(i, 1); break;
       case 'use': {
         await saveTemplate(t);
+        if (isLoteTemplate(t)) return nuevoLoteCon(t);
         const c = newContractFromTemplate(t);
         await saveContract(c);
         return go(`#/c/${c.id}/variables`);
@@ -4359,6 +4360,16 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveN
 // hasta que cualquiera de los usuarios lo aprueba; ya aprobado se descarga un .zip con un Word por trabajador.
 const LOTE_STATUS = { revision: 'En revisión', aprobado: 'Aprobado' };
 const loteTemplates = () => allTemplates().filter(isLoteTemplate);
+
+/**
+ * Los documentos de trabajadores y comisionistas (plantillas de lote) solo se generan en Lotes, aunque sea para
+ * una persona: Mis contratos queda para el resto. Abre un lote nuevo con la plantilla ya elegida.
+ */
+function nuevoLoteCon(t) {
+  state.loteDraft = { cliente: '', templateId: t.id, empresaId: '', apoderadoId: '', periodicidad: '', file: null, workers: null, errors: null, rawMissing: [] };
+  toast('Los contratos de trabajadores y comisionistas se generan en Lotes (también para una sola persona)');
+  go('#/lotes/nuevo');
+}
 
 async function saveLote(l, log) {
   l.updatedAt = Date.now();
