@@ -565,7 +565,7 @@ body.in-editor .sync-pill { top: auto; bottom: 14px; }
   .tpl-list .ll-row { grid-template-columns: minmax(0, 1fr) auto; }
   .tpl-list .ll-row > span:nth-child(4) { display: none; }
 }
-.lote-list .ll-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, .9fr) 90px minmax(0, 1.1fr) minmax(0, 1.1fr) 156px; }
+.lote-list .ll-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, .9fr) 90px minmax(0, 1.1fr) minmax(0, 1.1fr) 190px; }
 @media (max-width: 760px) {
   .lote-list .ll-row { grid-template-columns: minmax(0, 1fr) auto auto; }
   .lote-list .ll-row > span:nth-child(2), .lote-list .ll-row > span:nth-child(3), .lote-list .ll-row > span:nth-child(4), .lote-list .ll-row > span:nth-child(5), .lote-list .ll-row > span:nth-child(7) { display: none; }
