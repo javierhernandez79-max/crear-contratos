@@ -3327,6 +3327,9 @@ async function dropboxSettingsHTML() {
   const cfg = dbx.config();
   const info = await sync.syncInfo();
   if (dbx.isConnected()) {
+    // Las carpetas existentes deciden a dónde va cada archivo (carpeta del cliente aunque el nombre difiera)
+    await loadExpedienteFolders();
+    const pendientes = porRenombrar().length;
     return `
     <section class="card settings-block" id="dbx-block">
       <h3>Dropbox</h3>
@@ -3337,7 +3340,7 @@ async function dropboxSettingsHTML() {
       <div class="row wrap">
         <button class="btn primary" data-dbx="sync">Sincronizar ahora</button>
         <button class="btn" data-dbx="open-catalog">Abrir catálogo en Excel</button>
-        ${porRenombrar().length ? `<button class="btn" data-dbx="renombrar">Renombrar ${porRenombrar().length} archivo(s) al formato nuevo</button>` : ''}
+        ${pendientes ? `<button class="btn" data-dbx="renombrar">Acomodar ${pendientes} archivo(s) a la estructura nueva</button>` : ''}
         <button class="btn ghost danger" data-dbx="disconnect">Desconectar</button>
       </div>
     </section>`;
@@ -3392,15 +3395,16 @@ function bindDropboxSettings() {
       toast('Sincronizando antes de renombrar…');
       await runSync();
       if (syncError) return toast(`No se pudo sincronizar; vuelve a intentar: ${syncError}`, 'error');
+      await loadExpedienteFolders();
       const n = porRenombrar().length;
-      if (!n) { toast('Ya no hay archivos por renombrar (otro usuario ya lo hizo)', 'ok'); return renderSettings(); }
-      if (!(await confirmDialog('Renombrar archivos', `Se renombrarán en Dropbox ${n} archivo(s) de contratos al formato Tipo-Cliente-Empresa (p. ej. “ContratoDePrestacionDeServicios-Seguridoc-BanqueteraYEventosSolis-APROBADO.pdf”). No cambian de carpeta.`, 'Renombrar', 'primary'))) return;
-      toast('Renombrando…');
+      if (!n) { toast('Ya no hay archivos por acomodar (otro usuario ya lo hizo)', 'ok'); return renderSettings(); }
+      if (!(await confirmDialog('Acomodar archivos', `Se moverán y renombrarán en Dropbox ${n} archivo(s) o carpeta(s) de lote: carpeta del cliente › empresa del grupo › tipo de contrato, y nombre Tipo-Cliente-Empresa-Fecha (p. ej. “…/SEGURIDOC S.A. DE C.V./360 MANAGEMENT & BUSINESS, S.A. DE C.V./CONTRATOS DE SERVICIOS/ContratoDePrestacionDeServicios-Seguridoc-360ManagementBusiness-2026-10-15-APROBADO.pdf”). Las carpetas de contrato que queden vacías se borran.`, 'Acomodar', 'primary'))) return;
+      toast('Acomodando…');
       try {
         const { ok, fallos } = await renombrarArchivos();
         await runSync(); // se suben los registros de inmediato para que otro equipo no los renombre otra vez
-        if (fallos.length) await modal({ title: 'Renombrar archivos', body: `<p>Se renombraron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
-        else toast(`Se renombraron ${ok} archivo(s)`, 'ok');
+        if (fallos.length) await modal({ title: 'Acomodar archivos', body: `<p>Se acomodaron ${ok}. No se pudieron ${fallos.length}:</p><ul>${fallos.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`, actions: [{ label: 'Cerrar', value: '', kind: 'primary' }] });
+        else toast(`Se acomodaron ${ok} archivo(s)`, 'ok');
       } catch (err) { toast(err.message, 'error'); }
       renderSettings();
     } else if (act === 'disconnect') {
@@ -3453,7 +3457,22 @@ function baseArchivo(c) {
   }).filter((x) => x.nombre && !/^\[falta/.test(x.nombre));
   const cliente = partes.find((x) => !x.propia) || partes.find((x) => x.propia);
   const empresa = partes.find((x) => x.propia && x !== cliente);
-  return [tipo, ...[cliente, empresa].filter(Boolean).map((x) => nombreCorto(x.nombre))].filter(Boolean).join('-').slice(0, 150);
+  // La fecha distingue dos contratos del mismo tipo, cliente y empresa (si no, el segundo pisaría al primero)
+  return [tipo, ...[cliente, empresa].filter(Boolean).map((x) => nombreCorto(x.nombre)), fechaArchivo(c)].filter(Boolean).join('-').slice(0, 160);
+}
+
+/** Fecha para el nombre de archivo: la de firma del contrato (AAAA-MM-DD) o, si no tiene, la de creación. */
+function fechaArchivo(c) {
+  const f = String(c.variables?.fecha_firma || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(f)) return f;
+  const d = new Date(c.createdAt || Date.now());
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Empresa del grupo que firma, si no es ya la dueña de la carpeta: su carpeta va debajo de la del cliente. */
+function empresaCarpeta(c, dueno) {
+  const p = c.signers.map((sg) => sg.party && state.parties.find((x) => x.id === sg.party.id)).find((x) => x?.propia && x.id !== dueno?.id);
+  return p ? safeName(p.nombre).replace(/ - /g, ' ') : '';
 }
 // Sufijo de estado de cada archivo del contrato: el viejo (" - APROBADO") se reconoce para renombrar
 // (y el nuevo con otro tipo o nombre, p. ej. los guardados con "PrestacionDeServiciosFormato5-…")
@@ -3472,15 +3491,30 @@ function porRenombrar() {
   const lista = [];
   const dir = (ruta) => ruta.slice(0, ruta.lastIndexOf('/'));
   for (const c of state.contracts) {
+    const carpeta = contractFolder(c);
     for (const d of c.documentos || []) {
-      const suf = d.path && SUFIJOS_ARCHIVO.find(([re]) => re.test(d.name));
-      if (!suf) continue;
-      const nuevo = baseArchivo(c) + suf[1](d.name.split('.').pop().toLowerCase());
-      if (nuevo !== d.name) lista.push({ desde: d.path, hacia: dbx.joinPath(dir(d.path), nuevo), viejo: d.name, dueño: ['contracts', c], aplicar: (ruta) => Object.assign(d, { name: nuevo, path: ruta }) });
+      if (!d.path) continue;
+      // Los generados por la app toman el nombre actual; cualquier otro archivo del contrato solo cambia de carpeta
+      const suf = SUFIJOS_ARCHIVO.find(([re]) => re.test(d.name));
+      const nuevo = suf ? baseArchivo(c) + suf[1](d.name.split('.').pop().toLowerCase()) : d.name;
+      const hacia = dbx.joinPath(carpeta, nuevo);
+      if (hacia.toLowerCase() !== dbx.normalizePath(d.path).toLowerCase()) lista.push({ desde: d.path, hacia, viejo: d.name, dueño: ['contracts', c], aplicar: (ruta) => Object.assign(d, { name: nuevo, path: ruta }) });
     }
   }
   for (const l of state.lotes) {
     if (l.status !== 'aprobado' || !l.dropbox?.carpeta) continue;
+    // Carpeta del lote fuera de la estructura actual (sin la carpeta de la empresa): se mueve completa
+    const nueva = loteFolderNuevo(l);
+    if (l.dropbox.estructura !== 2 && nueva.toLowerCase() !== dbx.normalizePath(l.dropbox.carpeta).toLowerCase()) {
+      const vieja = l.dropbox.carpeta;
+      lista.push({ desde: vieja, hacia: nueva, viejo: `carpeta ${vieja.split('/').pop()}`, dueño: ['lotes', l], antes: true, aplicar: (ruta) => {
+        const cambia = (x) => (x && x.toLowerCase().startsWith(vieja.toLowerCase() + '/') ? ruta + x.slice(vieja.length) : x);
+        l.dropbox.carpeta = ruta;
+        l.dropbox.estructura = 2;
+        for (const w of l.trabajadores) if (w.firmado?.path) w.firmado.path = cambia(w.firmado.path);
+      } });
+      continue; // sus archivos se renombran en la siguiente vuelta, ya en la carpeta nueva
+    }
     const nombres = nombresLote(l);
     l.trabajadores.forEach((w, i) => {
       // Los Word guardados antes de este formato se llamaban "01 - Trabajador.docx" (el lote no marca nombresNuevos)
@@ -3500,18 +3534,27 @@ async function renombrarArchivos() {
   let ok = 0;
   const fallos = [];
   const tocados = new Map();
-  for (const x of porRenombrar()) {
+  const vaciadas = new Set();
+  const mover = async (x) => {
     try {
       const meta = await dbx.move(x.desde, x.hacia);
       x.aplicar(meta?.path_display || x.hacia);
       tocados.set(x.dueño[1], x.dueño[0]);
+      vaciadas.add(x.desde.slice(0, x.desde.lastIndexOf('/')));
       ok++;
     } catch (err) {
-      fallos.push(`${x.viejo}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe un archivo con el nombre nuevo' : err.message}`);
+      fallos.push(`${x.viejo}: ${err.notFound ? 'ya no está en Dropbox' : err.conflict ? 'ya existe uno con el nombre nuevo' : err.message}`);
     }
+  };
+  // Primero las carpetas de lote completas; luego los archivos (los de esos lotes ya en su carpeta nueva)
+  for (const x of porRenombrar().filter((y) => y.antes)) await mover(x);
+  for (const x of porRenombrar().filter((y) => !y.antes)) await mover(x);
+  // Carpetas de contrato que quedaron vacías (la organización anterior tenía una por contrato)
+  for (const d of vaciadas) {
+    try { if (!(await dbx.listFolder(d)).length) await dbx.remove(d); } catch { /* no es crítico */ }
   }
   // +1 ms: el cambio gana al sincronizar sin mover el contrato o lote en la lista
-  const nota = 'Se renombraron sus archivos en Dropbox al formato Tipo-Cliente-Empresa';
+  const nota = 'Sus archivos se movieron y renombraron en Dropbox (cliente / empresa / tipo; Tipo-Cliente-Empresa-Fecha)';
   // Solo el lote donde se movió algo queda marcado con nombres nuevos: si otro usuario ya lo había renombrado
   // (aquí todo sale "ya no está"), marcarlo crearía una copia en conflicto al sincronizar
   for (const [l, store] of tocados) if (store === 'lotes') l.dropbox.nombresNuevos = true;
@@ -3531,12 +3574,15 @@ function clientParty(c) {
   return duenoCarpeta(c, partes, categoriaDe(c));
 }
 
-/** Carpeta de Dropbox donde se guardan Word y PDF: DOCUMENTOS GENERADOS/<dueño>/<tipo de contrato>/<título>. */
+/**
+ * Carpeta de Dropbox donde se guardan Word y PDF: DOCUMENTOS GENERADOS/<cliente>/<empresa del grupo>/<tipo de contrato>.
+ * Sin carpeta por contrato: el nombre de cada archivo ya lleva tipo, cliente, empresa y fecha.
+ */
 function contractFolder(c) {
   if (c.carpeta) return c.carpeta;
   const p = clientParty(c);
   const base = generadosOf(p || { nombre: 'SIN CLIENTE' });
-  return dbx.joinPath(base, subcarpetaDe(c, categoriaDe(c)), safeName(nombreDe(c)));
+  return dbx.joinPath(base, empresaCarpeta(c, p), subcarpetaDe(c, categoriaDe(c)));
 }
 
 /** Sube a Dropbox (si está conectado) y descarga en este equipo. Devuelve el registro del documento. */
@@ -3971,7 +4017,13 @@ async function approveContract(c, { descargar = true } = {}) {
     // Primero se generan ambos archivos; así un error en el PDF no deja un Word "aprobado" huérfano
     files = await finalFiles(c, await loadDocx());
     // Al volver a aprobar se reemplaza el APROBADO anterior: queda un solo archivo vigente
-    for (const f of files) await deliverFile(c, f.blob, f.name, f.kind, { descargar, reemplazar: true });
+    const nuevos = new Set();
+    for (const f of files) nuevos.add((await deliverFile(c, f.blob, f.name, f.kind, { descargar, reemplazar: true })).id);
+    // Si cambió el nombre o la carpeta (otra fecha de firma, otro cliente…) el APROBADO anterior se borra
+    // (queda en los eliminados de Dropbox): solo hay un aprobado vigente
+    const viejos = dbx.isConnected() ? (c.documentos || []).filter((d) => d.path && /(?: - |-)APROBADO\.(docx|pdf)$/i.test(d.name) && !nuevos.has(d.id)) : [];
+    for (const d of viejos) { try { await dbx.remove(d.path); } catch (err) { console.warn(err); } }
+    if (viejos.length) c.documentos = c.documentos.filter((d) => !viejos.includes(d));
   } catch (err) {
     Object.assign(c, prev);
     throw err;
@@ -5025,14 +5077,19 @@ const downloadLoteZip = conAviso(async (l) => {
  * (o CONTRATOS DE COMISIÓN MERCANTIL) / <lote>.
  */
 function loteFolder(l) {
-  if (l.dropbox?.carpeta) return l.dropbox.carpeta;
+  return l.dropbox?.carpeta || loteFolderNuevo(l);
+}
+
+/** Carpeta del lote en la estructura actual: DOCUMENTOS GENERADOS/<cliente>/<empresa del grupo>/<tipo>/<lote>. */
+function loteFolderNuevo(l) {
   const nombre = String(l.cliente || '').trim();
   const k = nucleo(nombre);
   // Con o sin tipo de sociedad: primero el mismo núcleo del nombre; si no, uno muy parecido
   const clientes = state.parties.filter((p) => !p.propia);
   const ficha = nombre && (clientes.find((p) => k && nucleo(p.nombre) === k) || clientes.find((p) => parecido(nombre, p.nombre) >= 0.9));
   const base = generadosOf(ficha || { nombre: nombre || 'SIN CLIENTE' });
-  return dbx.joinPath(base, subcarpetaLote(l.tipo), safeName(l.title));
+  const empresa = l.empresa?.nombre ? safeName(l.empresa.nombre).replace(/ - /g, ' ') : '';
+  return dbx.joinPath(base, empresa, subcarpetaLote(l.tipo), safeName(l.title));
 }
 
 /** Sube a Dropbox los contratos finales del lote. Devuelve la carpeta, o null si Dropbox no está conectado. */
@@ -5043,7 +5100,7 @@ async function guardarLoteDropbox(l) {
   for (const f of await archivosLote(l)) {
     await dbx.upload(dbx.joinPath(carpeta, f.name), new Blob([f.data]), { reemplazar: true });
   }
-  l.dropbox = { carpeta, at: Date.now(), by: whoAmI(), nombresNuevos: true };
+  l.dropbox = { carpeta, at: Date.now(), by: whoAmI(), nombresNuevos: true, estructura: 2 };
   await saveLote(l, `Guardó los contratos en Dropbox (${carpeta})`);
   return carpeta;
 }
