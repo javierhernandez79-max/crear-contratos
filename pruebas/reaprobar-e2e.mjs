@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { createMockDropbox } from './mockdbx.mjs';
+import { aprobar as aprobarPasos } from './flujo-util.mjs';
 const S = process.argv[2] || '..';
 const APP = 'http://localhost:5173/';
 const mock = createMockDropbox();
@@ -57,8 +58,8 @@ const revision = async (id) => {
   await pg.waitForTimeout(500); // la ruta se actualiza al terminar de leer las carpetas de Dropbox
   const folder = await pg.textContent('#doc-folder');
   // Flujo nuevo: sin revisión; si los datos están completos se aprueba (eso guarda el Word)
-  if (await pg.locator('[data-wf=approve]').count()) {
-    await Promise.all([pg.waitForEvent('download'), pg.click('[data-wf=approve]').then(() => pg.click('dialog.modal button[value=ok]'))]);
+  if (await pg.locator('#app [data-wf=approve], #app [data-wf=revision]').count()) {
+    await aprobarPasos(pg);
     await pg.waitForSelector('[data-wf=papel]');
   }
   await pg.waitForTimeout(300);
@@ -66,8 +67,7 @@ const revision = async (id) => {
 };
 const aprobar = async (id) => {
   await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, id);
-  await pg.waitForSelector('[data-wf=approve]');
-  await Promise.all([pg.waitForEvent('download'), pg.click('[data-wf=approve]').then(() => pg.click('dialog.modal button[value=ok]'))]);
+  await aprobarPasos(pg);
   await pg.waitForSelector('.badge.aprobado, .stepper li.on'); await pg.waitForTimeout(1500);
 };
 await revision(ids[0]);

@@ -1,4 +1,5 @@
-import { chromium } from 'playwright'; import ExcelJS from 'exceljs'; import fs from 'fs';
+import { chromium } from 'playwright';
+import ExcelJS from 'exceljs'; import fs from 'fs';
 import { createMockDropbox } from './mockdbx.mjs';
 const S = process.argv[2] || '..'; const APP = 'http://localhost:5173/';
 const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
@@ -28,11 +29,20 @@ await pg.evaluate(async (t) => {
   await put('parties', { id: 'emp1', kind: 'pm', propia: true, activa: true, nombre: 'EMPRESA DEMO, S.A. DE C.V.', rfc: 'EDE010101AA1', domicilio: 'AV. DEMO 1, CDMX', apoderados: [{ id: 'apo1', nombre: 'MARIA APODERADA', cargo: 'Apoderado legal', vigente: true }], accionistas: [], createdAt: 1, updatedAt: 1 });
   await put('parties', { id: 'cli1', kind: 'pm', propia: false, activa: true, nombre: 'ALFADOC S.A. DE C.V.', rfc: '', apoderados: [], accionistas: [], createdAt: 1, updatedAt: 1 });
 }, tpl);
+// Cada lote con otro salario diario: con los mismos datos la app (bien) rechaza el contrato idéntico de otro lote
+let nLote = 0;
+async function p1Variante() {
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.readFile(S + '/p1-dbx.xlsx'); const ws = wb.worksheets[0];
+  let fila = 0, col = 0;
+  ws.eachRow((row, r) => { if (!col) row.eachCell((c, k) => { if (String(c.value).trim() === 'SD') { fila = r; col = k; } }); });
+  ws.getRow(fila + 1).getCell(col).value = 500 + (++nLote);
+  const f = `${S}/p1-dbx-${nLote}.xlsx`; await wb.xlsx.writeFile(f); return f;
+}
 const lote = async (cliente) => {
   await pg.goto(APP + '#/lotes'); await pg.reload(); await pg.waitForSelector('a[href="#/lotes/nuevo"]');
   await pg.click('a[href="#/lotes/nuevo"]'); await pg.waitForSelector('#l-tpl');
   await pg.selectOption('#l-tpl', tpl.id); await pg.selectOption('#l-per', 'QUINCENAL'); await pg.selectOption('#l-emp', 'emp1'); await pg.fill('#l-cli', cliente);
-  await pg.setInputFiles('#l-file', S + '/p1-dbx.xlsx'); await pg.waitForSelector('.lt-row:not(.lt-head)');
+  await pg.setInputFiles('#l-file', await p1Variante()); await pg.waitForSelector('.lt-row:not(.lt-head)');
   await pg.click('#l-create'); await pg.waitForSelector('#lote-approve');
   await pg.click('#lote-approve'); await pg.click('dialog.modal button[value=ok]');
   await pg.waitForSelector('text=En Dropbox:', { timeout: 20000 });

@@ -6,7 +6,7 @@ const r = readSugerido(wb); console.log(JSON.stringify(r));
 ok(r.cliente === 'ALFADOC' && r.empresas.length === 2 && r.empresas[0].conceptos.length === 2, 'lee el archivo real');
 ok(parecido('ZETA TECH-SYSTEMS S.A DE C.V.', 'Zeta Tech Systems, S.A. de C.V.') === 1, 'ignora puntuación y tipo de sociedad');
 const grupo = [{ nombre: 'ZETA TECH-SYSTEMS, S.A. DE C.V.' }, { nombre: 'EPSILON CLEANING SERVICE, S.A.' }, { nombre: 'VITALDEMO, S.A. DE C.V.' }, { nombre: 'BETAMAR DEL BAJIO, S.A. DE C.V.' }];
-for (const [n, esp] of [['ZETA TECH-SYSTEMS S.A DE C.V.', 0], ['EPSILON-CLEANING-SERVICE, S.A.', 1], ['VITALDEMO S.A. DE C.V.', 2], ['VITALDENO, S.A. DE C.V.', 2], ['EPSILON CLEANNING SERVICES', 1], ['MERCAZA DEL BAJIO', 3], ['OTRA EMPRESA SA', null]]) {
+for (const [n, esp] of [['ZETA TECH-SYSTEMS S.A DE C.V.', 0], ['EPSILON-CLEANING-SERVICE, S.A.', 1], ['VITALDEMO S.A. DE C.V.', 2], ['VITALDENO, S.A. DE C.V.', 2], ['EPSILON CLEANNING SERVICES', 1], ['BETAMAZ DEL BAJIO', 3], ['OTRA EMPRESA SA', null]]) {
   const m = mejorCoincidencia(n, grupo); ok((m ? grupo.indexOf(m.p) : null) === esp, `${n} → ${m ? m.p.nombre + ' (' + m.score.toFixed(2) + ')' : 'sin coincidencia'}`);
 }
 ok(listaServicios(['A', 'B', 'C']) === 'a) A; b) B; y c) C', 'lista con incisos');

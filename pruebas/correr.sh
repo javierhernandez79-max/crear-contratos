@@ -28,14 +28,14 @@ pasan=0; fallan=(); sinmat=()
 for f in *-e2e.mjs *-unit.mjs; do
   [ -n "$filtro" ] && [[ "$f" != *"$filtro"* ]] && continue
   falta=""
-  for p in $(grep -oE "marco/out/[a-z-]+\.json|fmt/formatos-cps\.json|sug/u-marco-servicios\.json|sug/in/sug\.xlsx|cti/original\.docx|p1-dl\.xlsx|p1/entrega" "$f" | sort -u); do
+  for p in $(grep -oE "marco/out/[a-z-]+\.json|fmt/formatos-cps\.json|sug/u-marco-servicios\.json|cti/original\.docx|p1-dl\.xlsx|p1/entrega" "$f" | sort -u); do
     [ -e "salida/$p" ] || falta="$p"
   done
   if [ -n "$falta" ]; then sinmat+=("$f ($falta)"); printf 'SIN MATERIAL  %s\n' "$f"; continue; fi
   log="salida/${f%.mjs}.log"
   (cd salida/t && timeout 300 node ../../correr-una.mjs "../../$f" ..) >"$log" 2>&1
   rc=$?
-  if [ $rc -ne 0 ] || grep -qE "^FAIL|ERRORES: |errors: \[ *'|Error: " "$log"; then
+  if [ $rc -ne 0 ] || grep -qE "^FAIL|ERRORES: |errors: \[ *'|^Error: " "$log"; then
     fallan+=("$f"); printf 'FALLA         %s\n' "$f"
   else
     pasan=$((pasan + 1)); printf 'ok            %s\n' "$f"

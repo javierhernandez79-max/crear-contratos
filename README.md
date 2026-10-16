@@ -85,4 +85,6 @@ Es un sitio estático: sube la carpeta tal cual a cualquier hosting con HTTPS (N
 - `functions/api/docusign/` y `functions/_lib/docusign.js` — conexión global de DocuSign (token JWT, estado, paso de las llamadas de la app y conversión de Word a PDF en `convertir.js`)
 - `functions/api/ia.js`, `functions/api/leer-pdf.js`, `functions/_lib/acceso.js` — funciones de Cloudflare Pages: interruptor, llamada a la API de Claude y validación del token de Cloudflare Access
 
+- `pruebas/` — pruebas automáticas (Playwright con simuladores de Dropbox y DocuSign); se corren con `pruebas/correr.sh` (ver `pruebas/README.md`)
+
 > Las plantillas son modelos generales y no sustituyen asesoría legal.

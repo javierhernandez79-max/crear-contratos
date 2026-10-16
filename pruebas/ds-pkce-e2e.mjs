@@ -136,7 +136,7 @@ await pg.click('[data-wf=ds-refresh]');
 await pg.waitForSelector('#ds-envio >> text=Firmado por todos', { timeout: 15000 });
 const c = await pg.evaluate(async (id) => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); }); return new Promise((x) => { const q = d.transaction('contracts').objectStore('contracts').get(id); q.onsuccess = () => x(q.result); }); }, ids.c);
 ok(c.status === 'final', 'contrato marcado firmado');
-ok(c.documentos.some((x) => /FIRMADO DocuSign/.test(x.name)) && c.documentos.some((x) => /certificado DocuSign/.test(x.name)), 'registró PDF firmado y certificado');
+ok(c.documentos.some((x) => /FIRMADO-DocuSign/.test(x.name)) && c.documentos.some((x) => /CERTIFICADO-DocuSign/.test(x.name)), 'registró PDF firmado y certificado');
 ok(c.history.some((h) => /DocuSign/.test(h.text || h.msg || JSON.stringify(h))), 'bitácora');
 await pg.screenshot({ path: S + '/ds4-firmado.png', fullPage: true });
 

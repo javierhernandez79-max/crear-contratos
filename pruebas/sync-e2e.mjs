@@ -133,7 +133,9 @@ await A.waitForTimeout(800);
 await sync(A);
 await A.goto(APP + '#/');
 await A.waitForSelector('.contract-list .ll-row[data-id]');
-const titles = await A.locator('.contract-list .ll-row[data-id] > span:first-child > strong').allTextContents();
+// La lista ya muestra cliente/empresa/tipo; los títulos se leen de los datos del equipo
+const titles = await A.evaluate(async () => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  return new Promise((x) => { const q = d.transaction('contracts').objectStore('contracts').getAll(); q.onsuccess = () => x(q.result.map((c) => c.title)); }); });
 ok(titles.includes('NDA editado por B') && titles.some((t) => t.startsWith('NDA editado por A (copia en conflicto')), `conflicto: queda la de B y la de A como copia (${titles.join(' | ')})`);
 
 step = 'Anexos';

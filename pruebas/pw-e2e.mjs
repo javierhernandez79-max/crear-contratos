@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import { aprobar as aprobarPasos } from './flujo-util.mjs';
 const S = process.argv[2]; const APP = 'http://localhost:5173/';
 const errors = []; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) errors.push(m); };
 const b = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -44,9 +45,9 @@ const id = await pg.evaluate(async () => {
   await new Promise((x) => { const tx = d.transaction('contracts', 'readwrite'); tx.objectStore('contracts').put(c); tx.oncomplete = x; });
   return c.id;
 });
-await pg.reload(); await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, id); await pg.waitForSelector('[data-wf=approve]');
+await pg.reload(); await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, id); await pg.waitForSelector('#app [data-wf=approve], #app [data-wf=revision]');
 ok((await pg.textContent('body')).includes('Word de la plantilla'), 'aviso de Word de la plantilla (sin código de formato)');
-const [dl] = await Promise.all([pg.waitForEvent('download'), pg.click('[data-wf=approve]').then(() => pg.click('dialog.modal button[value=ok]'))]);
+const dl = await aprobarPasos(pg);
 await dl.saveAs(S + '/pw/salida.docx');
 ok(dl.suggestedFilename().endsWith('APROBADO.docx'), 'aprobado genera el Word: ' + dl.suggestedFilename());
 await pg.waitForSelector('[data-wf=ds-send]');

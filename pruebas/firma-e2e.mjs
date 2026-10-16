@@ -51,8 +51,11 @@ await pg.waitForTimeout(300);
 ok((await pg.textContent('#venc-badge')) === '1', 'reactivado');
 await pg.evaluate((id) => { location.hash = `#/c/${id}/firmas`; }, ids.viejo); await pg.waitForSelector('#editor-head');
 ok((await pg.textContent('#editor-head')).includes('háb. sin firma'), 'encabezado del contrato');
-await pg.click('[data-act=final]'); await pg.click('dialog.modal button[value=ok]').catch(() => {});
-await pg.waitForTimeout(400);
+// Ya no hay botón "Marcar firmado": el contrato queda firmado con DocuSign o "Firmado en papel"; aquí se simula el estado final
+await pg.evaluate(async (id) => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
+  const c = await new Promise((x) => { const q = d.transaction('contracts').objectStore('contracts').get(id); q.onsuccess = () => x(q.result); });
+  c.status = 'final'; await new Promise((x) => { const tx = d.transaction('contracts', 'readwrite'); tx.objectStore('contracts').put(c); tx.oncomplete = x; }); }, ids.viejo);
+await pg.reload(); await pg.waitForSelector('#editor-head'); await pg.waitForTimeout(400);
 ok(!(await pg.textContent('#editor-head')).includes('háb. sin firma'), 'al marcar firmado desaparece');
 ok((await pg.textContent('#venc-badge')) === '', 'contador en 0 tras firmar');
 await pg.setViewportSize({ width: 390, height: 800 });

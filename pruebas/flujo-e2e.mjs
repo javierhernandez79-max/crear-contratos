@@ -24,7 +24,7 @@ const ids = await pg.evaluate(async () => {
   const tpl = { id: 'u-t', name: 'Servicios', titulo: 'CONTRATO DE PRESTACIÓN DE SERVICIOS', vars: [['x', 'X', 'text']], sections: [{ title: 'OBJETO', body: 'Texto {{x}}.' }],
     signers: [{ role: 'EL PRESTADOR', name: 'P', bind: { prefix: 'prestador' } }, { role: 'EL CLIENTE', name: 'C', bind: { prefix: 'cliente' } }] };
   const mk = (cli, nombre) => {
-    const c = m.newContractFromTemplate(tpl); c.variables = { x: 'uno' }; c.etiqueta = nombre;
+    const c = m.newContractFromTemplate(tpl); c.variables = { x: nombre }; c.etiqueta = nombre;
     c.signers[0].party = { id: 'g1', apoderadoId: null, prefix: 'prestador' };
     if (cli) c.signers[1].party = { id: cli, apoderadoId: null, prefix: 'cliente' };
     return c;

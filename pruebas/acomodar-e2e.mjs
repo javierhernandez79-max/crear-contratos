@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { createMockDropbox } from './mockdbx.mjs';
+import { aprobar } from './flujo-util.mjs';
 const APP = 'http://localhost:5173/';
 const mock = createMockDropbox();
 mock.put('/Contratos App/LEEME.txt', Buffer.from('x'));
@@ -54,16 +55,14 @@ ok(dbs.l[0].dropbox.carpeta === `${E}/CONTRATOS DE TRABAJO/INDETERMINADOS/Lote X
 ok(dbs.c.find((c) => c.id === ids[0]).documentos[0].path.startsWith(`${E}/CONTRATOS DE SERVICIOS/`), 'registro del contrato actualizado');
 ok(await pg.locator('[data-dbx=renombrar]').count() === 0, 'ya no queda nada por acomodar');
 // Contrato nuevo: aprobar va directo a la estructura nueva; cambiar la fecha y reaprobar borra el APROBADO anterior
-await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, ids[2]); await pg.waitForSelector('[data-wf=approve]');
-await Promise.all([pg.waitForEvent('download'), pg.click('[data-wf=approve]').then(() => pg.click('dialog[open] button[value=ok]'))]); await pg.waitForTimeout(1500);
+await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, ids[2]); await aprobar(pg); await pg.waitForTimeout(1500);
 ok(files().includes(`${E}/CONTRATOS DE SERVICIOS/ContratoDePrestacionDeServicios-Alfadoc-900ManagementBusiness-2026-11-02-APROBADO.pdf`), 'aprobado nuevo en la estructura nueva');
 await pg.evaluate(async (i) => { const r = indexedDB.open('crear-contratos'); const d = await new Promise((x) => { r.onsuccess = () => x(r.result); });
   const c = await new Promise((x) => { const q = d.transaction('contracts').objectStore('contracts').get(i); q.onsuccess = () => x(q.result); });
   c.variables.fecha_firma = '2026-11-05'; c.status = 'borrador';
   await new Promise((x) => { const tx = d.transaction('contracts', 'readwrite'); tx.objectStore('contracts').put(c); tx.oncomplete = x; }); }, ids[2]);
 await pg.reload(); await pg.waitForSelector('#app');
-await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, ids[2]); await pg.waitForSelector('[data-wf=approve]');
-await Promise.all([pg.waitForEvent('download'), pg.click('[data-wf=approve]').then(() => pg.click('dialog[open] button[value=ok]'))]); await pg.waitForTimeout(1500);
+await pg.evaluate((i) => { location.hash = `#/c/${i}/documento`; }, ids[2]); await aprobar(pg); await pg.waitForTimeout(1500);
 console.log('DESPUES', files().filter((p) => /2026-11/.test(p)).map((p) => p.split('/').pop()), await pg.evaluate(() => document.querySelector('.var-row[data-key="fecha_firma"]')?.outerHTML?.slice(0,300)));
 ok(files().includes(`${E}/CONTRATOS DE SERVICIOS/ContratoDePrestacionDeServicios-Alfadoc-900ManagementBusiness-2026-11-05-APROBADO.pdf`) && !files().some((p) => p.includes('2026-11-02')), 'reaprobado con otra fecha: queda solo el nuevo');
 ok(!errors.length, 'sin errores: ' + errors.join(' | '));

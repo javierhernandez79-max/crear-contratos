@@ -65,7 +65,7 @@ await zip.saveAs(S + '/fmt.zip');
 const zl = execSync(`unzip -Z1 ${S}/fmt.zip`).toString().trim().split('\n');
 ok(zl.length === 2 && zl.every((n) => n.endsWith('.docx')), 'zip solo con los 2 Word (el PDF sale de Word): ' + zl.join(' | '));
 execSync(`rm -rf ${S}/fmtz && mkdir -p ${S}/fmtz && cd ${S}/fmtz && unzip -q ../fmt.zip`);
-const w = zl.find((n) => n.includes('ZETA TECH'));
+const w = zl.find((n) => n.includes('ZetaTech'));
 const xml = execSync(`unzip -p "${S}/fmtz/${w}" word/document.xml`).toString();
 ok(xml.includes('Antique Olive'), 'Word conserva la letra del formato F2 (Antique Olive)');
 ok(!xml.includes('{{') && xml.includes('ALFADOC') && xml.includes('ZETA TECH SYSTEMS') && xml.includes('Servicios de sistemas de Seguridad'), 'Word con datos y servicios, sin marcadores');
@@ -110,7 +110,7 @@ await pg.screenshot({ path: S + '/fmt3-conflicto.png', fullPage: true });
 // PDF → ofrece el Word
 await pg.goto(APP + '#/c/malo/documento'); await pg.waitForSelector('[data-wf=approve]');
 await pg.goto(APP + '#/'); await pg.waitForSelector('.contract-list');
-ok((await pg.locator('.contract-list .formato-chip').allTextContents()).sort().join() === 'F2,F2,F3', 'lista con el código de formato');
+ok((await pg.locator('.contract-list .ll-row[data-id] .muted.small').allTextContents()).filter((t) => /^Formato \d/.test(t)).sort().join() === 'Formato 2,Formato 2,Formato 3', 'lista con el formato en la columna Tipo');
 
 // Biblioteca: solo la plantilla maestra; los formatos quedan ocultos
 await pg.goto(APP + '#/plantillas'); await pg.waitForSelector('.tpl-list');

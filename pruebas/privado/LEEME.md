@@ -9,7 +9,6 @@ privado/
   marco/out/u-marco-*.json        plantillas marco (servicios, trabajo, comisión, confidencialidad)
   fmt/formatos-cps.json           formatos de servicios F1–F12
   sug/u-marco-servicios.json      plantilla de servicios para el Sugerido de conceptos
-  sug/in/sug.xlsx                 Excel "Sugerido de conceptos" de ejemplo
   cti/original.docx               contrato de trabajo original (subida de Word)
   p1-dl.xlsx                      P1 del despacho
   p1/entrega/P1 - plantilla.xlsx  P1 vacío del despacho
