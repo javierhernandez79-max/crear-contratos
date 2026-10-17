@@ -132,7 +132,7 @@ await subir('#cat-pdf', [
   { name: 'acta-texto.pdf', mimeType: 'application/pdf', buffer: ACTA_TXT },
   { name: 'csf-mala.pdf', mimeType: 'application/pdf', buffer: CSF_MALA },
 ]);
-await pg.waitForSelector('dialog.modal >> text=Alta desde 2 PDF');
+await pg.waitForSelector('dialog.modal >> text=Alta desde 2 documentos');
 const t2 = await pg.textContent('dialog.modal');
 const f2 = await pg.$$eval('.alta-list .ll-row:not(.ll-head)', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
 console.log(f2);
@@ -154,7 +154,7 @@ await subir('#cat-pdf', [
   { name: 'COCINERA DEMO - ACT CONST.pdf', mimeType: 'application/pdf', buffer: ACTA_B },
   { name: 'COCINERA DEMO - RPP.pdf', mimeType: 'application/pdf', buffer: SCAN },
 ]);
-await pg.waitForSelector('dialog.modal >> text=Alta desde 3 PDF');
+await pg.waitForSelector('dialog.modal >> text=Alta desde 3 documentos');
 const f3 = await pg.$$eval('.alta-list .ll-row:not(.ll-head)', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
 console.log(f3, await pg.textContent('dialog.modal').then((x) => x.includes('No se usaron')));
 ok(f3.length === 1 && /RPP: COCINERA DEMO - RPP\.pdf/.test(f3[0]) && /INE: COCINERA DEMO - INE/.test(f3[0]) && f3[0].includes('MARIA LOPEZ PEREZ'), 'INE y RPP en la misma ficha que la constitutiva, con el apoderado de la INE');

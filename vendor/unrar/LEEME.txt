@@ -1,0 +1,2 @@
+node-unrar-js 2.0.2 (MIT, https://github.com/YuJianrong/node-unrar.js), empaquetado con esbuild para el navegador: solo la extracción en memoria.
+unrar.wasm incluye el código de UnRAR de RARLAB (licencia de UnRAR: libre para descomprimir).

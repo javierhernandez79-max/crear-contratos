@@ -1,4 +1,4 @@
-// Alta de varias partes a la vez desde PDF (constancias fiscales, escrituras constitutivas, poderes,
+// Alta de varias partes a la vez desde documentos: PDF, Word, imagen o texto (constancias fiscales, escrituras constitutivas, poderes,
 // boletas del Registro Público e INE de los apoderados).
 // Arma un plan sin guardar nada: qué fichas se crean, cuáles se completan y qué documentos se omiten.
 import { detectarTipo, extraer, sinTexto } from './extraccion.js';
@@ -26,7 +26,7 @@ const RPP = ['folioMercantil', 'folioFecha', 'folioLugar'];
 const INE_APO = ['identificacion', 'identificacionVigencia'];
 const INE_PF = ['curp', 'identificacion', 'sexo'];
 /** "EMPRESA X - ACT CONST.pdf" → "EMPRESA X": el expediente suele nombrar los archivos con la empresa al inicio. */
-const empresaDelArchivo = (name) => String(name || '').replace(/\.pdf$/i, '').split(/\s+-\s+/)[0].trim();
+const empresaDelArchivo = (name) => String(name || '').replace(/\.[a-z0-9]{2,8}$/i, '').split(/\s+-\s+/)[0].trim();
 
 /**
  * docs = [{ name, text, ia? }] (ia = lo leído con IA de un escaneado: { tipo, kind, empresa, datos });
@@ -52,10 +52,11 @@ export function planAlta(docs, parties) {
   // Si el documento no la menciona, la empresa del nombre del archivo
   const deArchivo = (name) => { const e = empresaDelArchivo(name); return e ? mencionada(e, e) : null; };
 
-  const leidos = docs.map((d) => ({ ...d, tipo: d.ia ? (d.ia.tipo === 'otro' ? null : d.ia.tipo) : sinTexto(d.text) ? 'sin-texto' : detectarTipo(d.text) }))
+  const leidos = docs.map((d) => ({ ...d, tipo: d.error ? 'error' : d.ia ? (d.ia.tipo === 'otro' ? null : d.ia.tipo) : sinTexto(d.text) ? 'sin-texto' : detectarTipo(d.text) }))
     .sort((a, b) => (ORDEN[a.tipo] ?? 9) - (ORDEN[b.tipo] ?? 9));
   for (const d of leidos) {
-    if (d.tipo === 'sin-texto') { omitidos.push({ name: d.name, motivo: d.errorIA || 'Parece escaneado (sin texto que leer): captúralo a mano o enciende la lectura con IA.' }); continue; }
+    if (d.tipo === 'error') { omitidos.push({ name: d.name, motivo: d.error }); continue; }
+    if (d.tipo === 'sin-texto') { omitidos.push({ name: d.name, motivo: d.errorIA || 'Parece escaneado o es una imagen (sin texto que leer): captúralo a mano o enciende la lectura con IA.' }); continue; }
     if (!d.tipo) { omitidos.push({ name: d.name, motivo: 'No parece constancia fiscal, escritura constitutiva, poder, boleta del Registro Público ni INE.' }); continue; }
     const data = d.ia ? { ...d.ia.datos, kind: d.ia.kind || undefined } : extraer(d.tipo, d.text);
     // Con IA no hay texto: la empresa se busca por la denominación que leyó
