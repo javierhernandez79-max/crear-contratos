@@ -104,7 +104,8 @@ export function partyGapKeys(p) {
     // Marcado como vigente pero sin nombre: no cuenta como apoderado hasta tener nombre
     const keys = a.nombre.trim() ? PODER.filter(([k]) => !String(a[k] ?? '').trim()).map(([k]) => k) : ['nombre'];
     if (a.nombre.trim() && ineVencida(a, anio)) keys.push('identificacionVigencia');
-    if (keys.length) apoderados.push({ i, keys });
+    const opcionales = a.nombre.trim() ? OPC_APO.filter((k) => !keys.includes(k) && !String(a[k] ?? '').trim()) : [];
+    if (keys.length || opcionales.length) apoderados.push({ i, keys, opcionales });
   });
   return { campos, opcionales, apoderados, sinApoderado: !p.apoderados.some((a) => a.vigente && a.nombre.trim()) };
 }
@@ -112,6 +113,7 @@ export function partyGapKeys(p) {
 const REQ_PM = [['nombre', 'Razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio'], ['escrituraNumero', 'Escritura'], ['escrituraFecha', 'Fecha de constitución'], ['notario', 'Notario'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['folioMercantil', 'Folio mercantil']];
 const REQ_PF = [['nombre', 'Nombre'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación']];
 const OPC_PF = ['correo', 'telefono'];
+const OPC_APO = ['cargo', 'correo', 'facultades', 'identificacion', 'identificacionVigencia'];
 const OPC_PM = ['correo', 'telefono', 'folioFecha', 'folioLugar', 'objetoSocial'];
 const PODER = [['poderNumero', 'número del poder'], ['poderFecha', 'fecha del poder'], ['notario', 'notario del poder'], ['notariaNumero', 'notaría núm. del poder'], ['notariaCiudad', 'ciudad de la notaría del poder']];
 const ineVencida = (a, anio) => Number(a.identificacionVigencia) && Number(a.identificacionVigencia) < anio;

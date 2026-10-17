@@ -42,7 +42,11 @@ ok((await faltan()).includes('escrituraNumero'), 'al borrarla vuelve a marcarse'
 await pg.evaluate(() => { location.hash = '#/catalogo/con'; }); await pg.waitForSelector('#party-form'); await pg.waitForTimeout(300);
 const f2 = await faltan();
 ok(f2.join() === 'a0.poderFecha', 'solo la fecha del poder del apoderado vigente: ' + f2.join(','));
-ok(!(await pg.$$eval('[data-list] .field.opcional', (els) => els.length)), 'en los apoderados no se marcan opcionales');
+const opcApo = async (i) => pg.$$eval(`[data-list="apoderados"][data-i="${i}"] .field.opcional [data-k]`, (els) => els.map((e) => e.dataset.k));
+ok((await opcApo(0)).sort().join() === 'correo,facultades,identificacion,identificacionVigencia', 'apoderado vigente: opcionales vacíos en amarillo: ' + (await opcApo(0)).join(','));
+ok((await opcApo(1)).length === 0, 'apoderado no vigente: sin marcas');
+await pg.fill('[data-list="apoderados"][data-i="0"] [data-k="facultades"]', 'pleitos y cobranzas');
+ok(!(await opcApo(0)).includes('facultades'), 'al capturar facultades deja de estar en amarillo');
 ok(!(await pg.$eval('#party-apoderados', (e) => e.classList.contains('falta'))), 'con apoderado vigente la sección no se marca');
 await pg.fill('[data-list="apoderados"][data-i="0"] [data-k="poderFecha"]', '2021-05-05');
 ok((await faltan()).length === 0 && await pg.$eval('#party-gaps', (e) => e.hidden), 'completa: sin rojos y sin aviso');

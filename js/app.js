@@ -2433,7 +2433,11 @@ function renderPartyEditor(id) {
     const dePartes = (k) => [...form.querySelectorAll(`[data-k="${k}"]`)].filter((el) => !el.closest('[data-list]'));
     for (const k of g.campos) dePartes(k).forEach((el) => marcar(el));
     for (const k of g.opcionales) dePartes(k).forEach((el) => marcar(el, 'opcional'));
-    for (const { i, keys } of g.apoderados) for (const k of keys) marcar(form.querySelector(`[data-list="apoderados"][data-i="${i}"] [data-k="${k}"]`));
+    const deApoderado = (i, k) => form.querySelector(`[data-list="apoderados"][data-i="${i}"] [data-k="${k}"]`);
+    for (const { i, keys, opcionales } of g.apoderados) {
+      for (const k of keys) marcar(deApoderado(i, k));
+      for (const k of opcionales) marcar(deApoderado(i, k), 'opcional');
+    }
     $('#party-apoderados')?.classList.toggle('falta', g.sinApoderado);
     const faltan = partyGaps(p), banner = $('#party-gaps');
     if (banner) { banner.hidden = !faltan.length; banner.querySelector('span').textContent = `Faltan: ${faltan.join(', ')}. En el contrato aparecerán como [falta: …]. Están marcados en rojo; en amarillo, los opcionales vacíos.`; }
