@@ -2354,7 +2354,7 @@ function renderPartyEditor(id) {
       </div>
     </header>
     ${ret ? `<div class="banner info">${icon('link')} <span>Al terminar, úsala en el contrato.</span><button class="btn sm primary" id="use-in-contract">Usar en el contrato</button></div>` : ''}
-    <div class="banner warn" id="party-gaps" ${gaps.length ? '' : 'hidden'}>${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …]. Están marcados en rojo.</span></div>
+    <div class="banner warn" id="party-gaps" ${gaps.length ? '' : 'hidden'}>${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …]. Están marcados en rojo; en amarillo, los opcionales vacíos.</span></div>
     <form class="party-form" id="party-form" autocomplete="off">
       <section class="card form-block">
         <div class="row">
@@ -2425,16 +2425,18 @@ function renderPartyEditor(id) {
   const form = $('#party-form');
   const status = (t) => { const el = $('#party-save'); if (el) el.textContent = t; };
   const persist = debounce(async () => { await saveParty(p); status('Guardado'); }, 400);
-  // Resalta en rojo los datos que faltan (los mismos del aviso) y actualiza el aviso mientras se captura
+  // Resalta en rojo los datos que faltan (los mismos del aviso), en amarillo los opcionales vacíos, y actualiza el aviso mientras se captura
   const marcarFaltantes = () => {
     const g = partyGapKeys(p);
-    form.querySelectorAll('.falta').forEach((el) => el.classList.remove('falta'));
-    const marcar = (el) => el?.closest('.field')?.classList.add('falta');
-    for (const k of g.campos) form.querySelectorAll(`[data-k="${k}"]`).forEach((el) => { if (!el.closest('[data-list]')) marcar(el); });
+    form.querySelectorAll('.falta, .opcional').forEach((el) => el.classList.remove('falta', 'opcional'));
+    const marcar = (el, cls = 'falta') => el?.closest('.field')?.classList.add(cls);
+    const dePartes = (k) => [...form.querySelectorAll(`[data-k="${k}"]`)].filter((el) => !el.closest('[data-list]'));
+    for (const k of g.campos) dePartes(k).forEach((el) => marcar(el));
+    for (const k of g.opcionales) dePartes(k).forEach((el) => marcar(el, 'opcional'));
     for (const { i, keys } of g.apoderados) for (const k of keys) marcar(form.querySelector(`[data-list="apoderados"][data-i="${i}"] [data-k="${k}"]`));
     $('#party-apoderados')?.classList.toggle('falta', g.sinApoderado);
     const faltan = partyGaps(p), banner = $('#party-gaps');
-    if (banner) { banner.hidden = !faltan.length; banner.querySelector('span').textContent = `Faltan: ${faltan.join(', ')}. En el contrato aparecerán como [falta: …]. Están marcados en rojo.`; }
+    if (banner) { banner.hidden = !faltan.length; banner.querySelector('span').textContent = `Faltan: ${faltan.join(', ')}. En el contrato aparecerán como [falta: …]. Están marcados en rojo; en amarillo, los opcionales vacíos.`; }
   };
   marcarFaltantes();
   const target = (el) => (el.dataset.list ? p[el.dataset.list][Number(el.dataset.i)]

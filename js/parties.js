@@ -89,12 +89,15 @@ export function partyGaps(p) {
 /**
  * Los mismos faltantes de partyGaps, como campos de la ficha, para resaltarlos:
  * campos de la parte, campos de cada apoderado vigente (por índice) y si falta un apoderado vigente.
+ * `opcionales`: datos vacíos que no son obligatorios (no salen como [falta] en el contrato), para avisarlos aparte.
  */
 export function partyGapKeys(p) {
   const req = p.kind === 'pm' ? REQ_PM : REQ_PF;
-  const campos = req.filter(([k]) => !String(p[k] ?? '').trim()).map(([k]) => k);
+  const vacio = (k) => !String(p[k] ?? '').trim();
+  const campos = req.filter(([k]) => vacio(k)).map(([k]) => k);
+  const opcionales = (p.kind === 'pm' ? OPC_PM : OPC_PF).filter(vacio);
   const apoderados = [];
-  if (p.kind !== 'pm') return { campos, apoderados, sinApoderado: false };
+  if (p.kind !== 'pm') return { campos, opcionales, apoderados, sinApoderado: false };
   const anio = new Date().getFullYear();
   p.apoderados.forEach((a, i) => {
     if (!a.vigente) return;
@@ -103,11 +106,13 @@ export function partyGapKeys(p) {
     if (a.nombre.trim() && ineVencida(a, anio)) keys.push('identificacionVigencia');
     if (keys.length) apoderados.push({ i, keys });
   });
-  return { campos, apoderados, sinApoderado: !p.apoderados.some((a) => a.vigente && a.nombre.trim()) };
+  return { campos, opcionales, apoderados, sinApoderado: !p.apoderados.some((a) => a.vigente && a.nombre.trim()) };
 }
 
 const REQ_PM = [['nombre', 'Razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio'], ['escrituraNumero', 'Escritura'], ['escrituraFecha', 'Fecha de constitución'], ['notario', 'Notario'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['folioMercantil', 'Folio mercantil']];
 const REQ_PF = [['nombre', 'Nombre'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación']];
+const OPC_PF = ['correo', 'telefono'];
+const OPC_PM = ['correo', 'telefono', 'folioFecha', 'folioLugar', 'objetoSocial'];
 const PODER = [['poderNumero', 'número del poder'], ['poderFecha', 'fecha del poder'], ['notario', 'notario del poder'], ['notariaNumero', 'notaría núm. del poder'], ['notariaCiudad', 'ciudad de la notaría del poder']];
 const ineVencida = (a, anio) => Number(a.identificacionVigencia) && Number(a.identificacionVigencia) < anio;
 

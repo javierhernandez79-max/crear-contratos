@@ -21,22 +21,28 @@ const faltan = async () => pg.$$eval('#party-form .field.falta [data-k]', (els) 
 await pg.reload(); await pg.waitForSelector('.ll-row[data-id="sin"]'); await pg.evaluate(() => { location.hash = '#/catalogo/sin'; }); await pg.waitForSelector('#party-form');
 const f1 = await faltan();
 ok(['escrituraNumero', 'escrituraFecha', 'notario', 'notariaNumero', 'notariaCiudad', 'folioMercantil'].every((k) => f1.includes(k)) && f1.length === 6, 'campos de la escritura en rojo: ' + f1.join(','));
-ok(!f1.includes('correo') && !f1.includes('telefono'), 'correo y teléfono (opcionales) no se marcan');
+ok(!f1.includes('correo') && !f1.includes('telefono'), 'correo y teléfono (opcionales) no van en rojo');
+const opc = async () => pg.$$eval('#party-form .field.opcional [data-k]', (els) => els.map((e) => e.dataset.k));
+ok((await opc()).sort().join() === 'correo,folioFecha,folioLugar,objetoSocial,telefono', 'opcionales vacíos en amarillo: ' + (await opc()).join(','));
+ok(await pg.$eval('#party-form [data-k="correo"]', (e) => getComputedStyle(e).borderColor) !== await pg.$eval('#party-form [data-k="notario"]', (e) => getComputedStyle(e).borderColor), 'amarillo distinto del rojo');
 ok(await pg.$eval('#party-apoderados', (e) => e.classList.contains('falta')), 'sin apoderado vigente: la sección de apoderados en rojo');
 ok((await pg.textContent('#party-gaps')).includes('Están marcados en rojo'), 'el aviso dice que están en rojo');
-ok(await pg.$eval('#party-form [data-k="notario"]', (e) => getComputedStyle(e).borderColor) !== await pg.$eval('#party-form [data-k="correo"]', (e) => getComputedStyle(e).borderColor), 'el borde de un faltante es distinto al de un campo normal');
+ok(await pg.$eval('#party-form [data-k="notario"]', (e) => getComputedStyle(e).borderColor) !== await pg.$eval('#party-form [data-k="rfc"]', (e) => getComputedStyle(e).borderColor), 'el borde de un faltante es distinto al de un campo normal');
 await pg.screenshot({ path: S + '/shots/faltantes-ficha.png', fullPage: true });
 // Al capturar se quita el rojo y se actualiza el aviso, sin esperar a salir del campo
 await pg.fill('#party-form [data-k="escrituraNumero"]', '1234');
 ok(!(await faltan()).includes('escrituraNumero'), 'al escribir la escritura deja de estar en rojo');
 ok(!(await pg.textContent('#party-gaps')).includes('Escritura,'), 'el aviso ya no menciona la escritura');
 await pg.fill('#party-form [data-k="escrituraNumero"]', '');
+await pg.fill('#party-form [data-k="correo"]', 'contacto@example.com');
+ok(!(await opc()).includes('correo'), 'al capturar el correo deja de estar en amarillo');
 ok((await faltan()).includes('escrituraNumero'), 'al borrarla vuelve a marcarse');
 
 // Con apoderado vigente sin fecha de poder: solo ese campo del apoderado vigente
 await pg.evaluate(() => { location.hash = '#/catalogo/con'; }); await pg.waitForSelector('#party-form'); await pg.waitForTimeout(300);
 const f2 = await faltan();
 ok(f2.join() === 'a0.poderFecha', 'solo la fecha del poder del apoderado vigente: ' + f2.join(','));
+ok(!(await pg.$$eval('[data-list] .field.opcional', (els) => els.length)), 'en los apoderados no se marcan opcionales');
 ok(!(await pg.$eval('#party-apoderados', (e) => e.classList.contains('falta'))), 'con apoderado vigente la sección no se marca');
 await pg.fill('[data-list="apoderados"][data-i="0"] [data-k="poderFecha"]', '2021-05-05');
 ok((await faltan()).length === 0 && await pg.$eval('#party-gaps', (e) => e.hidden), 'completa: sin rojos y sin aviso');
