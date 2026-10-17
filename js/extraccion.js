@@ -34,6 +34,63 @@ export async function pdfText(data) {
   return pages.join('\n');
 }
 
+// Formatos que se leen: PDF, Word, texto (en este equipo) e imágenes (solo con IA)
+const EXT = { pdf: /\.pdf$/i, word: /\.docx$/i, texto: /\.(txt|md|markdown)$/i, imagen: /\.(jpe?g|png|webp|gif|heic|heif)$/i };
+export const ACEPTA = '.pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.webp,.heic,.heif,.zip,.rar,application/pdf,image/*,text/plain,text/markdown,application/zip,application/vnd.rar';
+/** 'pdf' | 'word' | 'texto' | 'imagen' | null según la extensión. */
+export const formatoDe = (name) => Object.keys(EXT).find((k) => EXT[k].test(String(name || ''))) || null;
+export const esComprimido = (name) => /\.(zip|rar)$/i.test(String(name || ''));
+
+let unrarReady;
+/** Lector de .rar (vendor/unrar, WebAssembly ~250 KB): se carga solo al usarse. */
+function loadUnrar() {
+  unrarReady ??= Promise.all([
+    import('../vendor/unrar/unrar.min.mjs'),
+    fetch(new URL('../vendor/unrar/unrar.wasm', import.meta.url)).then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }),
+  ]).catch((err) => { unrarReady = null; throw new Error('No se pudo cargar el lector de .rar', { cause: err }); });
+  return unrarReady;
+}
+
+/** Documentos que se pueden leer dentro de un .zip o .rar (también dentro de otro .zip o .rar), como [{name, data}]. */
+export async function descomprimir({ name, data }, nivel = 0) {
+  const u8 = new Uint8Array(data);
+  let entradas = [];
+  if (/\.zip$/i.test(name)) {
+    const { readZip } = await import('./molde.js');
+    try { entradas = await readZip(u8); } catch { throw new Error(`${name}: el .zip está dañado, protegido con contraseña o usa una compresión no soportada.`); }
+  } else {
+    const [{ createExtractorFromData }, wasmBinary] = await loadUnrar();
+    try {
+      const ex = await createExtractorFromData({ wasmBinary, data: u8.slice().buffer });
+      for (const f of [...ex.extract().files]) if (!f.fileHeader.flags.directory && f.extraction) entradas.push({ name: f.fileHeader.name, data: f.extraction });
+    } catch (err) {
+      throw new Error(`${name}: ${/password/i.test(err?.message || err?.reason || '') ? 'el .rar está protegido con contraseña' : 'el .rar está dañado o no se pudo abrir'}.`, { cause: err });
+    }
+  }
+  const out = [];
+  for (const e of entradas) {
+    // Sin carpetas ni basura de macOS ("__MACOSX/", "._archivo.pdf")
+    const base = e.name.replace(/\\/g, '/').split('/').pop();
+    if (!base || /(^|\/)__MACOSX\//.test(e.name) || base.startsWith('._')) continue;
+    if (esComprimido(base) && nivel < 2) out.push(...await descomprimir({ name: base, data: e.data }, nivel + 1));
+    else if (formatoDe(base)) out.push({ name: base, data: e.data });
+  }
+  return out;
+}
+
+/** Texto del documento ('' en una imagen: la lee la IA). */
+export async function textoDe({ name, data }) {
+  const f = formatoDe(name);
+  if (f === 'imagen') return '';
+  if (f === 'texto') return new TextDecoder().decode(data);
+  if (f === 'word') {
+    const { leerWord } = await import('./plantilla-word.js');
+    return (await leerWord(new Uint8Array(data))).parrafos.join('\n');
+  }
+  if (f === 'pdf') return pdfText(data);
+  throw new Error(/\.doc$/i.test(name) ? 'Es un Word .doc: ábrelo en Word y guárdalo como .docx.' : 'Formato no soportado: usa PDF, Word (.docx), imagen (JPG, PNG), texto (.txt, .md) o un .zip o .rar con ellos.');
+}
+
 /** Pocas letras = PDF escaneado (imagen sin capa de texto). */
 export const sinTexto = (text) => (String(text).match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length < 80;
 

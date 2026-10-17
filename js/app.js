@@ -24,7 +24,7 @@ import { P1_COLUMNS, DATE_KEYS, PERIODICIDADES, readP1, normalizeRow, toISODate,
 import { buildZip } from './zip.js';
 import { readSugerido, candidatos, mejorCoincidencia, listaServicios, isServiciosTemplate, parecido, nucleo, carpetaDe, pascal, nombreCorto, esContratoServicios, codigoFormato, ordenFormato, formatosDelCliente, formatoFijo, formatoOcupado, conflictoFormato } from './servicios.js';
 import { DIAS_DEFAULT, SEGUIMIENTO, listaVencimientos, porAtender, textoDias, PLAZO_FIRMA, plazoFirma, listaFirmasPendientes, firmasPorAtender } from './vencimientos.js';
-import { TIPOS, pdfText, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
+import { TIPOS, textoDe, formatoDe, esComprimido, descomprimir, ACEPTA, sinTexto, detectarTipo, extraer, lecturaPobre } from './extraccion.js';
 import { estadoIA, cambiarIA, leerConIA, detectarCampos } from './ia.js';
 
 // ---------- Estado ----------
@@ -2112,7 +2112,7 @@ function renderCatalog() {
       <div class="row">
         <button class="btn" id="cat-export">${icon('download')}<span class="hide-xs">Exportar Excel</span></button>
         <label class="btn">${icon('upload')}<span class="hide-xs">Importar Excel</span><input type="file" id="cat-import" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
-        <button class="btn" id="cat-pdf" title="Constancias fiscales, escrituras constitutivas o poderes de varias empresas">${icon('upload')}<span class="hide-xs">Alta desde PDFs</span></button>
+        <button class="btn" id="cat-pdf" title="Constancias fiscales, escrituras constitutivas, poderes o INE de varias empresas (PDF, Word, imagen, texto, .zip o .rar)">${icon('upload')}<span class="hide-xs">Alta desde documentos</span></button>
         <button class="btn primary" id="cat-new">${icon('plus')} Nueva</button>
       </div>
     </header>
@@ -2349,7 +2349,7 @@ function renderPartyEditor(id) {
         <h1>${esc(p.nombre || 'Nueva parte')}</h1>
       </div>
       <div class="row">
-        <button type="button" class="btn sm" id="party-extract" title="Lee una constancia fiscal, escritura constitutiva o poder (PDF con texto)">${icon('upload')} Llenar desde PDF</button>
+        <button type="button" class="btn sm" id="party-extract" title="Lee una constancia fiscal, escritura constitutiva, poder o INE (PDF, Word, imagen, .txt, .md, .zip o .rar)">${icon('upload')} Llenar desde documento</button>
         <span id="party-save" class="muted small">Guardado</span>
       </div>
     </header>
@@ -2524,7 +2524,7 @@ function renderPartyEditor(id) {
   });
 }
 
-// --- Llenar la ficha desde un PDF del expediente (#8) ---
+// --- Llenar la ficha desde documentos del expediente: PDF, Word, imagen o texto (#8) ---
 // Campos que puede llenar cada tipo de documento: [campo, etiqueta, tipo]
 const CAMPOS_PDF = {
   csf: [['nombre', 'Nombre o razón social'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio', 'address'], ['correo', 'Correo']],
@@ -2538,13 +2538,13 @@ const CAMPOS_PDF = {
 /** El documento se aplica a un apoderado (poder, o INE de una persona moral). */
 const vaAlApoderado = (tipo, p) => tipo === 'poder' || (tipo === 'ine' && p.kind === 'pm');
 
-/** Elige uno o varios PDF del expediente en Dropbox o del equipo. Devuelve [{name, data}] (vacío si se cancela). */
-async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
+/** Elige uno o varios documentos (PDF, Word, imagen, .txt o .md) del expediente en Dropbox o del equipo. Devuelve [{name, data}] (vacío si se cancela). */
+async function elegirPdfs(p, { titulo = 'Llenar desde documento', texto } = {}) {
   const ia = (await estadoIA()).activa;
   const r = await modal({
     title: titulo,
     body: `
-      <p class="muted small">${texto || `Constancia de situación fiscal, escritura constitutiva, escritura de poder, boleta del Registro Público o INE del apoderado; puedes elegir varios a la vez. ${ia ? 'Los escaneados se leen con IA.' : 'Solo PDFs con texto: los escaneados se capturan a mano.'} Antes de aplicar, revisas cada dato.`}</p>
+      <p class="muted small">${texto || `Constancia de situación fiscal, escritura constitutiva, escritura de poder, boleta del Registro Público o INE del apoderado, en PDF, Word (.docx), imagen (JPG, PNG), .txt o .md, sueltos o dentro de un .zip o .rar; puedes elegir varios a la vez. ${ia ? 'Los escaneados y las fotos se leen con IA.' : 'Los escaneados y las fotos solo se leen con la IA encendida; si no, se capturan a mano.'} Antes de aplicar, revisas cada dato.`}</p>
       <div class="menu-list">
         <button value="dbx" class="menu-item">${icon('folder')} <span>Del expediente en Dropbox${dbx.isConnected() ? '' : '<span class="muted small"> · no conectado en este navegador</span>'}</span></button>
         <button value="local" class="menu-item">${icon('upload')} Desde este equipo</button>
@@ -2556,28 +2556,46 @@ async function elegirPdfs(p, { titulo = 'Llenar desde PDF', texto } = {}) {
   }
   if (r.value === 'dbx') {
     const start = p ? (p.expediente || (p.nombre ? expedienteOf(p) : sync.expedientesRoot())) : sync.expedientesRoot();
-    let files = await browseDropbox({ start, title: 'Elegir los PDF', shortcuts: [{ label: 'Expedientes del grupo', path: sync.expedientesRoot() }, { label: 'Clientes', path: sync.clientesRoot() }] });
-    files = files?.filter((f) => /\.pdf$/i.test(f.name));
+    let files = await browseDropbox({ start, title: 'Elegir los documentos', shortcuts: [{ label: 'Expedientes del grupo', path: sync.expedientesRoot() }, { label: 'Clientes', path: sync.clientesRoot() }] });
+    files = files?.filter((f) => formatoDe(f.name) || esComprimido(f.name));
     if (!files) return [];
-    if (!files.length) { toast('Elige al menos un archivo PDF', 'error'); return []; }
-    toast(`Descargando ${files.length} PDF…`);
+    if (!files.length) { toast('Elige al menos un PDF, Word, imagen, archivo de texto, .zip o .rar', 'error'); return []; }
+    toast(`Descargando ${files.length} documento${files.length === 1 ? '' : 's'}…`);
     const out = [];
     for (const f of files) out.push({ name: f.name, data: (await dbx.download(f.path_lower || f.path_display)).data });
-    return out;
+    return abrirComprimidos(out);
   }
   if (r.value === 'local') {
     const files = await new Promise((resolve) => {
-      const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.pdf,application/pdf', multiple: true });
+      const input = Object.assign(document.createElement('input'), { type: 'file', accept: ACEPTA, multiple: true });
       input.addEventListener('change', () => resolve([...input.files]));
       input.addEventListener('cancel', () => resolve([]));
       input.click();
     });
-    return Promise.all(files.map(async (f) => ({ name: f.name, data: await f.arrayBuffer() })));
+    return abrirComprimidos(await Promise.all(files.map(async (f) => ({ name: f.name, data: await f.arrayBuffer() }))));
   }
   return [];
 }
 
-/** Lee uno o varios PDF de la misma parte y los revisa uno por uno. true si cambió la ficha; 'otra' si se fue a otra ficha. */
+/** Cambia cada .zip o .rar por los documentos que trae; avisa de los que no se pudieron abrir o no traen nada que leer. */
+async function abrirComprimidos(docs) {
+  const out = [];
+  for (const d of docs) {
+    if (!esComprimido(d.name)) { out.push(d); continue; }
+    toast(`Abriendo ${d.name}…`);
+    try {
+      const dentro = await descomprimir(d);
+      if (!dentro.length) toast(`${d.name} no trae PDF, Word, imágenes ni archivos de texto`, 'error');
+      out.push(...dentro);
+    } catch (err) {
+      console.error(err);
+      toast(err.message, 'error');
+    }
+  }
+  return out;
+}
+
+/** Lee uno o varios documentos de la misma parte y los revisa uno por uno. true si cambió la ficha; 'otra' si se fue a otra ficha. */
 async function extraerDePdf(p) {
   const pdfs = await elegirPdfs(p);
   let cambio = false;
@@ -2589,24 +2607,28 @@ async function extraerDePdf(p) {
   return cambio;
 }
 
-/** Muestra lo encontrado en un PDF para revisión y aplica lo marcado. true si cambió la ficha. */
+/** Escaneado = hay que leerlo con IA: imagen o PDF sin capa de texto (un Word o .txt sin datos va a la IA como texto). */
+const esEscaneado = (name, text) => { const f = formatoDe(name); return f === 'imagen' || (f === 'pdf' && sinTexto(text)); };
+
+/** Muestra lo encontrado en un documento para revisión y aplica lo marcado. true si cambió la ficha. */
 async function revisarPdf(p, pdf, prefijo = '') {
   toast(`Leyendo ${pdf.name}…`);
-  const text = await pdfText(pdf.data);
+  const text = await textoDe(pdf);
   let ia = null;
-  const escaneado = sinTexto(text);
+  const escaneado = esEscaneado(pdf.name, text);
+  const imagen = formatoDe(pdf.name) === 'imagen';
   const aviso = (msg) => modal({
-    title: 'PDF sin texto',
-    body: `<p><strong>${esc(pdf.name)}</strong> parece escaneado (es una imagen, no tiene texto que leer). ${msg}</p>`,
+    title: imagen ? 'Imagen' : 'PDF sin texto',
+    body: `<p><strong>${esc(pdf.name)}</strong> ${imagen ? 'es una imagen: solo la lee la IA.' : 'parece escaneado (es una imagen, no tiene texto que leer).'} ${msg}</p>`,
     actions: [{ label: 'Entendido', value: '', kind: 'primary' }],
   });
-  // Con IA encendida también se usa cuando el texto del PDF no alcanza (p. ej. escaneado con una capa de texto pobre)
+  // Con IA encendida también se usa cuando el texto no alcanza (p. ej. escaneado con una capa de texto pobre)
   const tipoTxt = escaneado ? null : detectarTipo(text);
   const pobre = escaneado || lecturaPobre(tipoTxt, tipoTxt ? extraer(tipoTxt, text) : {});
   if (pobre && (await estadoIA()).activa) {
     toast(`Leyendo ${pdf.name} con IA (puede tardar hasta un minuto)…`);
     try {
-      ia = await leerConIA(pdf);
+      ia = await leerConIA(pdf, text);
       if (ia.tipo === 'otro' || !Object.keys(ia.datos).length) ia = null;
     } catch (err) {
       if (escaneado) { await aviso(`No se pudo leer con IA: ${esc(err.message)}`); return false; }
@@ -2675,8 +2697,8 @@ async function revisarPdf(p, pdf, prefijo = '') {
       <label class="field inline"><span>Tipo de documento</span>
         <select name="tipo" id="ex-tipo">${Object.entries(TIPOS).filter(([k]) => !['acta', 'rpp'].includes(k) || p.kind === 'pm').map(([k, l]) => `<option value="${k}" ${k === tipo ? 'selected' : ''}>${l}${k === detectado ? ' (detectado)' : ''}</option>`).join('')}</select>
       </label>
-      <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el PDF es más reciente o correcto.</p>
-      ${ia ? `<div class="banner warn">${icon('alert')} <span>Documento escaneado leído con IA: compara cada dato con el PDF antes de aplicarlo.</span></div>` : ''}
+      <p class="muted small">Marcados = se aplican. Los datos que ya tienes vienen sin marcar: márcalos solo si el documento es más reciente o correcto.</p>
+      ${ia ? `<div class="banner warn">${icon('alert')} <span>Documento escaneado leído con IA: compara cada dato con el documento antes de aplicarlo.</span></div>` : ''}
       <div id="ex-filas">${filas(tipo)}</div>`,
     actions: [{ label: prefijo ? 'Omitir este' : 'Cancelar', value: '', kind: 'ghost', formnovalidate: true }, { label: 'Aplicar marcados', value: 'ok', kind: 'primary' }],
     onOpen: (dlg) => {
@@ -2724,8 +2746,8 @@ async function revisarPdf(p, pdf, prefijo = '') {
 /** Alta o complemento de varias fichas a la vez desde PDF; se revisa todo en una tabla antes de guardar. */
 async function altaDesdePdfs() {
   const pdfs = await elegirPdfs(null, {
-    titulo: 'Alta desde PDFs',
-    texto: 'Elige las constancias fiscales, escrituras constitutivas, poderes, boletas del Registro Público e INE de los apoderados de una o varias empresas. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Antes de guardar revisas la lista.',
+    titulo: 'Alta desde documentos',
+    texto: 'Elige las constancias fiscales, escrituras constitutivas, poderes, boletas del Registro Público e INE de los apoderados de una o varias empresas, en PDF, Word (.docx), imagen (JPG, PNG), .txt o .md, sueltos o en un .zip o .rar. Se crea una ficha por empresa (las que ya existen solo se completan, sin borrar datos). Antes de guardar revisas la lista.',
   });
   if (!pdfs.length) return;
   const docs = [];
@@ -2734,17 +2756,18 @@ async function altaDesdePdfs() {
     toast(`Leyendo ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
     const d = { name: pdfs[i].name, text: '' };
     try {
-      d.text = await pdfText(pdfs[i].data);
+      d.text = await textoDe(pdfs[i]);
     } catch (err) {
       console.error(err);
+      d.error = err.message;
     }
-    const escaneado = sinTexto(d.text);
+    const escaneado = !d.error && esEscaneado(d.name, d.text);
     const tipoTxt = escaneado ? null : detectarTipo(d.text);
-    // También va a la IA el PDF con texto del que no se pudo sacar el dato principal
-    if (conIA && (escaneado || lecturaPobre(tipoTxt, tipoTxt ? extraer(tipoTxt, d.text) : {}))) {
+    // También va a la IA el documento con texto del que no se pudo sacar el dato principal
+    if (conIA && !d.error && (escaneado || lecturaPobre(tipoTxt, tipoTxt ? extraer(tipoTxt, d.text) : {}))) {
       toast(`Leyendo con IA ${i + 1} de ${pdfs.length}: ${pdfs[i].name}`);
       try {
-        const ia = await leerConIA(pdfs[i]);
+        const ia = await leerConIA(pdfs[i], d.text);
         // Con texto, si la IA no lo reconoce se queda lo leído del texto
         if (escaneado || ia.tipo !== 'otro') d.ia = ia;
       } catch (err) {
@@ -2756,11 +2779,11 @@ async function altaDesdePdfs() {
   const { filas, omitidos } = planAlta(docs, state.parties);
   const TIPO_CORTO = { csf: 'Constancia', acta: 'Constitutiva', poder: 'Poder', rpp: 'RPP', ine: 'INE' };
   const r = await modal({
-    title: `Alta desde ${pdfs.length} PDF`,
+    title: `Alta desde ${pdfs.length} documento${pdfs.length === 1 ? '' : 's'}`,
     wide: true,
     body: `
       ${filas.length ? `
-      <p class="muted small">Marcadas = se guardan. En fichas que ya existen solo se llenan datos vacíos.${filas.some((f) => f.docs.some((d) => d.ia)) ? ' Los marcados “IA” eran escaneados: revisa esas fichas contra el PDF después de guardar.' : ''}</p>
+      <p class="muted small">Marcadas = se guardan. En fichas que ya existen solo se llenan datos vacíos.${filas.some((f) => f.docs.some((d) => d.ia)) ? ' Los marcados “IA” eran escaneados: revisa esas fichas contra el documento después de guardar.' : ''}</p>
       <label class="field inline"><span>Las fichas nuevas son</span>
         <select name="propia"><option value="no">Contrapartes (clientes, proveedores)</option><option value="si">Empresas del grupo</option></select></label>
       <div class="card lotes-list alta-list">
@@ -4546,7 +4569,7 @@ async function iaSettingsHTML() {
   return `
     <section class="card settings-block" id="ia-box">
       <h3>Lectura con IA</h3>
-      <p class="muted">Lee constancias, escrituras y poderes escaneados (imagen) al usar “Llenar desde PDF” o “Alta desde PDFs”. Los escaneados se envían a la IA de Anthropic; los PDF con texto se siguen leyendo en este equipo.</p>
+      <p class="muted">Lee constancias, escrituras, poderes e INE escaneados o en foto al usar “Llenar desde documento” o “Alta desde documentos”. Los escaneados y las fotos se envían a la IA de Anthropic; los PDF, Word y archivos de texto se leen en este equipo (si no sale el dato principal, su texto también va a la IA).</p>
       <p><span class="badge ${e.activa ? 'final' : 'borrador'}">${e.activa ? 'Encendida' : 'Apagada'}</span> <span class="small">${estadoTxt}</span></p>
       ${e.admin ? `
         ${e.faltan?.length ? `<div class="banner warn">${icon('alert')} <span>Falta configurar en Cloudflare: ${esc(e.faltan.join(', '))}.</span></div>` : ''}

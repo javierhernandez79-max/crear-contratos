@@ -1,10 +1,11 @@
-// Lectura con IA de PDFs escaneados (constancia fiscal, escritura constitutiva, poder).
-// El PDF va a la API de Claude y vuelven los datos de la ficha; la app los muestra para revisión
+// Lectura con IA de documentos escaneados (constancia fiscal, escritura constitutiva, poder, RPP, INE):
+// PDF, foto (JPEG ya reducido en el navegador) o el texto de un Word/.txt/.md. El documento va a la API de Claude y vuelven los datos de la ficha; la app los muestra para revisión
 // antes de guardarlos. La llave (ANTHROPIC_API_KEY) es un secreto de Cloudflare: nunca llega al navegador.
 import { correoDe, estado, respuesta } from '../_lib/acceso.js';
 import { pedirJSON } from '../_lib/claude.js';
 
 const MAX_PDF = 20 * 1024 * 1024; // bytes del PDF (la API acepta 32 MB por solicitud, ya en base64)
+const MAX_IMG = 5 * 1024 * 1024; // la API acepta hasta 5 MB por imagen
 
 const CAMPOS = ['nombre', 'rfc', 'curp', 'domicilio', 'correo', 'escrituraNumero', 'escrituraFecha', 'notario', 'notariaNumero', 'notariaCiudad',
   'folioMercantil', 'folioFecha', 'folioLugar', 'objetoSocial', 'poderNumero', 'poderFecha', 'facultades',
@@ -27,7 +28,7 @@ const ESQUEMA = {
   },
 };
 
-const INSTRUCCIONES = `Lees documentos mexicanos escaneados para llenar la ficha de una empresa o persona en un catálogo de un despacho legal.
+const INSTRUCCIONES = `Lees documentos mexicanos (escaneados, fotografiados o su texto) para llenar la ficha de una empresa o persona en un catálogo de un despacho legal.
 Clasifica el documento y extrae SOLO lo que se lee en él; si un dato no aparece o no se lee con seguridad, déjalo como "" (no inventes ni completes).
 
 tipo: "csf" = Constancia de Situación Fiscal o Cédula de Identificación Fiscal del SAT; "acta" = escritura constitutiva de una sociedad; "poder" = escritura en la que una sociedad otorga poderes; "rpp" = boleta o constancia de inscripción en el Registro Público de Comercio (folio mercantil); "ine" = credencial para votar del INE (o del IFE); "otro" = cualquier otra cosa.
@@ -52,14 +53,21 @@ export async function onRequestPost({ request, env }) {
   let body;
   try { body = await request.json(); } catch { return respuesta({ error: 'Solicitud inválida' }, 400); }
   const pdf = String(body.pdf || '');
-  if (!pdf || pdf.length * 0.75 > MAX_PDF) return respuesta({ error: 'El PDF está vacío o pasa de 20 MB.' }, 413);
+  const imagen = String(body.imagen || '');
+  const texto = String(body.texto || '').slice(0, 300000);
+  if (pdf ? pdf.length * 0.75 > MAX_PDF : imagen ? imagen.length * 0.75 > MAX_IMG : !texto.trim()) {
+    return respuesta({ error: 'El documento está vacío o es demasiado grande.' }, 413);
+  }
+  const fuente = pdf ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf } }
+    : imagen ? { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imagen } }
+      : { type: 'document', source: { type: 'text', media_type: 'text/plain', data: texto } };
 
   const r = await pedirJSON(env, {
     system: INSTRUCCIONES,
     schema: ESQUEMA,
-    queLee: 'el PDF',
+    queLee: 'el documento',
     content: [
-      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf } },
+      fuente,
       { type: 'text', text: `Archivo: ${String(body.nombre || 'documento.pdf').slice(0, 200)}. Extrae los datos.` },
     ],
   });
