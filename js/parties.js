@@ -73,21 +73,43 @@ export function declaracionesText(p, apoderado) {
  * fecha y lugar de inscripción del folio son opcionales.
  */
 export function partyGaps(p) {
-  const req = p.kind === 'pm'
-    ? [['nombre', 'Razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio'], ['escrituraNumero', 'Escritura'], ['escrituraFecha', 'Fecha de constitución'], ['notario', 'Notario'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['folioMercantil', 'Folio mercantil']]
-    : [['nombre', 'Nombre'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación']];
+  const req = p.kind === 'pm' ? REQ_PM : REQ_PF;
   const gaps = req.filter(([k]) => !String(p[k] ?? '').trim()).map(([, l]) => l);
   if (p.kind !== 'pm') return gaps;
   const vigentes = p.apoderados.filter((a) => a.vigente && a.nombre.trim());
   if (!vigentes.length) gaps.push('Apoderado vigente');
-  const PODER = [['poderNumero', 'número del poder'], ['poderFecha', 'fecha del poder'], ['notario', 'notario del poder'], ['notariaNumero', 'notaría núm. del poder'], ['notariaCiudad', 'ciudad de la notaría del poder']];
   const anio = new Date().getFullYear();
   for (const a of vigentes) {
     for (const [k, l] of PODER) if (!String(a[k] ?? '').trim()) gaps.push(`${l[0].toUpperCase()}${l.slice(1)} de ${a.nombre}`);
-    if (Number(a.identificacionVigencia) && Number(a.identificacionVigencia) < anio) gaps.push(`INE vencida de ${a.nombre}`);
+    if (ineVencida(a, anio)) gaps.push(`INE vencida de ${a.nombre}`);
   }
   return gaps;
 }
+
+/**
+ * Los mismos faltantes de partyGaps, como campos de la ficha, para resaltarlos:
+ * campos de la parte, campos de cada apoderado vigente (por índice) y si falta un apoderado vigente.
+ */
+export function partyGapKeys(p) {
+  const req = p.kind === 'pm' ? REQ_PM : REQ_PF;
+  const campos = req.filter(([k]) => !String(p[k] ?? '').trim()).map(([k]) => k);
+  const apoderados = [];
+  if (p.kind !== 'pm') return { campos, apoderados, sinApoderado: false };
+  const anio = new Date().getFullYear();
+  p.apoderados.forEach((a, i) => {
+    if (!a.vigente) return;
+    // Marcado como vigente pero sin nombre: no cuenta como apoderado hasta tener nombre
+    const keys = a.nombre.trim() ? PODER.filter(([k]) => !String(a[k] ?? '').trim()).map(([k]) => k) : ['nombre'];
+    if (a.nombre.trim() && ineVencida(a, anio)) keys.push('identificacionVigencia');
+    if (keys.length) apoderados.push({ i, keys });
+  });
+  return { campos, apoderados, sinApoderado: !p.apoderados.some((a) => a.vigente && a.nombre.trim()) };
+}
+
+const REQ_PM = [['nombre', 'Razón social'], ['rfc', 'RFC'], ['domicilio', 'Domicilio'], ['escrituraNumero', 'Escritura'], ['escrituraFecha', 'Fecha de constitución'], ['notario', 'Notario'], ['notariaNumero', 'Notaría núm.'], ['notariaCiudad', 'Ciudad de la notaría'], ['folioMercantil', 'Folio mercantil']];
+const REQ_PF = [['nombre', 'Nombre'], ['rfc', 'RFC'], ['curp', 'CURP'], ['domicilio', 'Domicilio'], ['nacionalidad', 'Nacionalidad'], ['estadoCivil', 'Estado civil'], ['ocupacion', 'Ocupación'], ['identificacion', 'Identificación']];
+const PODER = [['poderNumero', 'número del poder'], ['poderFecha', 'fecha del poder'], ['notario', 'notario del poder'], ['notariaNumero', 'notaría núm. del poder'], ['notariaCiudad', 'ciudad de la notaría del poder']];
+const ineVencida = (a, anio) => Number(a.identificacionVigencia) && Number(a.identificacionVigencia) < anio;
 
 // Variables que genera cada parte vinculada: [sufijo, etiqueta, tipo, valor(p, apoderado)]
 const PARTY_VARS = [

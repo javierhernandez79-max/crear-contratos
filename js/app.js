@@ -6,7 +6,7 @@ import {
   contractToTemplate, fmtDateTime, fmtRelative, formatValue, canonicalText, brokenEfirmas, hasEfirma, todayISO,
 } from './model.js';
 import {
-  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, declaracionesText, applyParty, matchesQuery, fmtLongDate, rfcDuplicado, DATOS_PARTE } from './parties.js';
+  PARTY_KINDS, newParty, newApoderado, newAccionista, partyGaps, partyGapKeys, declaracionesText, applyParty, matchesQuery, fmtLongDate, rfcDuplicado, DATOS_PARTE } from './parties.js';
 import { catalogToXlsx, xlsxToCatalog } from './catalog-xlsx.js';
 import * as dbx from './dropbox.js';
 import * as sync from './sync.js';
@@ -2354,7 +2354,7 @@ function renderPartyEditor(id) {
       </div>
     </header>
     ${ret ? `<div class="banner info">${icon('link')} <span>Al terminar, úsala en el contrato.</span><button class="btn sm primary" id="use-in-contract">Usar en el contrato</button></div>` : ''}
-    ${gaps.length ? `<div class="banner warn">${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …].</span></div>` : ''}
+    <div class="banner warn" id="party-gaps" ${gaps.length ? '' : 'hidden'}>${icon('alert')} <span>Faltan: ${esc(gaps.join(', '))}. En el contrato aparecerán como [falta: …]. Están marcados en rojo.</span></div>
     <form class="party-form" id="party-form" autocomplete="off">
       <section class="card form-block">
         <div class="row">
@@ -2371,7 +2371,7 @@ function renderPartyEditor(id) {
         <h3>Escritura constitutiva</h3>
         <div class="form-grid">${PARTY_FIELDS.pm.map((f) => fieldHTML(p, f)).join('')}</div>
       </section>
-      <section class="card form-block">
+      <section class="card form-block" id="party-apoderados">
         <h3>Apoderados <span class="muted small">(en cada contrato se pregunta quién firma)</span></h3>
         ${p.apoderados.map((a, i) => `
           <div class="sub-item" data-list="apoderados" data-i="${i}">
@@ -2425,6 +2425,18 @@ function renderPartyEditor(id) {
   const form = $('#party-form');
   const status = (t) => { const el = $('#party-save'); if (el) el.textContent = t; };
   const persist = debounce(async () => { await saveParty(p); status('Guardado'); }, 400);
+  // Resalta en rojo los datos que faltan (los mismos del aviso) y actualiza el aviso mientras se captura
+  const marcarFaltantes = () => {
+    const g = partyGapKeys(p);
+    form.querySelectorAll('.falta').forEach((el) => el.classList.remove('falta'));
+    const marcar = (el) => el?.closest('.field')?.classList.add('falta');
+    for (const k of g.campos) form.querySelectorAll(`[data-k="${k}"]`).forEach((el) => { if (!el.closest('[data-list]')) marcar(el); });
+    for (const { i, keys } of g.apoderados) for (const k of keys) marcar(form.querySelector(`[data-list="apoderados"][data-i="${i}"] [data-k="${k}"]`));
+    $('#party-apoderados')?.classList.toggle('falta', g.sinApoderado);
+    const faltan = partyGaps(p), banner = $('#party-gaps');
+    if (banner) { banner.hidden = !faltan.length; banner.querySelector('span').textContent = `Faltan: ${faltan.join(', ')}. En el contrato aparecerán como [falta: …]. Están marcados en rojo.`; }
+  };
+  marcarFaltantes();
   const target = (el) => (el.dataset.list ? p[el.dataset.list][Number(el.dataset.i)]
     : el.closest('[data-list]') ? p[el.closest('[data-list]').dataset.list][Number(el.closest('[data-list]').dataset.i)] : p);
 
@@ -2432,6 +2444,7 @@ function renderPartyEditor(id) {
     const k = e.target.dataset.k;
     if (!k || e.target.type === 'checkbox' || k === 'kind') return;
     target(e.target)[k] = k === 'rfc' || k === 'curp' ? e.target.value.toUpperCase() : e.target.value;
+    marcarFaltantes();
     status('Guardando…');
     persist();
   });
